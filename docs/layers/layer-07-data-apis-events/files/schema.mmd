@@ -1,0 +1,323 @@
+erDiagram
+  DIAGNOSES ||--o{ ACTIONS : ""
+  ENVIRONMENTS ||--o{ ACTIONS : ""
+  INCIDENTS ||--o{ ACTIONS : ""
+  SERVICES ||--o{ ACTIONS : ""
+  ACTIONS ||--o{ APPROVAL_DECISIONS : ""
+  APPROVAL_REQUESTS ||--o{ APPROVAL_DECISIONS : ""
+  ACTIONS ||--o{ APPROVAL_REQUESTS : ""
+  INCIDENTS ||--o{ ARTIFACTS : ""
+  INCIDENT_BUDGETS ||--o{ BUDGET_RESERVATIONS : ""
+  HYPOTHESES ||--o{ DIAGNOSES : ""
+  INCIDENTS ||--o{ DIAGNOSES : ""
+  ARTIFACTS ||--o{ EVIDENCE : ""
+  INCIDENTS ||--o{ EVIDENCE : ""
+  ACTIONS ||--o{ EXECUTION_ATTEMPTS : ""
+  APPROVAL_DECISIONS ||--o{ EXECUTION_ATTEMPTS : ""
+  ARTIFACTS ||--o{ EXECUTION_ATTEMPTS : ""
+  INCIDENTS ||--o{ HYPOTHESES : ""
+  EVIDENCE ||--o{ HYPOTHESIS_EVIDENCE : ""
+  HYPOTHESES ||--o{ HYPOTHESIS_EVIDENCE : ""
+  INCIDENTS ||--o{ INCIDENT_ALERTS : ""
+  INCIDENTS ||--o| INCIDENT_BUDGETS : ""
+  ENVIRONMENTS ||--o{ INCIDENTS : ""
+  SERVICES ||--o{ INCIDENTS : ""
+  ARTIFACTS ||--o{ MODEL_ATTEMPTS : ""
+  BUDGET_RESERVATIONS ||--o{ MODEL_ATTEMPTS : ""
+  INCIDENTS ||--o{ MODEL_ATTEMPTS : ""
+  INCIDENTS ||--o{ OUTBOX : ""
+  ACTIONS ||--o| PATCHES : ""
+  ARTIFACTS ||--o{ PATCHES : ""
+  ACTIONS ||--o{ TEST_RUNS : ""
+  ARTIFACTS ||--o{ TEST_RUNS : ""
+  INCIDENTS ||--o{ TIMELINE_EVENTS : ""
+  ACTIONS ||--o{ VERIFICATIONS : ""
+  EXECUTION_ATTEMPTS ||--o{ VERIFICATIONS : ""
+  ACTIONS {
+    uuid action_id PK
+    uuid incident_id FK,UK
+    uuid diagnosis_id FK
+    action_kind kind "not null"
+    uuid target_service_id FK
+    uuid target_environment_id FK
+    text description "not null"
+    text expected_effect "not null"
+    text risk "not null"
+    text undo_plan "not null"
+    jsonb recovery_criteria "not null"
+    action_status status "not null"
+    integer version "not null"
+    timestamptz created_at "not null"
+  }
+  APPROVAL_DECISIONS {
+    uuid approval_id PK
+    uuid approval_request_id FK,UK
+    uuid action_id FK
+    approval_decision decision "not null"
+    text decided_by UK
+    text decided_by_role "not null"
+    timestamptz auth_time "not null"
+    char patch_sha256 "not null"
+    uuid target_service_id "not null"
+    uuid target_environment_id "not null"
+    text reason
+    timestamptz decided_at "not null"
+    timestamptz valid_until
+    bytea signature
+    text signing_key_id
+  }
+  APPROVAL_REQUESTS {
+    uuid approval_request_id PK
+    uuid action_id FK
+    char patch_sha256 "not null"
+    timestamptz requested_at "not null"
+    timestamptz escalate_at "not null"
+    timestamptz expires_at "not null"
+    smallint approvers_needed "not null"
+    timestamptz closed_at
+    text close_reason
+  }
+  ARTIFACTS {
+    uuid artifact_id PK
+    uuid org_id "not null"
+    uuid incident_id FK
+    artifact_kind kind "not null"
+    text storage_key UK
+    char content_sha256 "not null"
+    bigint size_bytes "not null"
+    text media_type "not null"
+    boolean redacted "not null"
+    timestamptz retain_until "not null"
+    timestamptz created_at "not null"
+  }
+  BUDGET_RESERVATIONS {
+    uuid reservation_id PK
+    uuid incident_id FK
+    bigint reserved_cost_micros "not null"
+    integer reserved_input_tokens "not null"
+    integer reserved_output_tokens "not null"
+    reservation_status status "not null"
+    bigint actual_cost_micros
+    timestamptz created_at "not null"
+    timestamptz expires_at "not null"
+    timestamptz settled_at
+  }
+  DIAGNOSES {
+    uuid diagnosis_id PK
+    uuid incident_id FK,UK
+    smallint revision UK
+    diagnosis_outcome outcome "not null"
+    uuid leading_hypothesis_id FK
+    confidence confidence "not null"
+    text summary "not null"
+    text_array missing_evidence "not null"
+    text stop_reason
+    boolean reviewed "not null"
+    text review_notes
+    text produced_by "not null"
+    timestamptz created_at "not null"
+  }
+  ENVIRONMENTS {
+    uuid environment_id PK
+    uuid org_id UK
+    text slug UK
+  }
+  EVIDENCE {
+    uuid evidence_id PK
+    uuid incident_id FK
+    evidence_kind kind "not null"
+    text source_system "not null"
+    text collected_by "not null"
+    text query
+    timestamptz window_start
+    timestamptz window_end
+    timestamptz collected_at "not null"
+    text source_link
+    text summary "not null"
+    jsonb attributes "not null"
+    uuid artifact_id FK
+    char content_sha256 "not null"
+    boolean is_partial "not null"
+    boolean flagged_injection "not null"
+  }
+  EXECUTION_ATTEMPTS {
+    uuid attempt_id PK
+    uuid action_id FK
+    uuid approval_id FK
+    text execution_key UK
+    smallint attempt_no UK
+    boolean is_undo "not null"
+    timestamptz started_at "not null"
+    timestamptz finished_at
+    execution_outcome outcome "not null"
+    text external_ref
+    uuid response_artifact_id FK
+    text error
+  }
+  HYPOTHESES {
+    uuid hypothesis_id PK
+    uuid incident_id FK,UK
+    smallint ordinal UK
+    text statement "not null"
+    text confirm_test "not null"
+    text refute_test "not null"
+    hypothesis_status status "not null"
+    confidence confidence "not null"
+    text status_reason
+    integer version "not null"
+    timestamptz created_at "not null"
+  }
+  HYPOTHESIS_EVIDENCE {
+    uuid hypothesis_id PK,FK
+    uuid evidence_id PK,FK
+    evidence_relation relation PK
+    text note
+  }
+  IDEMPOTENCY_KEYS {
+    text caller_id PK
+    text operation PK
+    text idem_key PK
+    char request_sha256 "not null"
+    text state "not null"
+    smallint response_status
+    jsonb response_body
+    uuid resource_id
+    timestamptz created_at "not null"
+    timestamptz expires_at "not null"
+  }
+  INCIDENT_ALERTS {
+    uuid alert_id PK
+    uuid incident_id FK,UK
+    text source_alert_id UK
+    text fingerprint "not null"
+    timestamptz received_at UK
+    jsonb payload "not null"
+  }
+  INCIDENT_BUDGETS {
+    uuid incident_id PK,FK
+    integer max_calls "not null"
+    integer max_input_tokens "not null"
+    integer max_output_tokens "not null"
+    bigint max_cost_micros "not null"
+    integer used_calls "not null"
+    bigint reserved_cost_micros "not null"
+    bigint spent_cost_micros "not null"
+    integer used_input_tokens "not null"
+    integer used_output_tokens "not null"
+  }
+  INCIDENTS {
+    uuid incident_id PK
+    uuid org_id "not null"
+    text display_ref UK
+    uuid service_id FK
+    uuid environment_id FK
+    text dedup_key "not null"
+    text title "not null"
+    text source "not null"
+    timestamptz started_at "not null"
+    incident_status status "not null"
+    severity proposed_severity
+    severity confirmed_severity
+    text severity_confirmed_by
+    integer version "not null"
+    bigint last_event_seq "not null"
+    text created_by "not null"
+    timestamptz created_at "not null"
+    timestamptz updated_at "not null"
+    timestamptz closed_at
+  }
+  MODEL_ATTEMPTS {
+    uuid model_attempt_id PK
+    uuid incident_id FK
+    uuid reservation_id FK
+    text task "not null"
+    smallint step_attempt_no "not null"
+    text provider "not null"
+    text model "not null"
+    text prompt_template_version "not null"
+    char input_sha256 "not null"
+    uuid input_artifact_id FK
+    uuid output_artifact_id FK
+    model_attempt_status status "not null"
+    jsonb validation_errors
+    integer input_tokens "not null"
+    integer output_tokens "not null"
+    bigint cost_micros "not null"
+    integer latency_ms
+    timestamptz started_at "not null"
+    timestamptz finished_at
+    text trace_id
+  }
+  OUTBOX {
+    bigint outbox_id PK
+    uuid message_id UK
+    uuid incident_id FK
+    text kind "not null"
+    text workflow_id "not null"
+    jsonb payload "not null"
+    timestamptz created_at "not null"
+    timestamptz available_at "not null"
+    integer attempts "not null"
+    text last_error
+    timestamptz delivered_at
+  }
+  PATCHES {
+    uuid patch_id PK
+    uuid action_id FK,UK
+    text base_revision "not null"
+    uuid diff_artifact_id FK
+    char diff_sha256 "not null"
+    smallint files_changed "not null"
+    integer lines_added "not null"
+    integer lines_removed "not null"
+    text review_ref
+    timestamptz created_at "not null"
+  }
+  SERVICES {
+    uuid service_id PK
+    uuid org_id UK
+    text slug UK
+    text display_name "not null"
+    text owner_group "not null"
+    timestamptz created_at "not null"
+  }
+  TEST_RUNS {
+    uuid test_run_id PK
+    uuid action_id FK
+    char patch_sha256 "not null"
+    boolean reproduced "not null"
+    test_outcome outcome "not null"
+    uuid output_artifact_id FK
+    timestamptz started_at "not null"
+    timestamptz finished_at "not null"
+  }
+  TIMELINE_EVENTS {
+    uuid event_id PK
+    uuid incident_id FK,UK
+    bigint seq UK
+    text type "not null"
+    text source "not null"
+    text actor "not null"
+    timestamptz occurred_at "not null"
+    timestamptz recorded_at "not null"
+    uuid causation_id
+    uuid correlation_id "not null"
+    jsonb data "not null"
+    smallint schema_version "not null"
+    char prev_hash
+    char hash "not null"
+  }
+  VERIFICATIONS {
+    uuid verification_id PK
+    uuid action_id FK
+    uuid attempt_id FK
+    jsonb criteria "not null"
+    integer hold_seconds "not null"
+    timestamptz window_start "not null"
+    timestamptz window_end "not null"
+    jsonb measurements "not null"
+    verification_result result "not null"
+    text verified_by "not null"
+    text accepted_by
+    timestamptz created_at "not null"
+  }

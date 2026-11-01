@@ -1,0 +1,311 @@
+# Artifact 4: Requirements Specification
+
+- **Layer:** 4, Functional and Non-Functional Requirements
+- **Built from:** Artifacts 1, 2 and 3
+- **Status:** Draft compiled from the team's answers; pending team review
+- **Sources:** [conversation.md](conversation.md), [System Design](../../reference/system-design.md), [Technical Specification](../../reference/technical-specification.md), [Layer 1](../layer-01-problem-discovery/conversation.md), [Layer 2](../layer-02-scope-and-constraints/conversation.md) and [Layer 12](../layer-12-reliability-evaluation/conversation.md) answers where cited
+
+## Required sections
+
+| Required section | Questions this section answers | Done |
+| --- | --- | --- |
+| 4.1 Requirement ID | Q4.1–Q4.34 | Yes |
+| 4.2 Description | Q4.1–Q4.34 | Yes |
+| 4.3 Priority | Q4.1–Q4.34 | Partial |
+| 4.4 Measurement | Q4.1–Q4.34 | Yes |
+| 4.5 Acceptance criterion | Q4.1–Q4.34 | Partial |
+| 4.6 Validation method | Q4.1–Q4.34 | Yes |
+| 4.7 Related milestone | Q4.1–Q4.34 | Yes |
+
+Every requirement must carry each of these seven fields, so each section is one column of the register below and answers every question.
+
+## Requirements register
+
+77 requirements, in ID order, as written in the answers. The argument for each is in [conversation.md](conversation.md).
+
+| ID | Description | Priority | Measurement | Acceptance criterion | Validation method | Milestone |
+| --- | --- | --- | --- | --- | --- | --- |
+| FR-01 | Accepting an incident returns an incident ID and starts the workflow asynchronously | Must | Response contains an ID; workflow-start event recorded | 100% of valid submissions return an ID and produce exactly one workflow | Integration test with the scenario fixture | M1 |
+| FR-02 | The workflow runs the steps in order and records each one | Must | Timeline entries per step | Every completed incident shows all steps in order, with timestamps | Test against the scenario fixture | M1 |
+| FR-03 | Duplicate alerts attach to the existing open incident | Must | Investigations started per unique deduplication key | Sending the same alert 10 times creates 1 investigation and 10 timeline entries | Replay test | M1 |
+| FR-04 | Retried submissions with the same request key are idempotent | Must | Incidents created per request key | 1 incident per request key | API test | M1 |
+| FR-05 | Submissions without mandatory fields are rejected, naming the fields | Must | Rejection rate and error content | 100% of submissions missing any mandatory field are rejected; 0 investigations start | API validation tests | M1 |
+| FR-06 | The service identifier must match the service catalogue | Must | Unknown-service submissions | Unknown services are rejected and the incident lead is notified | Test with an unknown service | M1 |
+| FR-07 | Every evidence item records its source, collection time and a link | Must | Share of items with all three fields | 100% | Schema test | M1 |
+| FR-08 | A failed or timed-out source is recorded as a gap, never as empty or healthy | Must | Gap records when a source fails | A source outage in testing produces a gap record, and the diagnosis reports it | Fault-injection test | M1 |
+| FR-09 | Evidence collection completes within its time budget | Should | p95 evidence-collection time | ≤ 3 minutes p95 (provisional) | Timing on the test suite | M1 |
+| FR-10 | Each hypothesis records its statement, evidence for and against, confidence and status | Must | Field completeness | 100% of hypotheses have all fields | Schema test | M1 |
+| FR-11 | At least two hypotheses are considered for every diagnosis | Must | Hypotheses per investigation | ≥ 2 for 100% of diagnosed incidents | Test suite review | M1 |
+| FR-12 | Every claim in a diagnosis cites existing evidence | Must | Uncited or invalid citations | 0 in the test suite | Automated citation check | M1 |
+| FR-13 | Diagnosis accuracy on change-caused synthetic incidents | Must | Leading hypothesis matches the known cause | ≥ 80% (provisional, from Artifact 1) | Evaluation suite | M1 |
+| FR-14 | Conflicting hypotheses are shown side by side with a proposed deciding test | Must | Behaviour on conflict test cases | 100% of conflict cases show both and a deciding test | Test cases with conflicting evidence | M1 |
+| FR-15 | A single strong contradiction lowers or rules out a hypothesis | Should | Behaviour on contradiction cases | Hypothesis status changes in 100% of contradiction cases | Test cases based on Artifact 3 | M1 |
+| FR-16 | Below the confidence threshold, the diagnosis is marked "Root cause not established" | Must | Behaviour on evidence-withheld cases | 100% of withheld-evidence cases are inconclusive; 0 present a guess as the cause | Honesty test (evidence removed) | M1 |
+| FR-17 | No patch is proposed from an inconclusive diagnosis | Must | Patches from inconclusive diagnoses | 0 | Test suite | M2 |
+| FR-18 | Patches are proposed through the review system, never committed directly | Must | Direct writes to protected branches | 0 | Permission audit and test | M2 |
+| FR-19 | Each patch includes the hypothesis, evidence, diff, expected effect, risk and undo plan | Must | Field completeness | 100% | Schema test | M2 |
+| FR-20 | For the scenario, the proposed patch reverts only the changed configuration value | Must | Patch content | The diff changes exactly that value | Scenario test | M2 |
+| FR-21 | A patch is tested only after the failure is reproduced in the disposable environment | Must | Tests without reproduction | 0 | Test suite | M2 |
+| FR-22 | The disposable environment has no access to production systems, data or credentials | Must | Blocked access attempts | 100% of production access attempts blocked | Security test | M2 |
+| FR-23 | Test results are stored as evidence, and the environment is destroyed afterwards | Must | Environments left running | 0 after 60 minutes | Resource audit | M2 |
+| FR-24 | No production change runs without a recorded approval from an authorised person | Must | Executions without approval | 0 | Negative test; audit | M3 |
+| FR-25 | The approval request contains the diagnosis, evidence, diff, test results, risk and undo plan | Must | Field completeness | 100% | Schema test | M3 |
+| FR-26 | The platform's own identity cannot approve | Must | Self-approval attempts | 100% rejected | Security test | M3 |
+| FR-27 | Execution re-checks approval validity and service state before applying | Must | Executions with stale approval or changed state | 0 | Test with state changed after approval | M3 |
+| FR-28 | The executed change is identical to the approved change | Must | Differences between approved and applied diff | 0 | Hash comparison test | M3 |
+| FR-29 | Each approved change executes at most once | Must | Duplicate executions under retry | 0 | Retry and replay test | M3 |
+| FR-30 | Recovery criteria are recorded before execution | Must | Executions without recorded criteria | 0 | Test suite | M3 |
+| FR-31 | Recovery is verified from monitoring data, independently of the executor | Must | Verification source | 100% verified from monitoring | Code review and test | M3 |
+| FR-32 | A failed verification undoes the change and escalates | Must | Behaviour when the fix doesn't help | 100% undone and escalated in the failed-fix test | Test with an ineffective patch | M3 |
+| FR-33 | Cancellation stops all work within a time limit | Must | Time from cancel to all work stopped | ≤ 30 seconds p95 (provisional) | Cancellation test | M1 |
+| FR-34 | Cancellation withdraws open approvals and destroys disposable environments | Must | Open approvals and environments after cancel | 0 | Test | M3 |
+| FR-35 | Cancellation never leaves a production change half-applied | Must | Partial changes after cancel mid-execution | 0 | Test cancel during execution | M3 |
+| FR-36 | Every platform and human action creates a timeline entry | Must | Actions without an entry | 0 in a full scenario run | Scenario audit | M1 |
+| FR-37 | Timeline entries cannot be edited or deleted | Must | Successful edit or delete attempts | 0 | Security test | M1 |
+| FR-38 | The timeline is available through the API and the command-line tool | Must | Availability of both | Both return the full timeline | Integration test | M1 |
+| NFR-01 | Intake availability | Must | Successful intake requests ÷ total, per month | ≥ 99.9% (provisional) | Production monitoring; load test | M4 |
+| NFR-02 | Acknowledged incidents are never lost | Must | Lost incidents after crash tests | 0 | Crash test after acknowledgement | M4 |
+| NFR-03 | A crashed investigation resumes from its last checkpoint | Must | Time to resume; steps repeated | Resumes within 2 minutes; completed steps not repeated | Kill-worker test | M4 |
+| NFR-04 | No duplicate notifications, approvals or executions after a crash | Must | Duplicates | 0 | Kill-worker test at each step | M4 |
+| NFR-05 | No action executes while the incident record can't be written | Must | Actions during a database outage | 0 | Database outage test | M4 |
+| NFR-06 | Investigations resume from checkpoints after the database returns | Must | Investigations resumed | 100% resumed within 2 minutes of recovery | Outage test | M4 |
+| NFR-07 | Engineers are notified that the platform is paused | Must | Time to notification | ≤ 2 minutes after the outage starts | Outage test | M4 |
+| NFR-08 | Platform acknowledgement latency | Must | Receive-to-record time, p95 | ≤ 2 s (provisional) | Load test; production metric | M4 |
+| NFR-09 | Time to first notification | Must | Alert-time-to-notification, p95 | ≤ 60 s (provisional) | Scenario timing | M1 |
+| NFR-10 | Time to first summary | Must | Alert-time-to-summary, p95 | ≤ 5 min (from Artifact 2) | Scenario timing | M1 |
+| NFR-11 | The investigation stops at 15 minutes and hands over | Must | Maximum investigation duration | No investigation exceeds 15 min + 30 s | Slow-source test | M1 |
+| NFR-12 | Resources are released when a limit is reached | Must | Resources held after stop | 0 workers, environments or model calls active | Test | M4 |
+| NFR-13 | The per-incident model-call cap is enforced before each call | Must | Calls beyond the cap | 0 | Runaway-loop test | M1 |
+| NFR-14 | Daily spend limit triggers alerts and evidence-only mode | Must | Behaviour at 80% and 100% | Alert at 80%; no model calls at 100% | Simulated spend test | M4 |
+| NFR-15 | Actual cost is recorded per incident | Must | Incidents with cost recorded | 100% | Report check | M1 |
+| NFR-16 | Excess incidents are queued by severity and never dropped | Must | Dropped incidents; queue order | 0 dropped; order matches severity | Burst test with 20 incidents | M4 |
+| NFR-17 | Engineers are told when their incident is queued | Should | Notification on queue | 100% of queued incidents notify | Burst test | M4 |
+| NFR-18 | Secrets and personal data are redacted before storage and before model calls | Must | Seeded secrets found in stored evidence or prompts | 0 of a seeded corpus of 100 | Redaction test | M1 |
+| NFR-19 | Evidence is encrypted at rest and in transit | Must | Encryption configuration | Enabled for all stores and connections | Configuration audit | M4 |
+| NFR-20 | Raw evidence is deleted after the retention period | Should | Evidence older than the period | 0 | Retention job test | M4 |
+| NFR-21 | Recovery point objective | Must | Data lost in a restore drill | ≤ 5 minutes (provisional) | Quarterly restore drill | M4 |
+| NFR-22 | Recovery time objective | Must | Time to restore service | ≤ 1 hour (provisional) | Quarterly restore drill | M4 |
+| NFR-23 | No action resumes after a restore until open incidents are re-checked | Must | Actions before re-check | 0 | Restore drill | M4 |
+| NFR-24 | Full-platform recovery time | Must | Time to restore after a total failure | ≤ 1 hour target; ≤ 4 hours maximum (provisional) | Disaster recovery drill | M4 |
+| NFR-25 | Platform failure doesn't stop alerts reaching engineers | Must | Alerts delivered while the platform is down | 100% | Outage test | M4 |
+| NFR-26 | Every step, source and model call is timed and traced with the incident ID | Must | Untimed steps in a full run | 0 | Scenario trace review | M1 |
+| NFR-27 | Percentile dashboards or queries exist for each measurement | Should | Measurements available | All listed measurements queryable | Review | M4 |
+| NFR-28 | Degraded dependencies are bounded by timeouts, limited retries and a circuit breaker | Must | Calls to a failing dependency over time | Calls stop after the breaker trips; investigation still completes | Fault-injection test (slow and erroring) | M4 |
+| NFR-29 | Evidence from a degraded source is marked partial, and confidence is lowered | Must | Behaviour on degraded sources | 100% marked; confidence lowered | Fault-injection test | M1 |
+| NFR-30 | Intake latency | Must | p95 and p99 response time | p95 ≤ 300 ms, p99 ≤ 1 s (provisional) | Load test at 10× expected peak | M4 |
+| NFR-31 | Event publication latency | Must | Acceptance-to-available time | p95 ≤ 1 s, p99 ≤ 5 s (provisional); 0 lost events | Load and crash test | M4 |
+| NFR-32 | Model-call timeout | Must | Longest model call | No call exceeds 60 s (provisional) | Slow-provider simulation | M1 |
+| NFR-33 | Model attempts per step | Must | Attempts before failure | ≤ 3; then inconclusive and handed over | Malformed-output simulation | M1 |
+| NFR-34 | Approval request expiry and escalation | Must | Escalation and expiry times | Escalates at 15 min; expires at 60 min (provisional) | Timer test | M3 |
+| NFR-35 | A granted approval expires, or is voided by a change | Must | Executions after expiry or a change | 0 | State-change test | M3 |
+| NFR-36 | Cumulative token limits per incident | Must | Tokens used per incident | ≤ 200k input, ≤ 20k output (provisional); hand over at cap | Large-evidence test | M1 |
+| NFR-37 | Per-call input limit | Must | Largest prompt | ≤ 16k tokens (provisional) | Test | M1 |
+| NFR-38 | Maximum concurrent investigations | Must | Concurrent running investigations | Never > 5 (provisional) | Burst test | M4 |
+| NFR-39 | Queue overflow alerts the incident lead and still records incidents | Must | Behaviour above 50 queued | Recorded and alerted | Burst test with 60 incidents | M4 |
+
+## 4.1 Requirement ID
+
+*Answers Q4.1–Q4.34.*
+
+A unique, stable reference for one requirement. Later layers cite these IDs.
+
+| Prefix | Meaning | Range | Count | Comes from |
+| --- | --- | --- | --- | --- |
+| FR | Functional: what the system does | FR-01 to FR-38 | 38 | Q4.1–Q4.15 |
+| NFR | Non-functional: how well it must do it | NFR-01 to NFR-39 | 39 | Q4.16–Q4.34 |
+
+Total 77. IDs are continuous and unique, and every question produced at least one.
+
+## 4.2 Description
+
+*Answers Q4.1–Q4.34.*
+
+One statement of what must be true. Every requirement must be measurable; a requirement that cannot be tested is not yet a requirement.
+
+| Area | IDs | Count | Questions |
+| --- | --- | --- | --- |
+| Intake and deduplication | FR-01 to FR-06 | 6 | Q4.1–Q4.3 |
+| Evidence collection | FR-07 to FR-09 | 3 | Q4.4 |
+| Hypotheses and diagnosis | FR-10 to FR-17 | 8 | Q4.5–Q4.8 |
+| Patch and test | FR-18 to FR-23 | 6 | Q4.9–Q4.10 |
+| Approval, execution and verification | FR-24 to FR-32 | 9 | Q4.11–Q4.13 |
+| Cancellation and timeline | FR-33 to FR-38 | 6 | Q4.14–Q4.15 |
+| Intake availability, crash and database outage | NFR-01 to NFR-07 | 7 | Q4.16–Q4.18 |
+| Acknowledgement latency and investigation duration | NFR-08 to NFR-12 | 5 | Q4.19–Q4.20 |
+| Spend and concurrency handling | NFR-13 to NFR-17 | 5 | Q4.21–Q4.22 |
+| Sensitive data, corruption and full-platform failure | NFR-18 to NFR-25 | 8 | Q4.23–Q4.25 |
+| Performance measurements and degraded dependencies | NFR-26 to NFR-29 | 4 | Q4.26–Q4.27 |
+| Specific limits: latency, model calls, approvals, tokens, concurrency | NFR-30 to NFR-39 | 10 | Q4.28–Q4.34 |
+
+## 4.3 Priority
+
+*Answers Q4.1–Q4.34.*
+
+How firmly the requirement binds. The register uses two values.
+
+| Value | Count | IDs |
+| --- | --- | --- |
+| Must | 72 | All others |
+| Should | 5 | FR-09, FR-15, NFR-17, NFR-20, NFR-27 |
+
+**Gap:** the sources use Must and Should but do not define them, and give no rule for choosing between them.
+
+## 4.4 Measurement
+
+*Answers Q4.1–Q4.34.*
+
+The quantity observed to judge the requirement.
+
+| Kind | Count | IDs |
+| --- | --- | --- |
+| Percentile timing (p95, some with p99) | 7 | FR-09, FR-33, NFR-08, NFR-09, NFR-10, NFR-30, NFR-31 |
+| Field completeness | 4 | FR-07, FR-10, FR-19, FR-25 |
+| Counts of events or observed behaviour | 66 | All others |
+
+The platform's own measurements are set in [Q4.26](conversation.md): queue wait, duration of each step, per evidence source, per model call, human wait time and end-to-end times, all tagged with the incident ID.
+
+## 4.5 Acceptance criterion
+
+*Answers Q4.1–Q4.34.*
+
+The value or behaviour that passes the requirement.
+
+| Kind | Count | IDs |
+| --- | --- | --- |
+| Target of 0 | 25 | FR-12, FR-17, FR-18, FR-21, FR-23, FR-24, FR-27, FR-28, FR-29, FR-30, FR-34, FR-35, FR-36, FR-37, NFR-02, NFR-04, NFR-05, NFR-12, NFR-13, NFR-16, NFR-18, NFR-20, NFR-23, NFR-26, NFR-35 |
+| Target of 100% | 17 | FR-01, FR-05, FR-07, FR-10, FR-14, FR-16, FR-19, FR-22, FR-25, FR-26, FR-31, FR-32, NFR-06, NFR-15, NFR-17, NFR-25, NFR-29 |
+| Other values or behaviour | 35 | All others |
+
+16 criteria are labelled provisional in the register: FR-09, FR-13, FR-33, NFR-01, NFR-08, NFR-09, NFR-21, NFR-22, NFR-24, NFR-30, NFR-31, NFR-32, NFR-34, NFR-36, NFR-37, NFR-38.
+
+**Gap:** two criteria rest on values the sources do not set. FR-16 needs the confidence threshold, which [Q4.8](conversation.md) leaves unknown until it can be set from test results. NFR-14 needs the money value of the budget ceiling behind the daily limit, and [Q4.21](conversation.md) gives per-incident, daily and monthly spend only as derivations.
+
+## 4.6 Validation method
+
+*Answers Q4.1–Q4.34.*
+
+How the criterion is shown to be met. The test suites are defined in [Technical Specification, section 11](../../reference/technical-specification.md).
+
+| Kind | Count | IDs |
+| --- | --- | --- |
+| Executed test, including timing and simulations | 61 | All others |
+| Test plus audit, review or production signal | 5 | FR-18, FR-24, FR-31, NFR-01, NFR-08 |
+| Audit or review alone | 7 | FR-11, FR-23, FR-36, NFR-15, NFR-19, NFR-26, NFR-27 |
+| Restore or disaster recovery drill | 4 | NFR-21, NFR-22, NFR-23, NFR-24 |
+
+## 4.7 Related milestone
+
+*Answers Q4.1–Q4.34.*
+
+The milestone by which the requirement must pass.
+
+**Milestones used below (provisional; finalised in Layer 13):**
+
+| **Milestone** | **Scope** |
+| --- | --- |
+| **M1** | Intake, evidence collection and diagnosis on synthetic test cases (advisory only) |
+| **M2** | Patch generation and testing in a disposable environment |
+| **M3** | Human approval, controlled execution and verified recovery |
+| **M4** | Reliability, limits and recovery hardening for the pilot |
+
+| Milestone | FR | NFR | Total |
+| --- | --- | --- | --- |
+| M1 | 20 | 12 | 32 |
+| M2 | 7 | 0 | 7 |
+| M3 | 11 | 2 | 13 |
+| M4 | 0 | 25 | 25 |
+
+The later milestone names and acceptance criteria are in [Technical Specification, section 12](../../reference/technical-specification.md).
+
+## Assumptions
+
+| Assumption | Status | Owner | Validated when |
+| --- | --- | --- | --- |
+| Submissions are processed asynchronously after a fast acceptance ([Q4.1](conversation.md)) | Provisional | Platform owner | the intake latency target (Q4.28) is met while investigations run in the background. |
+| Each alert carries an identifier or fingerprint that stays the same when it repeats ([Q4.2](conversation.md)) | Provisional | Platform owner | alert samples from the monitoring system are inspected. |
+| Alerts can be mapped to a known service ([Q4.3](conversation.md)) | Provisional | Platform owner | every in-scope alert rule carries a service label. |
+| The tools can be queried in parallel without breaching their limits ([Q4.4](conversation.md)) | Provisional | Platform owner | each tool's limits are checked. |
+| Up to five hypotheses are enough for any single incident ([Q4.5](conversation.md)) | Provisional | SRE lead | replays of past incidents never need more. |
+| A capable model, given the gathered evidence, can rank hypotheses accurately on change-caused failures ([Q4.6](conversation.md)) | Provisional | SRE lead | accuracy on the synthetic test suite is measured (Q4.33's budget allowing). |
+| Evidence strength can be ranked consistently across incidents ([Q4.7](conversation.md)) | Provisional | SRE lead | two reviewers agree on rankings for 20 test cases. |
+| A confidence threshold can be set from test results ([Q4.8](conversation.md)) | Provisional | SRE lead | the threshold separates correct from incorrect diagnoses on the test suite. |
+| Reverting the release, or the configuration change, fixes most change-caused failures ([Q4.9](conversation.md)) | Provisional | SRE lead | past change-caused incidents are reviewed. |
+| The scenario's failure can be reproduced in the disposable environment ([Q4.10](conversation.md)) | Provisional | Platform owner | the HTTP 500 errors reproduce there. |
+| Approvers can be reached at night ([Q4.11](conversation.md)) | Provisional | Engineering manager | the on-call rota covers every in-scope service. |
+| The release process can apply and roll back a single change on request ([Q4.12](conversation.md)) | Provisional | Platform owner | the scenario revert is applied and undone through it. |
+| A hold period of 10 minutes is enough for the reference service ([Q4.13](conversation.md)) | Provisional | SRE lead | past recoveries show no relapse after 10 minutes. |
+| Cancelling stops further work but doesn't undo an already-applied, verified change automatically ([Q4.14](conversation.md)) | Provisional | SRE lead | agreed with on-call engineers. |
+| A retention period of 1 year meets review needs ([Q4.15](conversation.md)) | Provisional | Engineering manager | confirmed with the incident review process. |
+| Monitoring retries failed alert deliveries for at least 15 minutes ([Q4.16](conversation.md)) | Provisional | Platform owner | the monitoring system's retry behaviour is checked. |
+| All steps can be made idempotent, or skipped when already complete ([Q4.17](conversation.md)) | Provisional | Platform owner | each step is reviewed for repeat safety. |
+| Database outages are usually shorter than 15 minutes ([Q4.18](conversation.md)) | Provisional | Platform owner | the database's availability history is reviewed. |
+| Monitoring's own timestamp on the alert is accurate ([Q4.19](conversation.md)) | Provisional | Platform owner | clocks are compared. |
+| 15 minutes is enough for change-caused failures ([Q4.20](conversation.md)) | Provisional | SRE lead | test-suite investigations finish within it. |
+| Change-caused investigations need fewer than 30 model calls ([Q4.21](conversation.md)) | Provisional | SRE lead | measured on the test suite. |
+| Past peak concurrency was 2 or fewer ([Q4.22](conversation.md)) | Provisional | SRE lead | past incident records are checked. |
+| Common secret and personal-data patterns can be detected automatically ([Q4.23](conversation.md)) | Provisional | Security lead | detection is tested on a seeded corpus. |
+| Point-in-time recovery is available ([Q4.24](conversation.md)) | Provisional | Platform owner | a restore is tested. |
+| During the pilot, the manual process remains practised and available ([Q4.25](conversation.md)) | Provisional | Engineering manager | confirmed with on-call teams. |
+| Each step can be timed and traced with the incident ID ([Q4.26](conversation.md)) | Provisional | Platform owner | a full trace of a scenario run is produced. |
+| Timeouts can be set per dependency from measured normal latency ([Q4.27](conversation.md)) | Provisional | Platform owner | normal latency is measured. |
+| A single database write and a lookup complete well under 100 ms ([Q4.28](conversation.md)) | Provisional | Platform owner | a load test is run. |
+| The event is written together with the incident record and published from there ([Q4.29](conversation.md)) | Provisional | Platform owner | the design in Layer 7 confirms it. |
+| Normal model calls for this task complete in under 20 seconds ([Q4.30](conversation.md)) | Provisional | SRE lead | measured on the test suite. |
+| Most malformed outputs succeed on a retry with the error explained ([Q4.31](conversation.md)) | Provisional | SRE lead | retry success is measured. |
+| Approvers respond within 15 minutes during an incident ([Q4.32](conversation.md)) | Provisional | Engineering manager | measured during the pilot. |
+| A change-caused investigation needs under 150,000 input and 15,000 output tokens ([Q4.33](conversation.md)) | Provisional | SRE lead | measured on the test suite. |
+| Historical peak concurrency is 2 or fewer ([Q4.34](conversation.md)) | Provisional | SRE lead | past records are checked. |
+
+## Decisions and conflicts
+
+**ID check.** FR-01 to FR-38 and NFR-01 to NFR-39 are continuous and unique: no gaps, no duplicates. Every FR or NFR ID cited in other layers exists in the register.
+
+**Decisions in the answers that carry no register row.**
+
+| Decision | Value | Source |
+| --- | --- | --- |
+| Mandatory fields | Service identifier (matching the service catalogue), environment, start time or alert time, symptom, source | [Q4.3](conversation.md) |
+| Deduplication key | The alert's fingerprint, or service plus alert name if there is none | [Q4.2](conversation.md) |
+| Alert grouping window | Same service within 10 minutes (provisional) | [Q4.2](conversation.md) |
+| Evidence window | From 60 minutes before the start (provisional) up to now | [Q4.4](conversation.md) |
+| Hypothesis statuses | Open, supported, ruled out, confirmed; ruled-out ones stay visible | [Q4.5](conversation.md) |
+| Confidence levels | High, medium or low, with the reasons stated | [Q4.7](conversation.md) |
+| Patch preference | Smallest reversal: configuration value, then commit, then whole release; code fixes out of scope for the first version | [Q4.9](conversation.md) |
+| Patch scope check | Stays within the affected service and the allowed list of change types | [Q4.9](conversation.md) |
+| High-impact changes | Second approver | [Q4.11](conversation.md) |
+| Recovery hold period | 10 minutes (provisional); open decision for the SRE lead in the [System Design](../../reference/system-design.md) | [Q4.13](conversation.md) |
+| Crashed worker detection | Failed after 60 seconds without reporting (provisional) | [Q4.17](conversation.md) |
+| Whole-workflow limit | Hard limit of 24 hours from opening (provisional) | [Q4.20](conversation.md) |
+| Spend limits | Per incident derived from the budget; daily is the monthly budget ÷ 30; monthly alerts at 50%, 80%, 100% | [Q4.21](conversation.md) |
+| Fairness | One service can't take every investigation slot | [Q4.22](conversation.md) |
+| Retention | Raw evidence 30 days (provisional); timeline 1 year (assumption) | [Q4.23](conversation.md), [Q4.15](conversation.md) |
+| Backups and drills | Continuous, plus a daily full backup stored separately; restore drills quarterly | [Q4.24](conversation.md) |
+| Dependency retries | 2 retries with backoff (provisional) | [Q4.27](conversation.md) |
+
+**Conflicts found while compiling.** Register rows are left as the team wrote them in every case.
+
+| # | Conflict | Handling |
+| --- | --- | --- |
+| 1 | NFR-08 bounds platform acknowledgement (receiving the alert to the record created and the ID returned) at p95 ≤ 2 s ([Q4.19](conversation.md)). NFR-30 bounds intake, which does the same work, at p95 ≤ 300 ms, p99 ≤ 1 s ([Q4.28](conversation.md)). | The Technical Specification and Layers 6 and 7 use only 300 ms, so that is the operative value. The team should retire or redefine NFR-08. |
+| 2 | NFR-22 is ≤ 1 hour "to restore service" ([Q4.24](conversation.md)). [Q12.41](../layer-12-reliability-evaluation/conversation.md) cites NFR-22 as ≤ 1 hour to read-only investigation mode, with ≤ 4 hours to full operation. The Technical Specification says only ≤ 1 h restore. | Not resolved. The team should state what the 1 hour restores. |
+| 3 | [Q4.34](conversation.md) calls 5 "double the assumed peak", and the assumption is a peak of 2 or fewer. Double 2 is 4, not 5. Artifact 2 ([Q2.17](../layer-02-scope-and-constraints/conversation.md)) sizes the limit as double the historical peak, with 5 as the provisional start. | The value stays 5, as in the System Design. The rationale needs correcting once the peak is known. |
+| 4 | NFR-14 says no model calls at 100% of daily spend. [Q4.21](conversation.md) says only new investigations become evidence-only, and doesn't say what happens to running ones. The System Design says "evidence-only at 100%". | Not resolved. The team should state the effect on running investigations. |
+| 5 | Artifact 2 says no alert is ever dropped, and every alert is recorded ([Q2.17](../layer-02-scope-and-constraints/conversation.md)). FR-05 and FR-06 reject submissions with missing fields or unknown services, and the sources don't say a rejected alert is recorded. | Not resolved. The team should state whether rejected alerts are kept. |
+| 6 | FR-13 credits its ≥ 80% to Artifact 1, where the measure is "proposed cause confirmed by the incident review" ([Layer 1](../layer-01-problem-discovery/conversation.md)). FR-13 measures synthetic incidents. | The System Design also measures it on the synthetic suite, so FR-13 stands. The two measures are different. |
+| 7 | The Technical Specification's milestone criteria include "injection 0 unsafe" (M1) and "patches only from the allowed list" (M2), neither of which has a register row. | Recorded. The allowed-list check is in [Q4.9](conversation.md) only. |
+| 8 | The Technical Specification delivers telemetry in M4, while NFR-26 (timing and tracing) and NFR-15 (cost per incident) are M1. | The register's milestones are provisional until Layer 13. |
+| 9 | The System Design and Technical Specification mark their target tables provisional, including values whose register rows carry no such label, such as NFR-03's 2 minutes and NFR-10's 5 minutes. | Treat them as provisional, as the later document does. |
+
+**Disagreements.** [conversation.md](conversation.md) records none between Claude and ChatGPT; that section is TBD for the team.
+
+## Acceptance checks
+
+- [ ] Every required section above is present and complete.
+- [x] Every section lists the questions it answers, and every question in this layer is answered by at least one section.
+- [x] Every assumption is marked provisional and has a named owner and a condition under which it will be validated.
+- [ ] Every disagreement between Claude and ChatGPT that affected a decision is recorded with the team's resolution.
+- [ ] The artifact is consistent with every artifact it is built from; any conflict is recorded as an explicit decision.
+- [x] The artifact was produced with the team's coding agent and is saved in the team repository.
+
+Reviewed by: TBD
+Date: TBD
