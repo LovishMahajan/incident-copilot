@@ -55,8 +55,6 @@ Both are the original documents, with a note at the top listing what is amended.
 
 **File names.** Most come from the code itself: imports, `Run:` lines and `alerts.yml` in `test_layer12.py`. Two are inferred, because nothing names them: `schema-tables.sql` and `contracts.py`.
 
-**Left out.** The team phone list in Room 7 is personal data and is not in this repo. The Layer 13 questions are not included because that layer has not been started.
-
 **Not read.** The shared Claude conversation needs sign-in, so it was not used. It is linked from each conversation log.
 
 ## Open items
