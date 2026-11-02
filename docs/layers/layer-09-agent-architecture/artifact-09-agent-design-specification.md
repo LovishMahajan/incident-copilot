@@ -496,7 +496,7 @@ Strength belongs to the observation, not the evidence kind. Code assigns `streng
 - `check_citations` returns a `CitationReport`: `claims`, `supported`, `unknown_ids`, `foreign_ids`, and `supported_ratio`.
 - `fingerprint` hashes the outcome, leading statement, cited evidence and action, so rewording isn't a revision.
 - A claim is supported only if it cites at least one record that isn't a gap, isn't flagged and isn't retrieved guidance. So a claim citing only gaps ([Q9.27](conversation.md)), only flagged evidence (ADR-59) or only runbooks and past incidents (Artifact 10) is unsupported. If the skill's output has an invented reference, it retries with the error explained, up to its attempt limit; after that the step fails and the investigation is inconclusive. Nothing with an invented reference is ever stored or shown ([Q9.28](conversation.md)).
-- A secret in model output fails validation and is retried, and is masked first if stored for audit. Commands in model output are rejected. Links are never fetched (ADR-59). Flagged items are shown to the approver. `check_output` raises `UnsafeOutput`, and `mask_secrets` does the masking; their pattern lists are provisional.
+- A secret in model output fails validation at once with no retry, and is masked first if stored for audit. Commands in model output are rejected. Links are never fetched (ADR-59). Flagged items are shown to the approver. `check_output` raises `UnsafeOutput`, and `mask_secrets` does the masking; their pattern lists are provisional.
 
 ## 9.8 Critic schema
 

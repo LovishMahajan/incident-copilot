@@ -12,11 +12,11 @@ from datetime import datetime, timezone
 import pytest
 from pydantic import ValidationError
 
-from patch import PatchRejected, Patch, check_boundaries
-from sandbox import (REAP_AGE_S, ResultBundle, SandboxSpec, SpecRejected, SuiteResult, TestOutcome, classify, launch_args,
+from aisre.remediation.patch import PatchRejected, Patch, check_boundaries
+from aisre.remediation.sandbox import (REAP_AGE_S, ResultBundle, SandboxSpec, SpecRejected, SuiteResult, TestOutcome, classify, launch_args,
                      reap, read_bundle, run_sandbox, validate_args, volume_args)
 from support import BASE, make_patch
-from tool_registry import PatchDraftParams
+from aisre.agent.tool_registry import PatchDraftParams
 
 NEEDS_GVISOR = "Needs a running gVisor sandbox: runsc is not installed here, so {} can't be observed"
 

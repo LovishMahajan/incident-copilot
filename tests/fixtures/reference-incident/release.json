@@ -1,0 +1,43 @@
+{
+  "synthetic": true,
+  "recorded_at": "2026-10-20T14:15:00Z",
+  "service": "orders-api",
+  "environment": "production",
+  "version": "2.14.1",
+  "previous_version": "2.14.0",
+  "author": "synthetic-engineer-a",
+  "approver": "synthetic-reviewer-b",
+  "commits": [
+    {"sha": "7d3e91a", "message": "Update tax rate config to match finance sheet (8.25%)", "files": ["deploy/production.env"]}
+  ],
+  "code_changed": false,
+  "image_digest_unchanged": true,
+  "migrations": [],
+  "feature_flag_changes": [],
+  "infrastructure_changes": [],
+  "config_revision": {"old": "cfg-41", "new": "cfg-42"},
+  "config_changes": [
+    {"key": "ORDER_TAX_RATE_BPS", "old": "825", "new": "8.25"}
+  ],
+  "stages": [
+    {"step": "merged", "at": "2026-10-20T13:38:40Z"},
+    {"step": "built", "at": "2026-10-20T13:41:05Z"},
+    {"step": "tests_passed", "at": "2026-10-20T13:46:30Z"},
+    {"step": "approved", "at": "2026-10-20T13:52:10Z"},
+    {"step": "config_applied", "at": "2026-10-20T13:58:00Z"},
+    {"step": "rollout_started", "at": "2026-10-20T14:02:00Z"}
+  ],
+  "rollout": {
+    "method": "gradual, by load balancer traffic weight",
+    "planned_percentages": [5, 25, 50, 100],
+    "health_gate": "GET /healthz on each new instance before it takes traffic",
+    "steps": [
+      {"traffic_pct": 5, "at": "2026-10-20T14:02:00Z", "new_instances": ["orders-api-e"]},
+      {"traffic_pct": 25, "at": "2026-10-20T14:07:00Z", "new_instances": ["orders-api-e"]},
+      {"traffic_pct": 50, "at": "2026-10-20T14:12:00Z", "new_instances": ["orders-api-e", "orders-api-f"]}
+    ],
+    "old_instances": ["orders-api-a", "orders-api-b", "orders-api-c", "orders-api-d"],
+    "paused": {"at": "2026-10-20T14:15:00Z", "by": "synthetic-oncall-c", "at_traffic_pct": 50}
+  },
+  "outcome": "paused"
+}

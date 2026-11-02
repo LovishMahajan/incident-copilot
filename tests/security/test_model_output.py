@@ -12,18 +12,18 @@ from datetime import datetime, timedelta, timezone
 import pytest
 from pydantic import ValidationError
 
-from activities import checked_result
-from adapters import HttpResponse
-from agent_contracts import (Claim, Confidence, CriticVerdict, DiagnosisDraft, DiagnosisResult, Evidence, EvidenceKind,
+from aisre.workflow.activities import checked_result
+from aisre.gateway.adapters import HttpResponse
+from aisre.agent.agent_contracts import (Claim, Confidence, CriticVerdict, DiagnosisDraft, DiagnosisResult, Evidence, EvidenceKind,
                              HypothesisDraft, IssueKind, PatchFileEdit, PatchProposal, SkillUsage)
-from coordinator import AgentState, Step, StopKind, after_critique, after_diagnosis, apply_result, next_step
-from gateway import GatewayConfig
-from gateway_contracts import ResultStatus
-from sandbox import read_bundle
+from aisre.agent.coordinator import AgentState, Step, StopKind, after_critique, after_diagnosis, apply_result, next_step
+from aisre.gateway.gateway import GatewayConfig
+from aisre.gateway.gateway_contracts import ResultStatus
+from aisre.remediation.sandbox import read_bundle
 from support import (FakeProvider, draft_json, gateway, make_patch, provider_reply, request)
-from telemetry import redact_text
-from tool_registry import PatchDraftParams, ToolGate, ToolRefused
-from validation import (ObservationFacts, UnsafeOutput, UnsupportedReference, assign_tier, check_citations, check_output,
+from aisre.reliability.telemetry import redact_text
+from aisre.agent.tool_registry import PatchDraftParams, ToolGate, ToolRefused
+from aisre.agent.validation import (ObservationFacts, UnsafeOutput, UnsupportedReference, assign_tier, check_citations, check_output,
                         code_checks, combine, mask_secrets, score_confidence)
 
 NOW = datetime(2026, 11, 1, 9, 0, tzinfo=timezone.utc)

@@ -8,10 +8,10 @@ import uuid
 import pytest
 from pydantic import ValidationError
 
-from action import record_decision
-from activities import DispatchIn
-from contracts import ApprovalCreate, RejectionCreate, RevocationCreate
-from dispatcher import Outcome
+from aisre.remediation.action import record_decision
+from aisre.workflow.activities import DispatchIn
+from aisre.contracts import ApprovalCreate, RejectionCreate, RevocationCreate
+from aisre.remediation.dispatcher import Outcome
 from support import FakeRelease, MemoryStore, decide, make_action, make_patch, rig
 
 

@@ -10,12 +10,12 @@ from pathlib import Path
 
 import pytest
 
-import dispatcher
-from action import MATRIX, Perm, Role
-from patch import _protected
-from sandbox import SandboxSpec, SpecRejected, launch_args, run_sandbox, validate_args
+from aisre.remediation import dispatcher
+from aisre.remediation.action import MATRIX, Perm, Role
+from aisre.remediation.patch import _protected
+from aisre.remediation.sandbox import SandboxSpec, SpecRejected, launch_args, run_sandbox, validate_args
 from support import T0, FakeProvider, draft_json, gateway, provider_reply, request
-from tool_registry import REGISTRY, SKILL_TOOLS, ToolGate, ToolKind, ToolRefused, agent_tools, tool_schema_for_model
+from aisre.agent.tool_registry import REGISTRY, SKILL_TOOLS, ToolGate, ToolKind, ToolRefused, agent_tools, tool_schema_for_model
 
 
 def spliced(*extra):

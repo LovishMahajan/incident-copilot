@@ -11,7 +11,7 @@ import pytest
 from support import ROOT, SCHEMA_CHECKS, SCHEMA_TESTS
 
 LABELS = dict(l.split(" ", 1) for l in re.findall(r"pg_temp\.must_\w+\(\s*'([^']+)'", SCHEMA_TESTS.read_text()))
-ALERTS = ROOT / "docs/layers/layer-12-reliability-evaluation/files/alerts.yml"
+ALERTS = ROOT / "ops/alerts.yml"
 README = Path(__file__).with_name("README.md")
 
 

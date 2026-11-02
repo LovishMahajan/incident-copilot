@@ -8,14 +8,14 @@ import asyncio
 
 import pytest
 
-import workflow as wf
-from action import ApprovalError
+from aisre.workflow import workflow as wf
+from aisre.remediation.action import ApprovalError
 from datetime import timedelta
 
-from dispatcher import Dispatcher, LedgerEntry, LedgerState, Outcome, ReleaseInProgress
-from fence import ActionRecord, FenceState, reconcile_after_restore
+from aisre.remediation.dispatcher import Dispatcher, LedgerEntry, LedgerState, Outcome, ReleaseInProgress
+from aisre.reliability.fence import ActionRecord, FenceState, reconcile_after_restore
 from support import AFTER, BASE, KEYS, POLICY, SOON, T0, FakeRelease, decide, make_action, people, rig
-from workflow import ApprovalSignal, IncidentWorkflow
+from aisre.workflow.workflow import ApprovalSignal, IncidentWorkflow
 
 
 class Killed(BaseException):

@@ -7,11 +7,11 @@ from datetime import datetime, timedelta, timezone
 
 import pytest
 
-from adapters import render_context
-from agent_contracts import DiagnosisDraft
+from aisre.gateway.adapters import render_context
+from aisre.agent.agent_contracts import DiagnosisDraft
 from support import draft_json
-from tool_registry import REGISTRY, ToolGate, ToolRefused
-from validation import UnsafeOutput, check_output
+from aisre.agent.tool_registry import REGISTRY, ToolGate, ToolRefused
+from aisre.agent.validation import UnsafeOutput, check_output
 
 NOW = datetime(2026, 11, 1, 9, 0, tzinfo=timezone.utc)
 METADATA = "http://169.254.169.254/latest/meta-data/"

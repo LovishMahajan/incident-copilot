@@ -1,0 +1,33 @@
+[project]
+name = "aisre"
+version = "0.1.0"
+description = "AI incident copilot: investigation workflow, model gateway, safe remediation and evaluation"
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = [
+    "cryptography>=43",
+    "opentelemetry-sdk>=1.27",
+    "prometheus-client>=0.20",
+    "pydantic>=2.8",
+    "scipy>=1.14",
+    "temporalio[pydantic]>=1.11",
+]
+
+[dependency-groups]
+dev = [
+    "pytest>=8.3",
+    "pytest-asyncio>=0.24",
+    "pyyaml>=6",
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/aisre"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+asyncio_mode = "strict"
+asyncio_default_fixture_loop_scope = "function"
