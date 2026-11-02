@@ -8,11 +8,11 @@ from datetime import datetime, timedelta, timezone
 import pytest
 from pydantic import ValidationError
 
-from coordinator import AgentState, Limits, Step, next_step
-from gateway import BudgetLedger, FleetBudget, IncidentBudget
-from gateway_contracts import MAX_INPUT_TOKENS_PER_CALL, MAX_OUTPUT_TOKENS_PER_CALL, ResultStatus, StopReason
+from aisre.agent.coordinator import AgentState, Limits, Step, next_step
+from aisre.gateway.gateway import BudgetLedger, FleetBudget, IncidentBudget
+from aisre.gateway.gateway_contracts import MAX_INPUT_TOKENS_PER_CALL, MAX_OUTPUT_TOKENS_PER_CALL, ResultStatus, StopReason
 from support import NOW_EPOCH, FakeProvider, draft_json, gateway, provider_reply, request
-from tool_registry import ToolGate, ToolRefused
+from aisre.agent.tool_registry import ToolGate, ToolRefused
 
 NOW = datetime(2026, 11, 1, 9, 0, tzinfo=timezone.utc)
 

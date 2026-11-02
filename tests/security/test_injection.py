@@ -8,12 +8,12 @@ from datetime import datetime, timezone
 import pytest
 from pydantic import ValidationError
 
-from adapters import ClaudeAdapter, render_context
-from agent_contracts import Claim, DiagnosisDraft, Evidence, EvidenceKind, HypothesisDraft, IssueKind
-from contracts import EvidenceRecord
+from aisre.gateway.adapters import ClaudeAdapter, render_context
+from aisre.agent.agent_contracts import Claim, DiagnosisDraft, Evidence, EvidenceKind, HypothesisDraft, IssueKind
+from aisre.contracts import EvidenceRecord
 from support import draft_json, request
-from tool_registry import ToolGate, ToolRefused
-from validation import check_citations, code_checks
+from aisre.agent.tool_registry import ToolGate, ToolRefused
+from aisre.agent.validation import check_citations, code_checks
 
 NOW = datetime(2026, 11, 1, 9, 0, tzinfo=timezone.utc)
 INC = uuid.uuid4()

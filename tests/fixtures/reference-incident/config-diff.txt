@@ -1,0 +1,14 @@
+# SYNTHETIC: invented for the reference incident. Release 2.14.1, commit 7d3e91a, config revision cfg-41 to cfg-42.
+diff --git a/deploy/production.env b/deploy/production.env
+index 3f1c2aa..9be40d1 100644
+--- a/deploy/production.env
++++ b/deploy/production.env
+@@ -11,7 +11,7 @@ ORDER_CURRENCY=USD
+ ORDER_MAX_ITEMS=50
+ ORDER_RESERVATION_TTL_SECONDS=900
+ ORDER_ROUNDING_DIGITS=2
+-ORDER_TAX_RATE_BPS=825
++ORDER_TAX_RATE_BPS=8.25
+ ORDERS_DB_POOL_SIZE=20
+ ORDERS_DB_TIMEOUT_MS=2000
+ PAYMENTS_TIMEOUT_MS=3000

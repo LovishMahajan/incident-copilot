@@ -1,15 +1,15 @@
 # Security tests: ST-01 to ST-40
 
-The 40 cases in section 5.8 of [Artifact 5](../../docs/layers/layer-05-threat-modeling/artifact-05-threat-model.md), run against the real reference modules in `docs/layers/*/files`. `conftest.py` puts those folders on `sys.path`. `support.py` holds the fixtures, and it fakes only what those modules talk to: the release process, trusted storage and the provider's HTTP transport.
+The 40 cases in section 5.8 of [Artifact 5](../../docs/layers/layer-05-threat-modeling/artifact-05-threat-model.md), run against the real modules in the `aisre` package (`src/aisre`). `support.py` holds the fixtures, and it fakes only what those modules talk to: the release process, trusted storage and the provider's HTTP transport.
 
 ## How to run
 
 ```
 cd /path/to/incident-copilot
-PYTHONDONTWRITEBYTECODE=1 python -m pytest -q -p no:cacheprovider tests/security
+uv run pytest -q tests/security
 ```
 
-It needs pytest, pydantic, temporalio, cryptography and prometheus_client. No database, Docker or provider is called. Each test name carries its ID, so `-k st13` runs one case.
+`uv` installs what it needs. No database, Docker or provider is called. Each test name carries its ID, so `-k st13` runs one case.
 
 ## How to read a result
 
@@ -23,7 +23,7 @@ A green run doesn't mean all 40 pass. The promotion gate (ADR-65) needs every ca
 
 **Status** below says how much of the case runs here, not whether it passes. Automated: the case's enforcement layer is exercised in full. Partly automated: the module-level half runs, and the rest is skipped. Needs running system: no reference module can exercise it.
 
-Schema-enforced parts are named by their check ID in [schema-tests.sql](../../docs/layers/layer-07-data-apis-events/files/schema-tests.sql), which runs on a real PostgreSQL server, outside pytest. `test_audit.py` confirms each named check exists with the expected label. It doesn't run them.
+Schema-enforced parts are named by their check ID in [schema-tests.sql](../../db/schema-tests.sql), which runs on a real PostgreSQL server, outside pytest. `test_audit.py` confirms each named check exists with the expected label. It doesn't run them.
 
 ## Cases
 
@@ -72,6 +72,6 @@ Schema-enforced parts are named by their check ID in [schema-tests.sql](../../do
 
 ## Notes for whoever closes these
 
-- ADR-59 says secret, link and command output is retried. `activities.checked_result` fails it at once instead. That's the safe side, and the tests assert what the code does.
+- `activities.checked_result` fails secret, link and command output at once, with no retry (ADR-59). The tests assert this.
 - ST-23, ST-24, ST-29 and ST-30's pattern lists are provisional, and widening them can reject ordinary text. Each has controls for that, but how far to go needs the first evaluation run.
-- The workflow's own paths run on Temporal in `docs/layers/layer-08-workflows-state-machines/files/test_workflow.py`. They aren't repeated here.
+- The workflow's own paths run on Temporal in `tests/unit/test_workflow.py`. They aren't repeated here.

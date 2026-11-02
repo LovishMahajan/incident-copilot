@@ -9,13 +9,13 @@ from pathlib import Path
 
 import pytest
 
-import verification
-import workflow as wf
-from action import ApprovalError, MATRIX, Perm, Role
-from dispatcher import Outcome
-from states import ActionState as A, InvalidTransition, check_action
+from aisre.verification import verification
+from aisre.workflow import workflow as wf
+from aisre.remediation.action import ApprovalError, MATRIX, Perm, Role
+from aisre.remediation.dispatcher import Outcome
+from aisre.workflow.states import ActionState as A, InvalidTransition, check_action
 from support import AFTER, BASE, T0, FakeRelease, decide, make_action, make_rollback, rig, rows
-from workflow import IncidentWorkflow
+from aisre.workflow.workflow import IncidentWorkflow
 
 
 def pair():
@@ -108,9 +108,10 @@ def test_st39_control_a_fresh_plain_approval_after_a_failed_verdict_runs():
 def test_st39_the_verifier_has_no_path_to_the_dispatcher():
     tree = ast.parse(Path(verification.__file__).read_text())
     modules = {n.module for n in ast.walk(tree) if isinstance(n, ast.ImportFrom)} | \
+              {f"{n.module}.{a.name}" for n in ast.walk(tree) if isinstance(n, ast.ImportFrom) for a in n.names} | \
               {a.name for n in ast.walk(tree) if isinstance(n, ast.Import) for a in n.names}
-    assert not modules & {"dispatcher", "activities", "workflow"}
-    assert modules & {"action"}                        # it does import action, so this check reads real imports
+    assert not modules & {"aisre.remediation.dispatcher", "aisre.workflow.activities", "aisre.workflow.workflow"}
+    assert modules & {"aisre.remediation.action"}      # it does import action, so this check reads real imports
 
 
 def test_st39_no_person_or_worker_role_can_execute():

@@ -13,18 +13,18 @@ from typing import Optional
 
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 
-from action import ApprovalPolicy, Decision, Directory, ImmutableAction, ImpactFacts, Role, Signer, Target, record_decision
-from adapters import ClaudeAdapter, HttpResponse
-from agent_contracts import DiagnosisDraft
-from dispatcher import Dispatcher, Ledger, TargetState
-from fence import FenceState
-from gateway import CLAUDE_PRICES, BudgetLedger, ModelGateway
-from gateway_contracts import ModelRequest
-from patch import build_patch_from_contents
-from verification import rollback_action_fields
+from aisre.remediation.action import ApprovalPolicy, Decision, Directory, ImmutableAction, ImpactFacts, Role, Signer, Target, record_decision
+from aisre.gateway.adapters import ClaudeAdapter, HttpResponse
+from aisre.agent.agent_contracts import DiagnosisDraft
+from aisre.remediation.dispatcher import Dispatcher, Ledger, TargetState
+from aisre.reliability.fence import FenceState
+from aisre.gateway.gateway import CLAUDE_PRICES, BudgetLedger, ModelGateway
+from aisre.gateway.gateway_contracts import ModelRequest
+from aisre.remediation.patch import build_patch_from_contents
+from aisre.verification.verification import rollback_action_fields
 
 ROOT = Path(__file__).resolve().parents[2]
-SCHEMA_TESTS = ROOT / "docs/layers/layer-07-data-apis-events/files/schema-tests.sql"
+SCHEMA_TESTS = ROOT / "db/schema-tests.sql"
 
 T0 = datetime(2026, 11, 1, 9, 0)
 SOON = T0 + timedelta(minutes=1)

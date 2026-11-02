@@ -12,7 +12,7 @@ When two documents disagree, the higher one wins:
 2. The layer artifacts (`artifact-*.md`)
 3. The [System Design](reference/system-design.md) and [Technical specification](reference/technical-specification.md), as amended by the notes at their top
 4. `conversation.md`: the team's original answers, kept unchanged as the record of how each decision was reached
-5. `files/`: reference code, which now implements these decisions. The Room 7 originals are in git commit 013bcf4
+5. Code: `src/` is the code the team builds on (ADR-67). `files/` in each layer is the filed copy of the code that artifact was written against. The Room 7 originals are in git commit 013bcf4
 
 Files marked "proposed" in a layer's `files/` folder, such as `schema.sql`, are new specifications written to close gaps. They are not part of the team's Room 7 tabs.
 
@@ -293,6 +293,7 @@ These are **placeholders so that limits can be built and tested**, chosen to kee
 | Second provider trigger | Provider-caused hand-overs above 5% of incidents in 90 days, or 2 outages over 60 minutes in a quarter | New |
 | Disposable copies at once | 3, queued beyond that | New |
 | Sandbox host rate | `sandbox_micros_per_s = 50` kept | Existing code value |
+| Evaluation spend | $300 a month, separate from the incident ceiling; a nightly run stops at $10 | New. Full development-split runs are on demand |
 | Time saved, hourly cost | Measured in the pilot | Can't be set by decision |
 
 - **Owner:** Engineering manager. **Reversal:** Low. **Revisit when:** finance confirms a budget, or after the pilot.
@@ -335,7 +336,7 @@ All are provisional. Q10.64's six-month replay is honoured by the 1-year model d
 
 | Case | Decision |
 | --- | --- |
-| Secret in model output | Both: the output fails validation and is retried. If stored for audit, the secret is masked first. The leak procedure applies |
+| Secret in model output | The output fails validation at once and isn't retried, since a retry would resend the context that produced it. If stored for audit, the secret is masked first. The leak procedure applies |
 | Commands in model output | Rejected. Only fixed harness steps run in the sandbox. The model proposes no commands |
 | Output derived from flagged evidence | Added to the validation table: a claim citing only flagged evidence is unsupported, and flagged items are shown to the approver |
 | Links | Never fetched |
@@ -385,7 +386,7 @@ Prompts live at `prompts/<skill>/v<N>.md`, immutable once merged. A new version 
 
 ### ADR-64: Schema and contract alignment
 
-`layers/layer-07-data-apis-events/files/schema.sql` (proposed) is the canonical schema, tested on a real PostgreSQL instance.
+`db/schema.sql` (proposed) is the canonical schema, tested on a real PostgreSQL instance. Alembic migrations take over from it at M0 (ADR-67). The copy in `layers/layer-07-data-apis-events/files/` is the filed version.
 
 | Topic | Decision |
 | --- | --- |
@@ -456,6 +457,47 @@ Two accuracy measures are kept, and they answer different questions: synthetic s
 
 - **Owner:** SRE lead. **Reversal:** Low.
 - **Resolves:** Layer 11 gap in 11.12, C5, Layer 8 C17, Layer 1 conflict 5.
+
+### ADR-67: Code lives in the repo; docs are the artifact filing
+
+The code is generated into a real package at the repo root. `docs/` is not moved or changed by this: each layer's `files/` folder stays as that artifact's filed copy.
+
+| Path | Holds |
+| --- | --- |
+| `src/aisre/contracts.py` | Shared contracts, imported by every other module (Layer 7) |
+| `src/aisre/workflow/` | `workflow.py`, `activities.py`, `states.py` (Layer 8) |
+| `src/aisre/agent/` | `coordinator.py`, `agent_contracts.py`, `tool_registry.py`, `validation.py` (Layer 9) |
+| `src/aisre/gateway/` | `gateway_contracts.py`, `adapters.py`, `gateway.py` (Layer 10) |
+| `src/aisre/retrieval/` | `retrieval.py`, `context.py` (Layer 10) |
+| `src/aisre/remediation/` | `patch.py`, `sandbox.py`, `action.py`, `dispatcher.py` (Layer 11) |
+| `src/aisre/verification/` | `verification.py`, apart from the dispatcher's code (Layer 11) |
+| `src/aisre/reliability/` | `telemetry.py`, `fence.py` (Layer 12) |
+| `src/aisre/evaluation/` | `eval_harness.py` (Layer 12) |
+| `src/aisre/api/`, `record/`, `config.py`, `workflow/relay.py`, `workflow/worker.py` | Planned, added at M0 (provisional): API, Incident Record, settings, outbox relay, worker entry point |
+| `prompts/` | Planned, added at M1 (ADR-63) |
+| `db/` | `schema.sql`, `schema-tests.sql`; `db/migrations/` added at M0 |
+| `ops/` | `alerts.yml` |
+| `tests/` | `tests/unit/`, `tests/security/`, `tests/fixtures/reference-incident/` |
+
+From this point `src/` is what changes. The `files/` copies stay as filed, so a change in `src/` doesn't update them. Refile a copy only when its artifact is re-issued.
+
+- **Rationale:** one import path and one test command, while `docs/` stays a stable record. **Owner:** Platform owner. **Reversal:** Low. **Revisit when:** the filed copies cause confusion, in which case replace them with links to a tagged release.
+
+### ADR-68: Milestones M0 to M5
+
+The worksheet requires M0–M5. M1–M4 keep the meaning they have in Artifacts 1–12, so no requirement, test or criterion needs renumbering. M0 and M5 are added around them.
+
+| Milestone | Delivers | Ends with |
+| --- | --- | --- |
+| M0 Foundation | Repo, toolchain, CI, migrations, a thin intake path, deterministic workflow, no AI. Full intake (FR-01) stays at M1 | A scripted incident runs through the thin intake and the workflow with fake results |
+| M1 Investigate | Evidence, gateway, coordinator, diagnosis, review, retrieval, evaluation seed | The reference incident gets a cited diagnosis; the honesty run says "Root cause not established" |
+| M2 Patch and test | Patch drafting, isolated sandbox | No test without reproduction; end of Release A's build |
+| M3 Approve, apply, verify | Approval Service, dispatcher, Verifier, rollback, on synthetic targets | A failed fix is rolled back on a synthetic target |
+| M4 Harden | Crash recovery, outages, backups, telemetry, burst handling, all 40 security tests, frozen evaluation suite | Restore drill passes, the suite is frozen and its gates pass; Release A goes live as the advisory pilot |
+| M5 Pilot and decide | Advisory pilot, measured baselines, pilot accuracy, approval review | A recorded decision on Release B, and the final report |
+
+- **Rationale:** renumbering 97 requirements and 40 security tests has real cost and no benefit. **Owner:** Engineering manager. **Reversal:** Low. **Revisit when:** a milestone misses its gate.
+- **Resolves:** the M1–M4 vs M0–M5 difference between Layers 1–12 and the worksheet.
 
 ## Not conflicts
 

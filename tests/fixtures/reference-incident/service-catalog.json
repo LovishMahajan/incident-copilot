@@ -1,0 +1,33 @@
+{
+  "synthetic": true,
+  "service": "orders-api",
+  "environment": "production",
+  "description": "Python web service (FastAPI, Python 3.12) behind one load balancer. Takes and reads customer orders.",
+  "owner": "orders-team (synthetic)",
+  "on_call": "synthetic-oncall-c",
+  "incident_lead": "synthetic-lead-d",
+  "escalation_path": ["synthetic-oncall-c", "synthetic-senior-e", "synthetic-lead-d"],
+  "critical": false,
+  "hold_seconds": 600,
+  "critical_journeys": [
+    {"name": "place_order", "route": "POST /v1/orders"}
+  ],
+  "dependencies": [
+    {"name": "orders-db", "kind": "postgresql", "owned_by": "orders-team (synthetic)", "required": true},
+    {"name": "payment-gateway", "kind": "third_party_http", "owned_by": "external (synthetic)", "required": true}
+  ],
+  "request_path": ["edge-load-balancer", "uvicorn", "middleware", "router", "handler", "orders-db, payment-gateway"],
+  "normal_behaviour": {
+    "requests_per_minute": 1200,
+    "share_post_orders": 0.6,
+    "http_500_rate_typical": 0.0008,
+    "known_error_signatures": ["TimeoutError: payment gateway did not answer within 3000 ms"],
+    "health_check": "GET /healthz; does not read ORDER_TAX_RATE_BPS"
+  },
+  "objectives": {
+    "availability": "99.9% of requests are not HTTP 5xx, over a rolling 30 days (provisional)",
+    "latency": "95% of requests finish within 500 ms, over a rolling 30 days (provisional)"
+  },
+  "runbook": "runbook-orders-api-5xx (synthetic)",
+  "instances": ["orders-api-a", "orders-api-b", "orders-api-c", "orders-api-d", "orders-api-e", "orders-api-f"]
+}

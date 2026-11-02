@@ -11,15 +11,15 @@ from datetime import timedelta
 import pytest
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 
-import workflow as wf
-from action import ApprovalError, Directory, ImpactFacts, Role, Signer, Standing, evaluate, verify_signature
-from activities import DispatchIn
-from dispatcher import Dispatcher, Ledger, Outcome
-from fence import Actor, FenceReason, FenceState, ReconciliationReport
-from states import ActionState as A, InvalidTransition, check_action
+from aisre.workflow import workflow as wf
+from aisre.remediation.action import ApprovalError, Directory, ImpactFacts, Role, Signer, Standing, evaluate, verify_signature
+from aisre.workflow.activities import DispatchIn
+from aisre.remediation.dispatcher import Dispatcher, Ledger, Outcome
+from aisre.reliability.fence import Actor, FenceReason, FenceState, ReconciliationReport
+from aisre.workflow.states import ActionState as A, InvalidTransition, check_action
 from support import (KEYS, ORDINARY, POLICY, SIGNER, SOON, T0, FakeRelease, MemoryStore, decide, make_action, make_rollback,
                      people, rig, rows)
-from workflow import ApprovalSignal, IncidentWorkflow
+from aisre.workflow.workflow import ApprovalSignal, IncidentWorkflow
 
 ATTACKER_KEY = Ed25519PrivateKey.generate()
 

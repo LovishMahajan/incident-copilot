@@ -7,10 +7,10 @@ from datetime import datetime, timedelta, timezone
 
 import pytest
 
-from action import Directory, Perm, Role
-from activities import precheck_requests
-from retrieval import Document, IndexRevision, wrong_permission_hits, wrong_service_hits
-from tool_registry import ToolGate, ToolRefused
+from aisre.remediation.action import Directory, Perm, Role
+from aisre.workflow.activities import precheck_requests
+from aisre.retrieval.retrieval import Document, IndexRevision, wrong_permission_hits, wrong_service_hits
+from aisre.agent.tool_registry import ToolGate, ToolRefused
 
 T = datetime(2026, 11, 1, 9, 0, tzinfo=timezone.utc)
 SVC = "checkout"

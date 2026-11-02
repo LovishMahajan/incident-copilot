@@ -1,0 +1,242 @@
+# Artifact 12.3: alert definitions for the AI SRE platform's own health (Prometheus rules).
+# Every alert names its runbook (Artifact 12.4). Thresholds are provisional and owned by the platform owner.
+# Routing: a rule with no `route` label goes to the Platform owner. `route` sends it elsewhere, and
+# `also_route` sends a copy (Alertmanager matches on these with `continue: true`). Pages go from
+# Prometheus through Alertmanager, never through the Notifier or PostgreSQL: either may be what failed.
+groups:
+  - name: aisre-intake
+    rules:
+      - alert: AisreIntakeErrorRate
+        expr: |
+          sum(rate(aisre_http_requests_total{route="/v1/incidents",status_class="5xx"}[5m]))
+            / clamp_min(sum(rate(aisre_http_requests_total{route="/v1/incidents"}[5m])), 1e-9) > 0.01
+        for: 5m
+        labels: {severity: page}
+        annotations:
+          summary: "More than 1% of incident submissions are failing"
+          runbook: "RB-01 intake failing"
+      - alert: AisreIntakeLatencyHigh
+        expr: histogram_quantile(0.95, sum by (le) (rate(aisre_http_request_seconds_bucket{route="/v1/incidents"}[5m]))) > 0.3
+        for: 10m
+        labels: {severity: ticket}
+        annotations:
+          summary: "Intake p95 above 300 ms (NFR-30)"
+          runbook: "RB-01 intake failing"
+      - alert: AisreIntakeLatencyP99High
+        expr: histogram_quantile(0.99, sum by (le) (rate(aisre_http_request_seconds_bucket{route="/v1/incidents"}[5m]))) > 1
+        for: 10m
+        labels: {severity: ticket}
+        annotations:
+          summary: "Intake p99 above 1 s (NFR-30)"
+          runbook: "RB-01 intake failing"
+      - alert: AisreIntakeAvailabilityMonthly
+        expr: |
+          sum(increase(aisre_http_requests_total{route="/v1/incidents",status_class="5xx"}[30d]))
+            / clamp_min(sum(increase(aisre_http_requests_total{route="/v1/incidents"}[30d])), 1) > 0.001
+        labels: {severity: ticket}
+        annotations:
+          summary: "Over 0.1% of incident submissions failed across 30 days (99.9% target)"
+          runbook: "RB-01 intake failing"
+      - alert: AisrePostgresDown
+        expr: min(aisre_dependency_up{dependency="postgresql"}) == 0
+        for: 1m
+        labels: {severity: page}
+        annotations:
+          summary: "PostgreSQL is down: on-call handles incidents by hand until it returns (NFR-07)"
+          runbook: "RB-01 intake failing"
+
+  - name: aisre-workflow
+    rules:
+      - alert: AisreOutboxStuck
+        expr: aisre_outbox_oldest_age_seconds > 120
+        labels: {severity: page}
+        annotations:
+          summary: "Outbox row undelivered for over 2 minutes: new incidents may not be investigated"
+          runbook: "RB-02 workflow engine unavailable"
+      - alert: AisreEventDeliverySlow
+        expr: |
+          histogram_quantile(0.95, sum by (le) (rate(aisre_event_available_seconds_bucket[5m]))) > 1
+            or histogram_quantile(0.99, sum by (le) (rate(aisre_event_available_seconds_bucket[5m]))) > 5
+        for: 10m
+        labels: {severity: ticket}
+        annotations:
+          summary: "Events reach workers slowly: p95 above 1 s or p99 above 5 s"
+          runbook: "RB-02 workflow engine unavailable"
+      - alert: AisreQueueBacklog
+        expr: max(aisre_incident_queue_oldest_age_seconds{severity=~"sev1|sev2"}) > 300
+        labels: {severity: page}
+        annotations:
+          summary: "A high-severity incident has waited over 5 minutes for a worker"
+          runbook: "RB-03 queue saturated"
+      - alert: AisreQueueDepthHigh
+        expr: sum(aisre_incident_queue_depth) > 50
+        labels: {severity: page, route: incident_lead}
+        annotations:
+          summary: "More than 50 incidents queued (NFR-39)"
+          runbook: "RB-03 queue saturated"
+      - alert: AisreFirstSummarySlow
+        expr: histogram_quantile(0.95, sum by (le) (rate(aisre_time_to_first_summary_seconds_bucket[30m]))) > 300
+        for: 30m
+        labels: {severity: ticket}
+        annotations:
+          summary: "First summary p95 above 5 minutes"
+          runbook: "RB-03 queue saturated"
+      - alert: AisreFirstNotificationSlow
+        expr: histogram_quantile(0.95, sum by (le) (rate(aisre_time_to_first_notification_seconds_bucket[30m]))) > 60
+        for: 15m
+        labels: {severity: ticket}
+        annotations:
+          summary: "First notification p95 above 60 s"
+          runbook: "RB-03 queue saturated"
+      - alert: AisreWorkflowStalled
+        expr: sum(aisre_workflows_stalled) > 0
+        for: 5m
+        labels: {severity: ticket}
+        annotations:
+          summary: "A workflow has made no progress beyond its state's limit, or is out of step with the incident record"
+          runbook: "RB-04 stalled workflow"
+      - alert: AisreCrashResumeSlow
+        # prometheus_client exposes the 120 s bucket as le="120.0".
+        expr: sum(increase(aisre_worker_resume_seconds_count[1h])) - sum(increase(aisre_worker_resume_seconds_bucket{le="120.0"}[1h])) > 0
+        labels: {severity: ticket}
+        annotations:
+          summary: "Work took over 120 s to resume after a worker crash in the last hour"
+          runbook: "RB-04 stalled workflow"
+      - alert: AisreCancellationSlow
+        expr: histogram_quantile(0.95, sum by (le) (rate(aisre_cancellation_seconds_bucket[30m]))) > 30
+        for: 15m
+        labels: {severity: ticket}
+        annotations:
+          summary: "Cancellation p95 above 30 s"
+          runbook: "RB-04 stalled workflow"
+
+  - name: aisre-model
+    rules:
+      - alert: AisreModelAuthErrors
+        expr: sum(increase(aisre_model_calls_total{status="auth_error"}[5m])) > 0
+        labels: {severity: page}
+        annotations:
+          summary: "Model provider rejecting credentials: investigations are evidence-only"
+          runbook: "RB-05 dependency failing"
+      - alert: AisreModelErrorRate
+        expr: |
+          sum(rate(aisre_model_calls_total{status=~"provider_error|rate_limited|timeout"}[10m]))
+            / clamp_min(sum(rate(aisre_model_calls_total[10m])), 1e-9) > 0.2
+        for: 10m
+        labels: {severity: page}
+        annotations:
+          summary: "Over 20% of model calls failing"
+          runbook: "RB-05 dependency failing"
+      - alert: AisreModelLatencyHigh
+        expr: histogram_quantile(0.95, sum by (le, task) (rate(aisre_model_call_seconds_bucket[15m]))) > 45
+        for: 15m
+        labels: {severity: ticket}
+        annotations:
+          summary: "Model call p95 above 45 s (timeout is 60 s)"
+          runbook: "RB-05 dependency failing"
+      - alert: AisreCircuitOpen
+        expr: max by (dependency) (aisre_circuit_open) == 1
+        for: 5m
+        labels: {severity: ticket}
+        annotations:
+          summary: "Circuit breaker open for {{ $labels.dependency }}"
+          runbook: "RB-05 dependency failing"
+      - alert: AisreDailySpend80
+        expr: aisre_budget_daily_spent_micros / aisre_budget_daily_limit_micros > 0.8
+        labels: {severity: ticket}
+        annotations:
+          summary: "Daily model spend above 80% of its ceiling"
+          runbook: "RB-06 spend"
+      - alert: AisreDailySpend100
+        expr: aisre_budget_daily_spent_micros / aisre_budget_daily_limit_micros >= 1
+        labels: {severity: page}
+        annotations:
+          summary: "Daily model spend at its ceiling: new investigations are evidence-only"
+          runbook: "RB-06 spend"
+      - alert: AisreMonthlySpend50
+        expr: aisre_budget_monthly_spent_micros / aisre_budget_monthly_limit_micros > 0.5
+        labels: {severity: ticket}
+        annotations:
+          summary: "Monthly model spend above 50% of its ceiling"
+          runbook: "RB-06 spend"
+      - alert: AisreMonthlySpend80
+        expr: aisre_budget_monthly_spent_micros / aisre_budget_monthly_limit_micros > 0.8
+        labels: {severity: ticket}
+        annotations:
+          summary: "Monthly model spend above 80% of its ceiling"
+          runbook: "RB-06 spend"
+      - alert: AisreMonthlySpend100
+        expr: aisre_budget_monthly_spent_micros / aisre_budget_monthly_limit_micros >= 1
+        labels: {severity: page}
+        annotations:
+          summary: "Monthly model spend at its ceiling: new investigations are evidence-only"
+          runbook: "RB-06 spend"
+      - alert: AisreUnreconciledUsage
+        expr: aisre_budget_pending_reconcile > 20
+        for: 1h
+        labels: {severity: ticket}
+        annotations:
+          summary: "Many model calls charged without reported usage"
+          runbook: "RB-06 spend"
+
+  - name: aisre-remediation
+    rules:
+      - alert: AisreActionOutcomeUnknown
+        expr: aisre_actions_outcome_unknown > 0
+        for: 1m
+        labels: {severity: page}
+        annotations:
+          summary: "A production change has an unknown outcome: a person must check the service"
+          runbook: "RB-07 unknown action outcome"
+      - alert: AisreApprovalBacklog
+        expr: aisre_approval_oldest_age_seconds > 900
+        labels: {severity: page, also_route: incident_lead}
+        annotations:
+          summary: "An approval request has waited over 15 minutes"
+          runbook: "RB-08 approval backlog"
+      - alert: AisreApprovalRefused
+        # Identity, rights and digest only: action.SECURITY_ALERT_CODES (tested equal). Every refusal
+        # still writes its aisre.approval.refused.v1 event; a retry or a late approval doesn't page.
+        expr: sum(increase(aisre_approval_refused_total{reason=~"digest_mismatch|forbidden|not_found|not_own_approval|reauth_required|self_approval"}[5m])) > 0
+        labels: {severity: page, route: security_lead}
+        annotations:
+          summary: "An approval attempt refused on identity, rights or digest (ADR-49, 11.6)"
+          runbook: "RB-08 approval backlog"
+      - alert: AisreVerificationFailureRate
+        expr: |
+          sum(increase(aisre_verification_outcomes_total{verdict="failed"}[7d]))
+            / clamp_min(sum(increase(aisre_verification_outcomes_total[7d])), 1) > 0.3
+          and sum(increase(aisre_verification_outcomes_total[7d])) >= 10
+        labels: {severity: ticket}
+        annotations:
+          summary: "Over 30% of verified changes failed recovery checks (at least 10 attempts)"
+          runbook: "RB-09 verification failures"
+      - alert: AisreSandboxLeak
+        expr: aisre_sandboxes_leftover > 0
+        labels: {severity: ticket}
+        annotations:
+          summary: "Sandboxes left running beyond 60 minutes"
+          runbook: "RB-10 sandbox leak"
+      - alert: AisreWritesFenced
+        expr: max(aisre_dispatch_fenced) == 1
+        for: 15m
+        labels: {severity: ticket}
+        annotations:
+          summary: "Production writes disabled for over 15 minutes"
+          runbook: "RB-11 writes fenced"
+      - alert: AisreAuditChainBroken
+        expr: aisre_audit_chain_faults > 0
+        labels: {severity: page, route: security_lead}
+        annotations:
+          summary: "An incident's audit chain failed verification: the record may have been altered"
+          runbook: "RB-13 audit chain broken"
+
+  - name: aisre-telemetry
+    rules:
+      - alert: AisreTelemetryDropping
+        expr: sum(rate(aisre_telemetry_dropped_total[15m])) > 0
+        for: 15m
+        labels: {severity: ticket}
+        annotations:
+          summary: "Telemetry being dropped: the exporter or collector is unavailable"
+          runbook: "RB-12 telemetry degraded"

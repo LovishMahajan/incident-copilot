@@ -1,12 +1,14 @@
 # AI SRE Platform: Worksheet Docs
 
+This folder is the artifact filing. The code the team builds on is in `src/`, `db/`, `ops/` and `tests/` at the repo root (ADR-67), and each layer's `files/` folder keeps the copy that artifact was written against.
+
 One folder per worksheet layer. Each holds the team's question answers (`conversation.md`), the artifact that layer's sheet requires, and the files used in that layer.
 
 Start with a layer's `conversation.md` to read the reasoning, then its artifact for the consolidated result.
 
 ## Layers
 
-Answers are complete for Layers 1–12. Artifacts have had their gaps and conflicts resolved through the proposed [decision register](decisions.md), and all of it is pending team sign-off. Layer 13 is not started.
+Answers are complete for Layers 1–12. Artifacts have had their gaps and conflicts resolved through the proposed [decision register](decisions.md), and all of it is pending team sign-off. Layer 13's answers are a Claude draft for the team to review, not team answers.
 
 | # | Layer | Central question | Qs | Conversation | Artifact | Sections complete | Files |
 | --- | --- | --- | --- | --- | --- | --- | --- |
@@ -22,9 +24,9 @@ Answers are complete for Layers 1–12. Artifacts have had their gaps and confli
 | 10 | Inference Engineering and Knowledge Retrieval | How do we run models reliably and give them the right information? | 64 | [conversation](layers/layer-10-inference-retrieval/conversation.md) | [Inference and Retrieval Specification](layers/layer-10-inference-retrieval/artifact-10-inference-and-retrieval-specification.md) | 9 of 13 | 6 |
 | 11 | Patch Generation, Sandboxing, Approval and Execution | How does a recommendation become a controlled, verified change? | 92 | [conversation](layers/layer-11-safe-remediation/conversation.md) | [Safe Remediation Specification](layers/layer-11-safe-remediation/artifact-11-safe-remediation-specification.md) | 12 of 13 | 6 |
 | 12 | Reliability, Observability and Evaluation | How do we establish that it works under realistic failure? | 83 | [conversation](layers/layer-12-reliability-evaluation/conversation.md) | [Reliability and Evaluation Specification](layers/layer-12-reliability-evaluation/artifact-12-reliability-and-evaluation-specification.md) | 9 of 11 | 5 |
-| 13 | Implementation Planning and Delivery | How do we build it? | 58 | Not started | Complete Implementation Plan | — | — |
+| 13 | Implementation Planning and Delivery | How do we build it? | 58 | [conversation](layers/layer-13-implementation-planning/conversation.md) | [Complete Implementation Plan](layers/layer-13-implementation-planning/artifact-13-complete-implementation-plan.md) | 10 of 12 | — |
 
-**99 of 114 sections are complete.** The other 15 are marked `**Needs the team:**` or `**Needs measurement:**`, because each depends on something only the team can supply. Every former gap and conflict appears in its artifact's "Decisions and conflicts" table, with how it was resolved.
+**Layers 1–12: 99 of 114 sections are complete.** The other 15 are marked `**Needs the team:**` or `**Needs measurement:**`, because each depends on something only the team can supply. Every former gap and conflict appears in its artifact's "Decisions and conflicts" table, with how it was resolved.
 
 ## Start here for decisions
 
@@ -55,7 +57,7 @@ Both are the original documents, with a note at the top listing what is amended.
 
 **File names.** Most come from the code itself: imports, `Run:` lines and `alerts.yml` in `test_layer12.py`. Two are inferred, because nothing names them: `schema-tables.sql` and `contracts.py`.
 
-**Left out.** The team phone list in Room 7 is personal data and is not in this repo. The Layer 13 questions are not included because that layer has not been started.
+**Left out.** The team phone list in Room 7 is personal data and is not in this repo. 
 
 **Not read.** The shared Claude conversation needs sign-in, so it was not used. It is linked from each conversation log.
 
@@ -84,7 +86,7 @@ ADR-56's money values, including the $500 monthly ceiling and $2.00 per incident
 
 ### Layer 13
 
-The implementation plan is out of scope for this round and not started. The audit's M0–M5 milestones stay a Layer 13 question: Layers 1–12 keep M1–M4.
+Drafted, and it needs the most review. Tool choices (ruff, mypy, GitHub Actions), the milestone and task owners, and the M0 and M5 criteria are proposals with little source behind them. No ChatGPT comparison has been done. Artifact 13 has 81 tasks across M0–M5, with every active requirement, security test and remaining code item assigned to one.
 
 ### Source quirks kept as written
 
