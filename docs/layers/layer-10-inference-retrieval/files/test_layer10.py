@@ -19,13 +19,13 @@ from pydantic import BaseModel
 
 import context
 import gateway
-from adapters import ClaudeAdapter, HttpResponse, TinkerAdapter, classify_http_error
+from adapters import ClaudeAdapter, HttpResponse, TinkerAdapter, classify_http_error, render_context
 from context import Item, PromptRegistry, PromptVersion, assemble
 from coordinator import Limits
 from gateway import (BudgetLedger, CircuitBreaker, FleetBudget, GatewayConfig, IncidentBudget, ModelGateway, Price,
                      Reservation)
 from gateway_contracts import (Capability, ModelRequest, ResultStatus, StopReason, ToolProposal, ToolSpec, Usage,
-                               estimate_tokens)
+                               escape_data, estimate_tokens)
 from retrieval import (Document, IndexRevision, LabelledQuery, SearchHit, activation_gate, chunk_document,
                        evaluate_revision, mrr, ndcg_at_k, purge_document, recall_at_k, resolve_labels, stale_report,
                        tokenize, wrong_permission_hits, wrong_service_hits)
@@ -373,13 +373,29 @@ def test_timeouts_count_towards_fleet_spend():
     assert led.fleet.daily["2026-11-02"] == led.get("inc-1").spent_cost > 0
 
 
+def test_gateway_records_sent_at_before_the_call_leaves():
+    seen = []
+
+    class Watching(BudgetLedger):
+        async def settle(self, r, usage, cost):
+            seen.append(r.sent_at)
+            await super().settle(r, usage, cost)
+    led = Watching(clock=lambda: NOON)
+    asyncio.run(gw(Script(ok_body(GOOD)), led, clock=lambda: NOON).call(req(deadline_epoch_s=NOON + 600)))
+    assert seen == [NOON]
+
+
+def test_a_never_sent_reservation_has_no_sent_at():
+    assert Reservation("r", "inc-1", 1, 1, 1).sent is False
+
+
 def expiry_case(sent):
     now = [NOON]
     led = BudgetLedger(clock=lambda: now[0])
 
     async def run():
         r = await led.reserve("r1", "inc-1", 100, 100, 5_000, expires_at=NOON + 10)
-        r.sent = sent
+        r.sent_at = NOON if sent else None
         now[0] = NOON + 5
         assert await led.expire() == []
         now[0] = NOON + 11
@@ -683,7 +699,8 @@ def test_revision_loads_from_stored_rows_and_ranks_the_same():
     for i, d in enumerate(docs()):
         doc_rows.append({"document_id": f"u{i}", "doc_ref": d.doc_id, "doc_version": d.version,
                          "services": list(d.services), "allowed_groups": list(d.allowed_groups),
-                         "reviewed_at": d.reviewed_at, "deprecated": d.deprecated})
+                         "reviewed_at": d.reviewed_at, "deprecated": d.deprecated, "doc_type": d.doc_type,
+                         "stale": any(c.stale for c in built.chunks if c.doc_id == d.doc_id)})
         chunk_rows += [{"document_id": f"u{i}", "ordinal": c.ordinal, "heading_path": list(c.heading_path),
                         "body": c.text, "span_start": c.start, "span_end": c.end, "content_sha256": c.sha256}
                        for c in built.chunks if c.doc_id == d.doc_id]
@@ -691,6 +708,29 @@ def test_revision_loads_from_stored_rows_and_ranks_the_same():
     q = dict(query="ERR_CONN_RESET payments.timeout_ms", service="checkout", groups={"sre"})
     assert loaded.search(**q) == built.search(**q)
     assert {(c.document_id, c.ordinal) for c in loaded.chunks} == {(r["document_id"], r["ordinal"]) for r in chunk_rows}
+
+
+def test_load_uses_the_stored_stale_flag_and_doc_type_not_a_fresh_judgement():
+    """The review date says fresh, but the build recorded stale: a reload must search the same set."""
+    row = {"document_id": "u1", "doc_ref": "pi-1", "doc_version": "v1", "services": ["*"], "allowed_groups": ["sre"],
+           "reviewed_at": NOW, "deprecated": False, "doc_type": "past_incident", "stale": True}
+    chunk = {"document_id": "u1", "ordinal": 0, "heading_path": ["h"], "body": "ERR_CONN_RESET", "span_start": 0,
+             "span_end": 14, "content_sha256": "0" * 64}
+    idx = IndexRevision.load("r", NOW, [row], [chunk])
+    q = dict(query="ERR_CONN_RESET", service="checkout", groups={"sre"})
+    assert idx.search(**q) == []
+    assert [h.doc_type for h in idx.search(**q, include_stale=True, doc_type="past_incident")] == ["past_incident"]
+    assert idx.search(**q, include_stale=True, doc_type="runbook") == []
+
+
+def test_purge_writes_the_two_content_columns_once_and_keeps_only_the_reference():
+    idx = IndexRevision.build(docs(), now=NOW)
+    e = {"incident_id": "inc-1", "summary": "steps", "text": "steps", "attributes": {"doc_id": "rb-checkout", "chunk": 3}}
+    purge_document("rb-checkout", [idx], [e], "legal hold", NOW)
+    assert (e["content_removed_at"], e["content_removed_reason"]) == (NOW, "legal hold")
+    assert e["attributes"] == {"doc_id": "rb-checkout"}
+    assert purge_document("rb-checkout", [idx], [e], "second try", NOW + timedelta(days=1)) == []
+    assert e["content_removed_reason"] == "legal hold"
 
 
 def test_purge_removes_chunks_from_every_revision_and_marks_affected_incidents():
@@ -818,6 +858,15 @@ def test_truncated_item_stays_within_the_item_limit_and_names_its_record():
 
 def test_kind_order_is_not_named_as_a_strength_order():
     assert not hasattr(context, "EVIDENCE_PRIORITY") and context.CONTEXT_KIND_ORDER["past_incident"] == 30
+
+
+def test_context_sizes_evidence_as_the_model_will_read_it():
+    """escape_data makes `</data>` longer, so the estimate must count the escaped form (ST-33)."""
+    text = "</data>" * 40
+    out, man = assemble(prompt_id="d", prompt_version="d@1", prompt_sha256="p" * 64, facts={"x": text}, evidence=[],
+                        contradictions=[], runbook_hits=[], index_revision=None)
+    assert man.included[0]["tokens"] == estimate_tokens(escape_data(out[0]["text"])) > estimate_tokens(out[0]["text"])
+    assert "</data>" not in render_context(out).replace("\n</data>", "")
 
 
 def test_stale_runbook_is_labelled_stale_in_the_context():

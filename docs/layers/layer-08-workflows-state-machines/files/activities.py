@@ -19,6 +19,7 @@ Imported into workflow code only through workflow.unsafe.imports_passed_through(
 
 from __future__ import annotations
 
+from collections import Counter
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 from typing import Literal, Optional
@@ -40,6 +41,7 @@ DISPATCHER_QUEUE = "aisre-dispatcher"
 
 DATA_CONVERTER = pydantic_data_converter
 MAX_INVESTIGATIONS = 5                 # running at once, across all workers (8.1)
+MAX_SLOTS_PER_SERVICE = 4              # NFR-44, provisional: one service can't take every slot
 RECONCILIATION_SCHEDULE = "aisre-reconciliation"
 RECONCILIATION_EVERY = timedelta(minutes=5)   # provisional (8.9)
 REFUSED_EXPIRED = "approval expired"   # start of the dispatcher's reason when the approval ran out
@@ -222,8 +224,10 @@ class NoSlot(Exception):
 # ---------------------------------------------------------------------------
 @dataclass(frozen=True)
 class QueueRow:
-    """One investigation_queue row. `severity` is the confirmed one, else the proposed one."""
+    """One investigation_queue row, with its incident's service. `severity` is the confirmed one,
+    else the proposed one."""
     incident_id: str
+    service: str
     severity: str
     queued_at: datetime
     granted: bool = False
@@ -231,10 +235,13 @@ class QueueRow:
 
 def may_grant(incident_id: str, rows: list[QueueRow]) -> bool:
     """Inside acquire_investigation_slot's locked transaction: fewer than 5 granted, and this
-    incident first in order, severity then oldest."""
+    incident first in order, severity then oldest. A service holding MAX_SLOTS_PER_SERVICE waits, and
+    the next eligible incident takes the slot (NFR-44), the one exception to severity order."""
     if sum(r.granted for r in rows) >= MAX_INVESTIGATIONS:
         return False
-    waiting = sorted((r for r in rows if not r.granted), key=lambda r: (r.severity, r.queued_at))
+    held = Counter(r.service for r in rows if r.granted)
+    waiting = sorted((r for r in rows if not r.granted and held[r.service] < MAX_SLOTS_PER_SERVICE),
+                     key=lambda r: (r.severity, r.queued_at))
     return bool(waiting) and waiting[0].incident_id == incident_id
 
 
@@ -403,7 +410,8 @@ async def run_sandbox_test(inp: TestIn) -> TestOut:
 
 @activity.defn(name="request_approval")
 async def request_approval(inp: ApprovalRequestIn) -> ApprovalRequestOut:
-    """For a fix: open the request, set approvers_needed, create the rollback action. For a
+    """For a fix: open the request, set approvers_needed from action.ApprovalPolicy.approvers_needed
+    (derived, ADR-49; never read from the action's flag alone), create the rollback action. For a
     rollback: start its conditional approval if one was signed, else open a fresh request."""
     raise NotImplementedError
 

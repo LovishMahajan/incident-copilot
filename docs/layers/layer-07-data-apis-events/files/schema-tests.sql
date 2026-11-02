@@ -132,9 +132,9 @@ INSERT INTO environments (environment_id, org_id, slug) VALUES (:env, :org, 'pro
 
 BEGIN;
 INSERT INTO incidents (incident_id, org_id, display_ref, service_id, environment_id, dedup_key,
-                       title, source, started_at, created_by)
+                       title, source, started_at, created_by, confirmed_severity, severity_confirmed_by)
   VALUES (:inc, :org, 'INC-2026-000001', :svc, :env, 'checkout:http_5xx', 'HTTP 500s',
-          'monitoring', now(), 'system:intake');
+          'monitoring', now(), 'system:intake', 'sev3', 'user:sam');
 INSERT INTO incident_budgets (incident_id, max_calls, max_input_tokens, max_output_tokens, max_cost_micros)
   VALUES (:inc, 30, 200000, 20000, 2000000);
 INSERT INTO incident_alerts (alert_id, incident_id, source_alert_id, fingerprint, payload)
@@ -259,8 +259,9 @@ SELECT pg_temp.must_equal('B4 an org-derived CloudEvent reads back',
 -- ---------------------------------------------------------------------------
 -- A second incident for the negative tests.
 SET ROLE aisre_app;
-INSERT INTO incidents (incident_id, org_id, display_ref, service_id, environment_id, dedup_key, title, source, started_at, created_by)
-  VALUES (:inc2, :org, 'INC-2026-000002', :svc, :env, 'checkout:latency', 'Slow', 'engineer', now(), 'user:sam');
+INSERT INTO incidents (incident_id, org_id, display_ref, service_id, environment_id, dedup_key, title, source, started_at, created_by,
+                       confirmed_severity, severity_confirmed_by)
+  VALUES (:inc2, :org, 'INC-2026-000002', :svc, :env, 'checkout:latency', 'Slow', 'engineer', now(), 'user:sam', 'sev3', 'user:sam');
 RESET ROLE;
 
 SELECT pg_temp.must_fail('C1 illegal incident open -> executing', format(
@@ -370,6 +371,26 @@ RESET ROLE;
 SELECT pg_temp.must_fail('E9 high-impact request needs two approvers', format(
   $$INSERT INTO approval_requests (approval_request_id, action_id, requested_by, escalate_at, expires_at, approvers_needed)
     VALUES (gen_random_uuid(), %L, 'system:workflow', now(), now(), 1)$$, :act3), 'two approvers');
+-- The flag is false on each of these: the database derives high impact, as action.is_high_impact does.
+CREATE FUNCTION pg_temp.one_approver(kind text, inc text, svc text, env text, h text) RETURNS text
+LANGUAGE sql AS $$
+  SELECT format($f$INSERT INTO actions (action_id, incident_id, diagnosis_id, kind, target_service_id, target_environment_id, target_deployment,
+      base_revision, expected_after_revision, description, expected_effect, risk, undo_plan, recovery_criteria, recovery_predicates_digest, high_impact, policy_version)
+    VALUES ('00000000-0000-7000-8000-000000000299', %L, '00000000-0000-7000-8000-000000000403', %L, %L, %L, 'd', 'r', 's', 'd', 'e', 'r', 'u', '[]', %L, false, 'p@1');
+    INSERT INTO approval_requests (approval_request_id, action_id, requested_by, escalate_at, expires_at, approvers_needed)
+    VALUES (gen_random_uuid(), '00000000-0000-7000-8000-000000000299', 'system:workflow', now(), now(), 1)$f$, inc, kind, svc, env, h)
+$$;
+SELECT pg_temp.must_fail('E12 a release rollback needs two approvers whatever the flag says',
+  pg_temp.one_approver('release_rollback', :inc2, :svc, :env, :h_b), 'two approvers');
+SELECT pg_temp.must_fail('E13 severity not confirmed needs two approvers', format(
+  $$UPDATE incidents SET confirmed_severity = NULL, severity_confirmed_by = NULL, version = version + 1 WHERE incident_id = %L; %s$$,
+  :inc2, pg_temp.one_approver('config_revert', :inc2, :svc, :env, :h_b)), 'two approvers');
+SELECT pg_temp.must_fail('E14 a critical service needs two approvers', format(
+  $$UPDATE services SET critical = true WHERE service_id = %L; %s$$,
+  :svc, pg_temp.one_approver('config_revert', :inc2, :svc, :env, :h_b)), 'two approvers');
+-- Reaching the division proves both inserts passed, and the error rolls them back.
+SELECT pg_temp.must_fail('E15 an ordinary change on a confirmed incident takes one approver', format(
+  $$%s; SELECT 1 / 0$$, pg_temp.one_approver('config_revert', :inc2, :svc, :env, :h_b)), 'division by zero');
 INSERT INTO approval_requests (approval_request_id, action_id, requested_by, escalate_at, expires_at, approvers_needed)
   VALUES (:req3, :act3, 'user:sam', now() + interval '15 minutes', now() + interval '60 minutes', 2);
 
@@ -407,6 +428,14 @@ UPDATE approval_requests SET closed_at = now(), close_reason = 'decided' WHERE a
 SELECT pg_temp.must_fail('F11 a closed request stays closed', format(
   $$UPDATE approval_requests SET close_reason = 'voided' WHERE approval_request_id = %L$$, :req3), 'write-once');
 UPDATE actions SET status = 'approved', version = version + 1 WHERE action_id = :act3;
+SELECT pg_temp.must_fail('F15 a withdrawn action cannot move to applying', format(
+  $$UPDATE actions SET status = 'withdrawn', version = version + 1 WHERE action_id = %1$L;
+    UPDATE actions SET status = 'applying', version = version + 1 WHERE action_id = %1$L$$, :act3), 'illegal action transition');
+SELECT pg_temp.must_fail('F16 a withdrawn action takes no attempt', format(
+  $$UPDATE actions SET status = 'withdrawn', version = version + 1 WHERE action_id = %1$L;
+    SET LOCAL ROLE aisre_dispatcher;
+    INSERT INTO execution_attempts (attempt_id, action_id, approval_id, action_digest, execution_key, attempt_no)
+    VALUES (gen_random_uuid(), %1$L, %2$L, %3$L, %1$L, 1)$$, :act3, :apv3, :h_a), 'action is withdrawn, not applying');
 SELECT pg_temp.must_fail('F13 dispatcher cannot withdraw an approved action', format(
   $$SET LOCAL ROLE aisre_dispatcher; UPDATE actions SET status = 'withdrawn', version = version + 1 WHERE action_id = %L$$, :act3), 'permission denied');
 SELECT pg_temp.must_pass('F14 dispatcher moves approved -> applying', format(

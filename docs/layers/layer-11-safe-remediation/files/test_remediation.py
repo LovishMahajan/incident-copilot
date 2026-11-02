@@ -16,9 +16,10 @@ from datetime import datetime, timedelta, timezone
 import pytest
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 
-from action import (ApprovalError, ApprovalPolicy, Directory, ImmutableAction, MATRIX, Perm, Role, Signer, Standing,
+from action import (ApprovalError, ApprovalPolicy, Directory, ImmutableAction, ImpactFacts, MATRIX, Perm, Role, Signer, Standing,
                     Target, evaluate, record_decision)
 from dispatcher import (Dispatcher, Ledger, LedgerEntry, LedgerState, Outcome, ReleaseInProgress, TargetState)
+from fence import FenceState
 from patch import DEFAULT_POLICY, EditPolicy, PatchRejected, build_patch_from_contents, check_boundaries
 from sandbox import (REQUIRED_SUITES, ResultBundle, SandboxSpec, SpecRejected, SuiteResult, TestOutcome, classify,
                      launch_args, read_bundle, reap, run_sandbox, validate_args, volume_args)
@@ -348,6 +349,7 @@ KEY = Ed25519PrivateKey.generate()
 SIGNER = Signer("k1", KEY)
 KEYS = {"k1": KEY.public_key()}
 POLICY = ApprovalPolicy()
+ORDINARY = ImpactFacts("sev2")
 
 
 def action(high_impact=False, **kw):
@@ -371,7 +373,7 @@ def directory():
 def rows(a, subject, decision="approved", now=T0, d=None, prior=(), **kw):
     state = dict(action_status="awaiting_approval", request_open=True, intent_recorded=False, events=[],
                  auth_time=now - timedelta(minutes=2), mfa=True, policy=POLICY, approval_id=str(uuid.uuid4()),
-                 proposer_subjects={"system:workflow"})
+                 proposer_subjects={"system:workflow"}, impact=ORDINARY)
     state.update(kw)
     return record_decision(action=a, subject=subject, decision=decision, now=now, directory=d or directory(),
                            signer=SIGNER, presented_digest=state.pop("digest", a.digest), prior=list(prior), **state)
@@ -394,7 +396,7 @@ def test_approval_binds_to_action_digest_and_is_signed():
     a = action()
     d = decide(a, "priya")
     assert d.action_digest == a.digest
-    assert evaluate(a, [d], now=T0, keys=KEYS, directory=directory(), policy=POLICY, requested_at=T0)[0] == Standing.APPROVED
+    assert evaluate(a, [d], now=T0, keys=KEYS, directory=directory(), policy=POLICY, impact=ORDINARY, requested_at=T0)[0] == Standing.APPROVED
 
 
 def test_stale_view_refused():
@@ -414,7 +416,7 @@ def test_who_cannot_approve(subject, code):
 def test_old_sign_in_refused():
     a = action()
     with pytest.raises(ApprovalError) as e:
-        record_decision(action=a, subject="priya", decision="approved", auth_time=T0 - timedelta(hours=1), mfa=True,
+        record_decision(impact=ORDINARY, action=a, subject="priya", decision="approved", auth_time=T0 - timedelta(hours=1), mfa=True,
                         now=T0, directory=directory(), policy=POLICY, signer=SIGNER, approval_id="x",
                         presented_digest=a.digest, proposer_subjects=set(), action_status="awaiting_approval",
                         request_open=True, intent_recorded=False, events=[])
@@ -425,22 +427,22 @@ def test_tampered_or_changed_action_invalidates_approval():
     a = action()
     d = decide(a, "priya")
     changed = action(action_id=a.action_id, patch_sha256="f" * 64)        # same ID, different content
-    assert evaluate(changed, [d], now=T0, keys=KEYS, directory=directory(), policy=POLICY, requested_at=T0)[0] == Standing.PENDING
+    assert evaluate(changed, [d], now=T0, keys=KEYS, directory=directory(), policy=POLICY, impact=ORDINARY, requested_at=T0)[0] == Standing.PENDING
     forged = d.__class__(**{**d.__dict__, "subject": "mallory"})
-    assert evaluate(a, [forged], now=T0, keys=KEYS, directory=directory(), policy=POLICY, requested_at=T0)[0] == Standing.PENDING
+    assert evaluate(a, [forged], now=T0, keys=KEYS, directory=directory(), policy=POLICY, impact=ORDINARY, requested_at=T0)[0] == Standing.PENDING
 
 
 def test_rejection_wins_over_approval():
     a = action()
     ok = decide(a, "priya")
     no = decide(a, "sam", decision="rejected", reason="touches the wrong key")
-    assert evaluate(a, [ok, no], now=T0, keys=KEYS, directory=directory(), policy=POLICY, requested_at=T0)[0] == Standing.REJECTED
+    assert evaluate(a, [ok, no], now=T0, keys=KEYS, directory=directory(), policy=POLICY, impact=ORDINARY, requested_at=T0)[0] == Standing.REJECTED
 
 
 def test_high_impact_needs_two_people_and_revocation_counts():
     a = action(high_impact=True)
     one = decide(a, "priya")
-    st = lambda ds: evaluate(a, ds, now=T0, keys=KEYS, directory=directory(), policy=POLICY, requested_at=T0)[0]
+    st = lambda ds: evaluate(a, ds, now=T0, keys=KEYS, directory=directory(), policy=POLICY, impact=ORDINARY, requested_at=T0)[0]
     assert st([one]) == Standing.PENDING
     two = decide(a, "sam")
     assert st([one, two]) == Standing.APPROVED
@@ -452,12 +454,12 @@ def test_lost_permission_and_policy_change_and_expiry():
     a = action()
     d = decide(a, "priya")
     gone = Directory({("sam", "checkout"): {Role.INCIDENT_LEAD}})
-    assert evaluate(a, [d], now=T0, keys=KEYS, directory=gone, policy=POLICY, requested_at=T0)[0] == Standing.PENDING
+    assert evaluate(a, [d], now=T0, keys=KEYS, directory=gone, policy=POLICY, impact=ORDINARY, requested_at=T0)[0] == Standing.PENDING
     newpol = ApprovalPolicy(version="approval-policy@2")
-    assert evaluate(a, [d], now=T0, keys=KEYS, directory=directory(), policy=newpol, requested_at=T0)[0] == Standing.PENDING
+    assert evaluate(a, [d], now=T0, keys=KEYS, directory=directory(), policy=newpol, impact=ORDINARY, requested_at=T0)[0] == Standing.PENDING
     late = T0 + timedelta(minutes=16)
-    assert evaluate(a, [d], now=late, keys=KEYS, directory=directory(), policy=POLICY, requested_at=T0)[0] == Standing.PENDING
-    assert evaluate(a, [], now=T0 + timedelta(minutes=61), keys=KEYS, directory=directory(), policy=POLICY,
+    assert evaluate(a, [d], now=late, keys=KEYS, directory=directory(), policy=POLICY, impact=ORDINARY, requested_at=T0)[0] == Standing.PENDING
+    assert evaluate(a, [], now=T0 + timedelta(minutes=61), keys=KEYS, directory=directory(), policy=POLICY, impact=ORDINARY,
                     requested_at=T0)[0] == Standing.EXPIRED
 
 
@@ -546,7 +548,7 @@ def test_nobody_is_sole_approver_of_a_revert_of_their_own_change():
     refused("self_approval", a, "priya", change_author="priya")                      # ST-07
     assert decide(a, "sam", change_author="priya").subject == "sam"
     one = decide(hi, "priya", change_author="priya")                                 # the other must be someone else
-    st = lambda ds: evaluate(hi, ds, now=T0, keys=KEYS, directory=directory(), policy=POLICY, requested_at=T0)[0]
+    st = lambda ds: evaluate(hi, ds, now=T0, keys=KEYS, directory=directory(), policy=POLICY, impact=ORDINARY, requested_at=T0)[0]
     assert st([one]) == Standing.PENDING and st([one, decide(hi, "sam", change_author="priya")]) == Standing.APPROVED
 
 
@@ -571,7 +573,7 @@ def test_decisions_record_both_policies_and_a_change_to_either_voids_them():
     d = decide(a, "priya")
     assert d.policy_version == f"{DEFAULT_POLICY.policy_version}|{POLICY.version}" == a.policy_version
     other = ApprovalPolicy(edit_version="edit-policy@2")
-    assert evaluate(a, [d], now=T0, keys=KEYS, directory=directory(), policy=other, requested_at=T0)[0] == Standing.PENDING
+    assert evaluate(a, [d], now=T0, keys=KEYS, directory=directory(), policy=other, impact=ORDINARY, requested_at=T0)[0] == Standing.PENDING
 
 
 def test_all_four_approval_timers_have_one_home():
@@ -625,7 +627,7 @@ def sign_both(fix, back, subject, **kw):
 
 
 def standing(a, ds, at=T0, verdict=None):
-    return evaluate(a, ds, now=at, keys=KEYS, directory=directory(), policy=POLICY, requested_at=T0, parent_verdict=verdict)[0]
+    return evaluate(a, ds, now=at, keys=KEYS, directory=directory(), policy=POLICY, impact=ORDINARY, requested_at=T0, parent_verdict=verdict)[0]
 
 
 def test_signing_the_rollback_writes_a_second_signed_row():
@@ -718,6 +720,15 @@ class Store:
     def verdict(self, action_id):
         return self.verdicts.get(action_id)
 
+    def status(self, _):
+        return "approved"
+
+    def impact(self, _):
+        return ORDINARY
+
+    def patch_content(self, _):
+        return patch().canonical_bytes()
+
 
 class FakeRelease:
     """Keeps its own action-key ledger (Q11.72) and can lose responses."""
@@ -748,8 +759,18 @@ class FakeRelease:
 
 
 def disp(a, ds, rel, ledger=None):
-    return Dispatcher(Store(a, ds), rel, ledger or Ledger(), KEYS, directory(), POLICY, clock=lambda: T0 + timedelta(minutes=1),
+    return Dispatcher(Store(a, ds), rel, ledger or Ledger(), KEYS, directory(), POLICY, fence=FenceState(), clock=lambda: T0 + timedelta(minutes=1),
                       call_timeout_s=0.05)
+
+
+def test_high_impact_is_derived_and_a_false_flag_lowers_nothing():
+    a = action(high_impact=False)
+    assert POLICY.approvers_needed(a, ORDINARY) == 1
+    assert POLICY.approvers_needed(action(high_impact=True), ORDINARY) == 2
+    assert POLICY.approvers_needed(action(kind="release_rollback", patch_sha256=None), ORDINARY) == 2
+    for facts in (ImpactFacts(None), ImpactFacts("sev1"), ImpactFacts("sev2", critical=True), ImpactFacts("sev2", deployments=2),
+                  ImpactFacts("sev2", parent_kind="release_rollback")):
+        assert POLICY.approvers_needed(a, facts) == 2
 
 
 def test_dispatch_applies_once_and_is_idempotent():
@@ -859,7 +880,7 @@ def blocked_pair():
 def test_an_unknown_outcome_blocks_the_deployment_for_every_key():
     first, second, store, led = blocked_pair()
     rel = FakeRelease()
-    d = Dispatcher(store, rel, led, KEYS, directory(), POLICY, clock=lambda: T0 + timedelta(minutes=1))
+    d = Dispatcher(store, rel, led, KEYS, directory(), POLICY, fence=FenceState(), clock=lambda: T0 + timedelta(minutes=1))
     r = asyncio.run(d.execute(second.action_id))
     assert r.outcome == Outcome.REFUSED and first.action_id in r.reason and rel.apply_calls == 0
     assert led.get(second.action_id) is None and [e.execution_key for e in led.unresolved("checkout-prod-eu1")] == [first.action_id]
@@ -880,7 +901,7 @@ def test_a_started_attempt_blocks_too_and_the_block_cannot_be_raced():
     store = Store(a, [], others=[b])
     store.by_action = {a.action_id: [decide(a, "priya")], b.action_id: [decide(b, "sam")]}
     rel, led = YieldingRelease(), Ledger()
-    d = Dispatcher(store, rel, led, KEYS, directory(), POLICY, clock=lambda: T0 + timedelta(minutes=1))
+    d = Dispatcher(store, rel, led, KEYS, directory(), POLICY, fence=FenceState(), clock=lambda: T0 + timedelta(minutes=1))
 
     async def both():
         return await asyncio.gather(d.execute(a.action_id), d.execute(b.action_id))
@@ -998,7 +1019,7 @@ RESOLVED = dict(subject="sam", observed_revision="a1b2c3d4", reason="checked the
 def test_a_persons_resolution_clears_the_block():
     first, second, store, led = blocked_pair()
     rel = FakeRelease()
-    d = Dispatcher(store, rel, led, KEYS, directory(), POLICY, clock=lambda: T0 + timedelta(minutes=1))
+    d = Dispatcher(store, rel, led, KEYS, directory(), POLICY, fence=FenceState(), clock=lambda: T0 + timedelta(minutes=1))
     r = d.resolve_outcome(first.action_id, outcome="not_applied", **RESOLVED)
     assert r.outcome == Outcome.NOT_APPLIED and led.action_status[first.action_id] == "not_applied"
     last = led.get(first.action_id)
@@ -1030,7 +1051,7 @@ def rollback_dispatch(verdict, revision="e5f6a7b8"):
     _, cond = sign_both(fix, back, "priya")
     rel, led = FakeRelease(revision=revision), Ledger()
     store = Store(back, [cond], verdicts={fix.action_id: verdict})
-    d = Dispatcher(store, rel, led, KEYS, directory(), POLICY, clock=lambda: T0 + timedelta(minutes=20))
+    d = Dispatcher(store, rel, led, KEYS, directory(), POLICY, fence=FenceState(), clock=lambda: T0 + timedelta(minutes=20))
     return back, rel, led, asyncio.run(d.execute(back.action_id))
 
 

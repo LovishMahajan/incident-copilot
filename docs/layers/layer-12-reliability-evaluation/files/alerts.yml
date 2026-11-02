@@ -195,10 +195,12 @@ groups:
           summary: "An approval request has waited over 15 minutes"
           runbook: "RB-08 approval backlog"
       - alert: AisreApprovalRefused
-        expr: sum(increase(aisre_approval_refused_total[5m])) > 0
+        # Identity, rights and digest only: action.SECURITY_ALERT_CODES (tested equal). Every refusal
+        # still writes its aisre.approval.refused.v1 event; a retry or a late approval doesn't page.
+        expr: sum(increase(aisre_approval_refused_total{reason=~"digest_mismatch|forbidden|not_found|not_own_approval|reauth_required|self_approval"}[5m])) > 0
         labels: {severity: page, route: security_lead}
         annotations:
-          summary: "A failed approval attempt (ADR-49)"
+          summary: "An approval attempt refused on identity, rights or digest (ADR-49, 11.6)"
           runbook: "RB-08 approval backlog"
       - alert: AisreVerificationFailureRate
         expr: |
@@ -222,6 +224,12 @@ groups:
         annotations:
           summary: "Production writes disabled for over 15 minutes"
           runbook: "RB-11 writes fenced"
+      - alert: AisreAuditChainBroken
+        expr: aisre_audit_chain_faults > 0
+        labels: {severity: page, route: security_lead}
+        annotations:
+          summary: "An incident's audit chain failed verification: the record may have been altered"
+          runbook: "RB-13 audit chain broken"
 
   - name: aisre-telemetry
     rules:

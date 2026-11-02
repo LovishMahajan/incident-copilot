@@ -2,7 +2,7 @@
 
 - **Layer:** 10, Inference Engineering and Knowledge Retrieval
 - **Built from:** Artifacts 2 and 9
-- **Status:** Proposed: gaps resolved 2026-11-02 per [decisions.md](../../decisions.md); pending team sign-off
+- **Status:** Proposed: gaps resolved and reference code aligned 2026-11-02 per [decisions.md](../../decisions.md); pending team sign-off
 - **Sources:** [conversation.md](conversation.md), [files/gateway_contracts.py](files/gateway_contracts.py), [files/adapters.py](files/adapters.py), [files/gateway.py](files/gateway.py), [files/retrieval.py](files/retrieval.py), [files/context.py](files/context.py), [files/test_layer10.py](files/test_layer10.py), [System Design](../../reference/system-design.md), [Technical Specification](../../reference/technical-specification.md), Layer [4](../layer-04-requirements/conversation.md), [6](../layer-06-system-architecture/conversation.md), [7](../layer-07-data-apis-events/conversation.md) (and [schema-tables.sql](../layer-07-data-apis-events/files/schema-tables.sql)), [8](../layer-08-workflows-state-machines/conversation.md) and [12](../layer-12-reliability-evaluation/conversation.md) conversations, [decisions.md](../../decisions.md), Anthropic public documentation (listed in 10.1)
 
 ## Required sections
@@ -160,6 +160,7 @@ Code: [files/gateway_contracts.py](files/gateway_contracts.py).
 | `max_output_tokens`, `temperature` | Generation limits. `temperature` is sent only to a provider that accepts it; Claude doesn't (10.1) |
 | `deadline_epoch_s` | The investigation's absolute deadline |
 | `call_timeout_s` | Per-call limit (≤ 60 s) |
+| `step_attempts_used` | Keeps a skill's re-call after `CONTEXT_EXCEEDED` inside the step's 3 attempts |
 | `model_alias` | Resolved to a pinned model by configuration |
 
 **ModelResult** ([Q10.14](conversation.md)): `request_id`, `attempt`; `status`, `stop_reason`; `content` blocks and `parsed`; `validation_errors`, `refusal_detail`, `error`; `usage`; `cost_micros`, `latency_ms`; `identity`; `provider_request_id`. Each attempt is stored as a `model_attempts` row, with the columns ADR-64 adds.
@@ -324,7 +325,7 @@ Code: `IncidentBudget`, `BudgetLedger` in [files/gateway.py](files/gateway.py).
 
 Reporting: cost per incident and per correct diagnosis (Artifact 9). "20 calls can't produce a surprise, because each was reserved within a cap before it was made" ([Q10.27](conversation.md)).
 
-`BudgetLedger` is an in-memory stand-in for `incident_budgets` and `budget_reservations`. The production implementation does the same arithmetic under a row lock in one transaction.
+`BudgetLedger` is an in-memory stand-in for `incident_budgets` and `budget_reservations`, and `FleetBudget` for the daily and monthly totals. The production implementation does the same arithmetic under a row lock in one transaction, writes `budget_reservations.sent_at` where the stand-in sets `Reservation.sent_at`, and derives fleet totals from settled reservations across workers.
 
 ## 10.6 Concurrency policy
 
@@ -372,14 +373,14 @@ At most 3 provider calls per step, never 27.
 | `TIMEOUT`, `RATE_LIMITED`, `PROVIDER_ERROR` | Yes | Backoff, within the deadline |
 | `REFUSED` | No | The same request would be refused again, and it costs budget. The step fails; the coordinator treats it as inconclusive, and hands over |
 | `AUTH_ERROR`, including the provider spend cap (10.3) | No | The platform alerts immediately; investigations degrade to evidence only until it's fixed |
-| `BAD_REQUEST` | No | Retrying changes nothing |
+| `BAD_REQUEST` | No | Retrying changes nothing. A model with no configured price also gets this, unsent |
 | `CAPABILITY_UNSUPPORTED`, `BUDGET_REFUSED`, `DEADLINE_PASSED` | No | No call is made. A request over the 16,000 per-call input limit gets `BUDGET_REFUSED` before any reservation (ADR-61) |
 
 After 3 attempts, the step fails, and the coordinator records it as inconclusive ([Q10.20](conversation.md)).
 
-**Circuit breaker** (ADR-61, provisional): in the gateway, per provider. It opens at 50% failures of at least 10 calls in 60 s, for 30 s. While open, calls return `PROVIDER_ERROR` without being sent or reserved, and the provider-outage behaviour below applies.
+**Circuit breaker** (ADR-61, provisional): in the gateway, per provider, and so per worker, because each gateway instance keeps its own. A failure is a timeout, rate limit, provider error or incomplete response. It opens at 50% failures of at least 10 calls in 60 s, for 30 s. While open, calls return `PROVIDER_ERROR` without being sent or reserved, and the provider-outage behaviour below applies.
 
-**Result reuse** (ADR-61): the same `input_sha256` within an incident reuses the recorded completed result, with no new reservation.
+**Result reuse** (ADR-61): the same `input_sha256` within an incident reuses the recorded completed result, with no new reservation. Only `OK` results are reused, keyed on the step's original request, so a step that retried is still reused whole. `ledger.completed` stands in for the lookup on `model_attempts`, where every attempt of a step must store the step's hash.
 
 **Why permanent errors aren't retried** ([Q10.38](conversation.md)): the key is wrong, expired or revoked, or the permission is missing. Retrying wastes time inside the deadline, adds load, may trip the provider's abuse protection, and hides an outage that needs a person.
 
@@ -413,7 +414,7 @@ The agreed outage behaviour is Artifact 2's: evidence and timeline only, no fix 
 
 *Answers Q10.25, Q10.26, Q10.34–Q10.36.*
 
-Code: `Usage` in [files/gateway_contracts.py](files/gateway_contracts.py); `estimate_tokens`, `cost_micros`, `BudgetLedger.settle` in [files/gateway.py](files/gateway.py).
+Code: `Usage`, `estimate_tokens` in [files/gateway_contracts.py](files/gateway_contracts.py); `cost_micros`, `BudgetLedger.settle` in [files/gateway.py](files/gateway.py).
 
 **Unit:** tokens, as reported by the provider, converted to money with the configured price per million tokens for the model that ran the call. All estimates use one shared function (ADR-61). Money is stored as whole millionths of the currency unit (Artifact 7), so there are no rounding errors ([Q10.25](conversation.md)).
 
@@ -434,10 +435,10 @@ The coordinator's model-call count and the ledger agree, because both count atte
 | Mark | `Usage.reported = false` |
 | Charge | The full reservation, the pessimistic maximum, to the incident (tested). A timeout or broken stream is included (ADR-61) |
 | Record | The `model_attempts` row is reported as estimated, at the charged amount (ADR-61) |
-| Reconcile | Add to `pending_reconcile`: a daily job compares these with the provider's usage records or billing export, and corrects the ledger |
+| Reconcile | Add to `pending_reconcile`: a daily job compares these with the provider's usage records or billing export, and corrects the ledger. A settled reservation never changes, so the correction is a `reservation_corrections` row (Artifact 7) |
 | Count | Frequent missing usage from a provider is an alert |
 
-The code treats a timeout and any non-200 response as missing usage, so a 401 is also charged in full and queued for reconciliation. That matches "only a call that provably never left the process is released" ([Q10.36](conversation.md)). The daily job and the alert are listed code changes.
+The code treats a timeout and any non-200 response as missing usage, so a 401 is also charged in full and queued for reconciliation. That matches "only a call that provably never left the process is released" ([Q10.36](conversation.md)). `BudgetLedger.reconcile` corrects in the charged period and alerts above 20 pending, reusing the `AisreUnreconciledUsage` threshold. Scheduling the job and fetching provider records remain.
 
 ## 10.9 BM25 ingestion and search
 
@@ -507,7 +508,10 @@ Code: [files/retrieval.py](files/retrieval.py). Nothing here calls a model.
 
 - Deletion builds a new index revision without the document, activated straight away: it does not wait for the 10.13 gate, which runs afterwards. New searches no longer return it (tested).
 - Old revisions keep it, only for reproducing past investigations, readable by incident reviewers, never searched by new investigations.
-- If the deletion was for legal or safety reasons, the document's chunks are purged from every revision, and the affected evidence records are marked "content removed". This is the only change to an existing revision, and it is recorded on the timeline of each affected incident.
+- If the deletion was for legal or safety reasons, the document's chunks are purged from every revision, and the affected evidence records are marked "content removed". This is the only change to an existing revision, and it is recorded on the timeline of each affected incident as `aisre.evidence.content_removed.v1`.
+- `purge_document` covers the chunks held by loaded revisions, the evidence and the events, in memory. The evidence write is the one Artifact 7 allows: `content_removed_at` and `content_removed_reason`, set once, after which a trigger clears the extract. The code doesn't issue that update yet.
+
+**Needs the team:** legal deletion of runbook text, Owner: Security lead, settled when: a deletion path is decided. `documents` and `chunks` are append-only, so `purge_document` can't remove body text from PostgreSQL.
 
 **Permissions** ([Q10.56](conversation.md)):
 
@@ -538,7 +542,7 @@ Tested: the "Revert config" chunk keeps its full path and its whole code block, 
 - the heading words are searchable with the body, so "500 after deploy" finds the steps under that heading
 - a step is never cut away from the section it belongs to
 
-Each chunk stores: `doc_id@version#ordinal`, heading path, text, start and end, SHA-256 fingerprint, services, allowed groups, stale flag.
+Each chunk stores: `doc_id@version#ordinal`, heading path, text, start and end, SHA-256 fingerprint, services, allowed groups, stale flag. `doc_id@version#ordinal` is the citation label; the stored key is `document_id` plus `ordinal`. In storage, the stale flag is `index_revision_documents.stale`, per build, because chunks are shared between revisions, and the document type is `documents.doc_type`, `runbook` or `past_incident`.
 
 ## 10.11 Context assembly
 
@@ -708,7 +712,7 @@ A label that no longer resolves fails the run until the owner relabels it.
 
 **Decisions.** All decisions in this layer are in the sections above.
 
-**Verification.** The 28 tests in `test_layer10.py` pass on a scratch copy of `files/`. The code behaviours below were confirmed by running that copy. `files/` was not changed.
+**Verification.** The 83 tests in `test_layer10.py` pass against `files/`, which implements this artifact. Six spot mutations (temperature, the 16,000 limit, the one truncation retry, the breaker, expiry, tool proposals) each failed the suite. The Partial items are in Reference code status below.
 
 **Needs the team:** disagreements between Claude and ChatGPT. `conversation.md` records none, Owner: Team, settled when: conversation logs are filled in.
 
@@ -716,17 +720,17 @@ A label that no longer resolves fails the run until the owner relabels it.
 
 | Limit | Section 9 value | Code | Result |
 | --- | --- | --- | --- |
-| Model calls per incident | 30 | `IncidentBudget.max_calls = 30` | Matches |
-| Tokens per incident | 200,000 input, 20,000 output | `max_input_tokens = 200_000`, `max_output_tokens = 20_000` | Matches |
-| Tokens per call | 16,000 input | Not enforced: a request of about 30,000 estimated input tokens went through. `assemble` takes `budget_tokens` with no default | Code change (C2, ADR-61) |
+| Model calls per incident | 30 | `IncidentBudget.max_calls`, from `Limits` | Matches |
+| Tokens per incident | 200,000 input, 20,000 output | `max_input_tokens`, `max_output_tokens`, from `Limits` | Matches |
+| Tokens per call | 16,000 input | Enforced before reservation: `BUDGET_REFUSED`. `assemble` defaults `budget_tokens` to 12,000 | Matches (C2, ADR-61) |
 | Attempts per step | 3 (original + 2 retries) | `GatewayConfig.max_attempts = 3` | Matches |
 | Time per model call | 60 s | `call_timeout_s` default 60, maximum 60 | Matches |
-| Investigation time | 15 min | No constant: the gateway enforces the `deadline_epoch_s` the caller passes | Matches in the answers; not in code |
+| Investigation time | 15 min | `Limits.investigation`, in Layer 9; the gateway enforces the `deadline_epoch_s` the caller passes | Matches |
 | Whole workflow | 24 h | Not in Layer 10 code | Outside the gateway |
 | Concurrent investigations | 5; queue up to 50 by severity | Not in Layer 10 code; Q10.30 states the 5 but not the 50 | Outside the gateway |
-| Daily spend, all incidents | $16.67 (ADR-56); alert at 80%, evidence-only at 100% | Not in code | Code change (C2) |
-| Monthly spend | $500 (ADR-56); alerts at 50%, 80%, 100% | Not in code | Code change (C2) |
-| Spend per incident | $2.00 (ADR-56) | `max_cost_micros = 2_000_000` | Matches |
+| Daily spend, all incidents | $16.67 (ADR-56); alert at 80%, evidence-only at 100% | `FleetBudget`, 16,666,666 micros, which is $500 ÷ 30 | Partial: logic matches, totals are in memory (C2) |
+| Monthly spend | $500 (ADR-56); alerts at 50%, 80%, 100% | `FleetBudget`, checked once per `call` | Partial: logic matches, totals are in memory (C2) |
+| Spend per incident | $2.00 (ADR-56) | `max_cost_micros`, from `Limits` | Matches |
 | Reservation before each call | Reserved, then actual replaces it | `BudgetLedger.reserve`, `settle` | Matches |
 | Database rejects totals above the limit | Stated | In-memory stand-in; the check is in Artifact 7's schema | Matches by design |
 
@@ -736,24 +740,24 @@ Limits in code that section 9 does not list: per-call output ≤ 16,000 (`max_ou
 
 | Item | Resolution | Decided by |
 | --- | --- | --- |
-| C1 Unsettled reservations | Sent with unknown usage: charged at the maximum. Never sent: released on expiry. `gateway.py` has no expiry yet | ADR-61 |
-| C2 Limits missing from code | Per-call input cap, daily and monthly ceilings go in the gateway. Per-incident cap is sourced from ADR-56 | ADR-56, ADR-61 |
+| C1 Unsettled reservations | Sent with unknown usage: charged at the maximum. Never sent: released on expiry. `BudgetLedger.expire` does this; a scheduled sweep remains | ADR-61 |
+| C2 Limits missing from code | Per-call input cap, daily and monthly ceilings are in the gateway. Per-incident cap is sourced from ADR-56, through `Limits` | ADR-56, ADR-61 |
 | C3 Over-limit context | Deterministic trimming by priority; no model-written summaries; narrow the scope if required items don't fit | ADR-61 |
-| C4 Truncation retries | One retry only, at double the limit, up to 16,000. Code loops today | ADR-61 |
-| C5 Context exceeded | Reassemble a smaller input; never raise the output limit. Code doubles it today | ADR-61 |
-| C6 Broken stream cost | Usage unknown, charged in full, reconciled later, whatever the body reports. `parse` to change | ADR-61 |
-| C7 Timeout attempt record | Reported as estimated, at the charged amount. `_final` to change | ADR-61 |
-| C8 Gateway features named elsewhere | Circuit breaker and `input_sha256` reuse are in the gateway (10.7). Not yet in code | ADR-61 |
+| C4 Truncation retries | One retry only, at double the limit, up to 16,000 | ADR-61 |
+| C5 Context exceeded | Reassemble a smaller input; never raise the output limit | ADR-61 |
+| C6 Broken stream cost | Usage unknown, charged in full, reconciled later, whatever the body reports | ADR-61 |
+| C7 Timeout attempt record | Reported as estimated, at the charged amount. `identity` is still none on this record: a `model_attempts` writer needs provider and model from configuration | ADR-61 |
+| C8 Gateway features named elsewhere | Circuit breaker and `input_sha256` reuse are in the gateway (10.7). The reuse store is a stand-in | ADR-61 |
 | C9 Where BM25 runs | PostgreSQL stores the corpus; the worker ranks. ADR-09 is amended | ADR-62 |
 | C10 Retention versus replay | Redacted model input and output, and cited evidence, are kept 1 year | ADR-57 |
 | C11 `model_attempts` narrower than needed | Columns added; task name `critique`. `schema.sql` is canonical | ADR-64 |
-| C12 Prompt fingerprint | Each attempt records version and text fingerprint. `ModelIdentity` and `Manifest` gain the field | ADR-63, ADR-64 |
+| C12 Prompt fingerprint | Each attempt records version and text fingerprint. `ModelIdentity` and `Manifest` carry the field | ADR-63, ADR-64 |
 | C13 Tinker capabilities | Declares nothing until conformance passes. Schema or tools imply the capability, so requests are refused, not stripped. Disabled returns `CAPABILITY_UNSUPPORTED`, not an exception | Layer decision (proposed) |
 | C14 Revision ID versus content | ID hashes document versions, permitted groups and the full build timestamp, so identical IDs mean identical results | ADR-62 |
 | C15 Tool proposals with a schema | Delivered to the gate, not treated as invalid output | ADR-61 |
-| C16 Estimators | One shared function | ADR-61 |
+| C16 Estimators | One shared function, `estimate_tokens` in `gateway_contracts.py`. Its `+16` is kept, so context items cost 12 tokens more than before | ADR-61 |
 | C17 ADR references | ADR-27 and ADR-38 are defined in the register; the ADR series continues there | ADR-27, ADR-38, ADR-45 |
-| C18 Answers claiming more than `files/` shows | All five are required behaviour, as these sections state: parallel refusal test (10.5), scope-hit metrics and gate (10.13), changed-since-review sets the stale flag, purge (both 10.9), restricted display (10.9). Each is a code change | Layer decision (proposed) |
+| C18 Answers claiming more than `files/` shows | All five are required behaviour, as these sections state: parallel refusal test (10.5), scope-hit metrics and gate (10.13), changed-since-review sets the stale flag, purge (both 10.9), restricted display (10.9). The parallel test, metrics and gate, and the stale flag are in the code, and purge is in part (10.9) | Layer decision (proposed) |
 | Claude rejects `temperature` (new) | The adapter's `temperature: 0` fails on every proposed model. Not sent; stored input and output are the record | Layer decision (proposed) |
 | Prompt release versus promotion gates (new) | ADR-63's development-split run gates the merge. ADR-65's held-out gates still apply before production | Layer decision (proposed) |
 | Deletion versus evaluate-before-activate (new) | Deletion activates at once, gate afterwards; removing content is the safer failure | Layer decision (proposed) |
@@ -761,6 +765,20 @@ Limits in code that section 9 does not list: per-call output ≤ 16,000 (`max_ou
 | Monthly ceiling at 100% (new) | Same as daily: evidence-only for new investigations, running ones stop after their step | Layer decision (proposed) |
 | Provider spend cap 429 (new) | Not retried, because access stays paused; handled as `AUTH_ERROR` | Layer decision (proposed) |
 | Query set before first activation (new) | No revision activates until the set exists; retrieval records a gap | Layer decision (proposed) |
+| Sonnet 5.5 cache-read price (new) | $0.10 stands: Anthropic's public pricing page, read 2026-11-02, gives $0.10 per million tokens, 0.05× input. The bundled API reference's $0.20 was wrong, and 10.1 and `CLAUDE_PRICES` needed no change | Layer decision (proposed) |
+
+**Reference code status.** What remains:
+
+| Item | What remains |
+| --- | --- |
+| Daily and monthly ledgers | Totals are in memory, so a real deployment must derive them from settled reservations across workers. Nothing reads `fleet.alerts` yet |
+| Reservations | No SQL: `BudgetLedger` is the stand-in. The gateway sets `Reservation.sent_at`; the write to Layer 7's column, and scheduling the expiry sweep, remain |
+| Result reuse | The lookup on `model_attempts` |
+| Reconciliation job | Scheduling and fetching provider records. Corrections must insert into `reservation_corrections` |
+| Corpus storage | `IndexRevision.load` rebuilds from `documents` and `chunks` rows, tested on row dicts, and ranks identically. It reads the stored `index_revision_documents.stale` and `documents.doc_type`. Real queries and the ingestion write path remain |
+| `purge_document` | Sets the two evidence columns and cuts `attributes` to the document reference, as `protect_evidence` does. The SQL update remains. Body text stays in PostgreSQL (10.9) |
+| Prompt files | `PromptRegistry` reads `prompts/<skill>/v<N>.md`. That folder doesn't exist yet |
+| Gateway dependency | `gateway.py` imports `coordinator.Limits`, so Layer 9's folder must be on the path |
 
 ## Acceptance checks
 

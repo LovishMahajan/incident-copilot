@@ -2,7 +2,7 @@
 
 - **Layer:** 2, Scope and Constraints
 - **Built from:** Artifact 1
-- **Status:** Proposed: gaps resolved 2026-11-02 per [decisions.md](../../decisions.md); pending team sign-off
+- **Status:** Proposed: gaps resolved and reference code aligned 2026-11-02 per [decisions.md](../../decisions.md); pending team sign-off
 - **Sources:** [conversation.md](conversation.md), [decisions.md](../../decisions.md), [System Design](../../reference/system-design.md), [Technical specification](../../reference/technical-specification.md), and, for assumption owners and later refinements, the conversations of [Layer 1](../layer-01-problem-discovery/conversation.md), [Layer 3](../layer-03-sre-fundamentals/conversation.md), [Layer 4](../layer-04-requirements/conversation.md), [Layer 6](../layer-06-system-architecture/conversation.md), [Layer 7](../layer-07-data-apis-events/conversation.md), [Layer 9](../layer-09-agent-architecture/conversation.md), [Layer 11](../layer-11-safe-remediation/conversation.md) and [Layer 12](../layer-12-reliability-evaluation/conversation.md)
 
 ## Required sections
@@ -401,7 +401,7 @@ These IDs are separate from the shared-known labels. **A1** is an assumption; **
 | Gap 2.7: the Q2.23 reasoning stops mid-sentence | The log feeds 2.7. The source sentence stays as it is, and 2.7 notes that it stops mid-way | Layer decision (proposed) |
 | Register entries lack Q2.23's assumption-link and validation-condition fields | Q2.23's field list stays the format. Until entries gain those fields, this layer's Assumptions table holds that link | Layer decision (proposed) |
 | Q2.13 tags every record; ADR-64 places `org_id` on top-level records only | Top-level records, reached by join elsewhere | ADR-64 |
-| Code only: monthly ceiling, daily limit and copy cap aren't in the reference code | Listed for the code changes | ADR-56 |
+| Code only: monthly ceiling, daily limit and copy cap | The ceiling and daily limit are in `gateway.py`, with totals in memory until the database ledger is built. The copy cap belongs to the Test Runner, which has no reference file yet | ADR-56 |
 
 ## Acceptance checks
 

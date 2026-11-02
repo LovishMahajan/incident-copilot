@@ -11,12 +11,14 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 from enum import Enum
-from typing import Callable, Optional
+from typing import Annotated, Callable, Optional
+from urllib.parse import unquote
 
-from pydantic import AwareDatetime, BaseModel, ConfigDict, Field, ValidationError, model_validator
+from pydantic import AfterValidator, AwareDatetime, BaseModel, ConfigDict, Field, ValidationError, model_validator
 
 from coordinator import Limits
 
@@ -41,6 +43,24 @@ class _P(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
 
 
+# ST-30: a query term never names a host. Provisional, like the output lists in validation.py.
+_ADDRESS = re.compile(
+    r"(?i)[a-z][a-z0-9+.-]*://|//[\w-]+\.[\w.-]+"                # a link or scheme-relative link
+    r"|\b\d{1,3}(?:\.\d{1,3}){3}\b|\b0x[0-9a-f]{8}\b"            # IPv4, dotted or as one hex number
+    r"|\[[0-9a-f.]*:[0-9a-f:.]*\]|(?<![\w:])::1?(?![\w:])|\bfe80:|\bf[cd][0-9a-f]{2}:"  # IPv6: bracketed, loopback, link-local, private
+    r"|\blocalhost\b|\bmetadata\.google\b"
+    r"|\b[\w-]+(?:\.[\w-]+)*\.(?:internal|local|localdomain|intranet|corp|lan|svc)\b")
+
+
+def _no_address(value: str) -> str:
+    if _ADDRESS.search(unquote(value)):
+        raise ValueError("an address is not a query term")
+    return value
+
+
+QueryText = Annotated[str, AfterValidator(_no_address)]
+
+
 class WindowParams(_P):
     service: str
     start: AwareDatetime
@@ -56,7 +76,7 @@ class WindowParams(_P):
 
 class LogQuery(WindowParams):
     level: Optional[str] = Field(default=None, pattern=r"^(error|warning|info)$")
-    contains: Optional[str] = Field(default=None, max_length=200)
+    contains: Optional[QueryText] = Field(default=None, max_length=200)
 
 
 class MetricQuery(WindowParams):
@@ -68,11 +88,11 @@ class ChangeQuery(WindowParams):
 
 
 class TraceQuery(WindowParams):
-    path: Optional[str] = Field(default=None, max_length=300)
+    path: Optional[QueryText] = Field(default=None, max_length=300)
 
 
 class ErrorGroupQuery(WindowParams):
-    release: Optional[str] = Field(default=None, max_length=100)
+    release: Optional[QueryText] = Field(default=None, max_length=100)
 
 
 class DependencyQuery(_P):
@@ -82,12 +102,12 @@ class DependencyQuery(_P):
 
 class AlertQuery(_P):
     service: str
-    alert_id: Optional[str] = Field(default=None, max_length=200)
+    alert_id: Optional[QueryText] = Field(default=None, max_length=200)
 
 
 class KnowledgeQuery(_P):
     service: str
-    query: str = Field(max_length=200)
+    query: QueryText = Field(max_length=200)
     k: int = Field(default=5, ge=1, le=10)
 
 
@@ -111,6 +131,7 @@ class Tool:
     max_output_bytes: int
     max_calls_per_incident: int
     handler: Optional[Callable] = None       # set by the platform at start-up
+    doc_type: Optional[str] = None           # the knowledge tools: retrieval.Document.doc_type to search
 
 
 DEFAULT_LOOKBACK = timedelta(minutes=60)
@@ -133,9 +154,9 @@ REGISTRY: dict[str, Tool] = {t.name: t for t in [
     Tool("get_dependency_health", ToolKind.READ, "Health of the service's dependencies at a time",
          DependencyQuery, "catalog:read:{service}", None, 32_000, 4),
     Tool("search_runbooks", ToolKind.READ, "Runbook passages matching a query",
-         KnowledgeQuery, "runbooks:read:{service}", None, 32_000, 3),
+         KnowledgeQuery, "runbooks:read:{service}", None, 32_000, 3, doc_type="runbook"),
     Tool("search_past_incidents", ToolKind.READ, "Past-incident passages matching a query",
-         KnowledgeQuery, "incidents:read:{service}", None, 32_000, 3),
+         KnowledgeQuery, "incidents:read:{service}", None, 32_000, 3, doc_type="past_incident"),
     Tool("draft_patch", ToolKind.PROPOSE, "Create a draft patch from the allowed list; never applied",
          PatchDraftParams, "review:propose:{service}", None, 64_000, 3),
     # WRITE tools: registered for the dispatcher only. agent_tools() never returns them.
@@ -167,6 +188,12 @@ def agent_tools(skill: str) -> list[Tool]:
 def tool_schema_for_model(skill: str) -> list[dict]:
     return [{"name": t.name, "description": t.description,
              "input_schema": t.params.model_json_schema()} for t in agent_tools(skill)]
+
+
+def search_knowledge(tool: Tool, params: KnowledgeQuery, index, groups: set[str]) -> list:
+    """Handler body for the two knowledge tools: `index` is a retrieval.IndexRevision. The tool, not
+    the model, picks the document type, as a filter before ranking (Q10.56)."""
+    return index.search(params.query, service=params.service, groups=groups, k=params.k, doc_type=tool.doc_type)
 
 
 # ---------------------------------------------------------------------------

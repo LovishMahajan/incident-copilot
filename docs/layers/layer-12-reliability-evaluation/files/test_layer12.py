@@ -19,9 +19,11 @@ from prometheus_client import generate_latest
 from prometheus_client.metrics import MetricWrapperBase
 
 import telemetry as t
+from action import SECURITY_ALERT_CODES
 from eval_harness import (CATEGORIES, AnswerKey, CanaryIncident, Case, CaseResult, ExperimentConfig, Gates, Rate, Scorecard,
                           SuiteManifest, canary_compare, cases_needed, check_single_variable, hash_fixture, is_correct,
                           majority_correct, paired_compare, percentile, promote, score)
+from validation import _SECRET_PATTERNS
 from fence import (INCIDENT_LEAD, PLATFORM_ADMIN, ActionRecord, Actor, FenceReason, FenceState, RecordedState,
                    reconcile_after_restore)
 
@@ -184,7 +186,7 @@ def alert_rules() -> list[dict]:
 
 def test_alert_rules_parse_and_name_runbooks():
     rules = alert_rules()
-    assert len(rules) == 31 and all(r["annotations"]["runbook"].startswith("RB-") for r in rules)
+    assert len(rules) == 32 and all(r["annotations"]["runbook"].startswith("RB-") for r in rules)
 
 
 def test_alert_rules_match_the_12_3_table():
@@ -195,7 +197,7 @@ def test_alert_rules_match_the_12_3_table():
         if len(cols) == 6 and cols[1].startswith("`Aisre"):
             spec[cols[1].split("`")[1]] = (cols[3], cols[4], cols[5])
     rules = {r["alert"]: (r.get("for", "none"), r["labels"]["severity"], r["annotations"]["runbook"]) for r in alert_rules()}
-    assert len(spec) == 31 and rules == spec
+    assert len(spec) == 32 and rules == spec
 
 
 def test_every_alert_selects_metrics_and_labels_in_the_catalog():
@@ -232,7 +234,25 @@ def test_alert_routing_exceptions():
     assert rules["AisreQueueDepthHigh"]["route"] == "incident_lead"
     assert rules["AisreApprovalRefused"]["route"] == "security_lead"
     assert rules["AisreApprovalBacklog"]["also_route"] == "incident_lead" and "route" not in rules["AisreApprovalBacklog"]
-    assert sum("route" in r or "also_route" in r for r in rules.values()) == 3
+    assert rules["AisreAuditChainBroken"]["route"] == "security_lead"
+    assert sum("route" in r or "also_route" in r for r in rules.values()) == 4
+
+
+def test_approval_refused_alert_selects_exactly_the_security_codes():
+    """11.6: identity, rights and digest refusals page. A retry or a late approval only writes its event."""
+    expr = next(r["expr"] for r in alert_rules() if r["alert"] == "AisreApprovalRefused")
+    assert set(re.search(r'reason=~"([^"]+)"', expr)[1].split("|")) == SECURITY_ALERT_CODES
+
+
+def test_a_broken_chain_pages_from_a_metric_in_the_catalog():
+    rule = next(r for r in alert_rules() if r["alert"] == "AisreAuditChainBroken")
+    assert t.audit_chain_faults._name in rule["expr"] and rule["labels"]["severity"] == "page"
+
+
+def test_credential_rows_match_the_output_checks_copy():
+    """Layer 9 keeps its own copy so it doesn't import prometheus_client. They must not drift."""
+    copy = [p.pattern for p in _SECRET_PATTERNS]
+    assert [p.pattern for p in t.SECRET_PATTERNS[:len(copy)]] == copy
 
 
 # ---------------------------------------------------------------- fence and restore

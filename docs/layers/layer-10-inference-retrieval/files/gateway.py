@@ -90,8 +90,12 @@ class Reservation:
     input_tokens: int
     output_tokens: int
     expires_at: float = float("inf")
-    sent: bool = False                         # set just before the call leaves the process
+    sent_at: Optional[float] = None            # write-once, just before the call leaves the process (ADR-61)
     charged_at: float = 0.0
+
+    @property
+    def sent(self) -> bool:
+        return self.sent_at is not None
 
 
 @dataclass
@@ -388,7 +392,7 @@ class ModelGateway:
         started = self.clock()
         try:
             timeout = min(req.call_timeout_s, max(0.1, req.deadline_epoch_s - self.clock()))   # Q10.33
-            res.sent = True
+            res.sent_at = self.clock()
             try:
                 resp, completed = await asyncio.wait_for(
                     self.transport(self.adapter.provider, body, timeout), timeout=timeout)

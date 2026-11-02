@@ -2,7 +2,7 @@
 
 - **Layer:** 11, Patch Generation, Sandboxing, Approval and Execution
 - **Built from:** Artifacts 5, 8 and 9
-- **Status:** Proposed: gaps resolved 2026-11-02 per [decisions.md](../../decisions.md); pending team sign-off
+- **Status:** Proposed: gaps resolved and reference code aligned 2026-11-02 per [decisions.md](../../decisions.md); pending team sign-off
 - **Sources:** [decisions.md](../../decisions.md), [conversation.md](conversation.md), [files/patch.py](files/patch.py), [files/sandbox.py](files/sandbox.py), [files/action.py](files/action.py), [files/dispatcher.py](files/dispatcher.py), [files/verification.py](files/verification.py), [files/test_remediation.py](files/test_remediation.py), [System Design](../../reference/system-design.md), [Technical specification](../../reference/technical-specification.md), [Layer 8 workflow.py](../layer-08-workflows-state-machines/files/workflow.py), [Layer 7 schema-tables.sql](../layer-07-data-apis-events/files/schema-tables.sql)
 
 ## Required sections
@@ -112,9 +112,9 @@ A new version from the model is a new patch with a new digest, needing a new tes
 | --- | --- | --- |
 | Malicious patch run on the production server ([Q11.13](conversation.md)) | It would run with the application's database credentials and customer data, network routes, secrets and cloud metadata, before any test or person could intervene | Generated code runs only in the isolated environment |
 | Escape to the host ([Q11.14](conversation.md)) | Ordinary containers share the host kernel | Container under gVisor (`runsc`; ADR-10), on a separate host from production and the platform's own processes (ADR-51) |
-| Credential theft ([Q11.22](conversation.md)) | Anything in the sandbox is readable by the untrusted code | Fake, test-only values and local stand-ins. The launcher passes only `AISRE_SANDBOX=1`, and refuses variables that look like secrets |
-| Docker socket ([Q11.23](conversation.md)) | Equivalent to root on the host | Launcher refuses any mount of `docker.sock`, `containerd`, `/proc`, `/sys`, `/dev`, `/etc` or the Docker data directory. The test host runs only sandboxes |
-| Patch changes the sandbox configuration ([Q11.33](conversation.md)) | It could add mounts, devices, capabilities, network or variables | `SandboxSpec` is versioned platform code; arguments come only from `launch_args` and are checked by `validate_args` |
+| Credential theft ([Q11.22](conversation.md)) | Anything in the sandbox is readable by the untrusted code | Fake, test-only values and local stand-ins. The launcher passes only `AISRE_SANDBOX=1`, and `validate_args` refuses any other variable |
+| Docker socket ([Q11.23](conversation.md)) | Equivalent to root on the host | `validate_args` allows one mount, the run's workspace volume, so `docker.sock`, `containerd`, `/proc`, `/sys`, `/dev`, `/etc` and the Docker data directory can't be mounted. The test host runs only sandboxes |
+| Patch changes the sandbox configuration ([Q11.33](conversation.md)) | It could add mounts, devices, capabilities, network or variables | `SandboxSpec` is versioned platform code; arguments come only from `launch_args`, and `validate_args` is an allow-list of what it emits, so an option nobody listed is refused |
 | Patch changes the launcher ([Q11.34](conversation.md)) | It could remove the isolation | Launcher is in the platform's own codebase; `sandbox/**` and `harness/**` are protected; the harness runs from the pinned image; platform changes need security-lead code-owner review through a separate pipeline |
 
 **Limits of ordinary containers** ([Q11.31](conversation.md)): a shared kernel; easy misconfiguration; runtime escape flaws; side channels and resource contention; default settings that vary. Hence gVisor, a dedicated host, validated launch arguments, and nothing valuable in reach.
@@ -160,9 +160,9 @@ Each sandbox gets its own cgroup, so one run's runaway process can't starve anot
 | --- | --- | --- |
 | Mount | Filesystem view | Read-only image, workspace volume, bounded tmpfs; no host paths |
 | Network | Interfaces and routes | `--network=none`: loopback only |
-| PID | Process tree | Private |
+| PID | Process tree | Private, Docker's default. There is no `--pid=private` flag: Docker refuses it |
 | IPC | Shared memory and queues | Private |
-| UTS | Host name | Private |
+| UTS | Host name | Private, Docker's default. Docker refuses `--uts=private` too |
 | User | User IDs | Runs as user 65534, never root |
 
 **Privileges** ([Q11.20](conversation.md)): `--user=65534:65534`, with user 0 or root refused; all Linux capabilities dropped; `no-new-privileges`; never `--privileged`, added capabilities or host devices; disabling default system-call filtering is refused.
@@ -171,12 +171,14 @@ Each sandbox gets its own cgroup, so one run's runaway process can't starve anot
 
 **Clean runs** ([Q11.29](conversation.md)): a fresh container from the pinned image, a new workspace volume checked out at `base_revision`, and the patch applied by the harness. No reused volumes, caches or databases. Each run has its own ID.
 
+**Needs the team:** how the checkout reaches the sandbox at `base_revision`, Owner: Security lead, settled when: a seeding method is chosen and run on the test host. A tmpfs volume exists only while mounted, and `--rm` with `--network=none` leaves no way in, so nothing can pre-seed it. The options are the Test Runner piping a tar on stdin, or a disk volume with a quota.
+
 **Cleanup** ([Q11.30](conversation.md)):
 
 - `--rm` deletes the container on exit; the launcher deletes the workspace volume.
 - A reaper runs every 5 minutes, removing any container or volume labelled `aisre.sandbox=1` older than 60 minutes (FR-23 target: none left after 60 minutes).
 - Cleanup is part of the Test Runner activity's `finally`; cancellation also triggers it.
-- Leftover counts are a platform metric, alerted above zero.
+- Leftover counts are a platform metric, alerted above zero. `reap()` returns the count; the Test Runner schedules it every 5 minutes and sets `aisre_sandboxes_leftover`.
 
 ## 11.5 Trusted test harness
 
@@ -217,6 +219,8 @@ A test the model wrote can be added as extra evidence, but never replaces these 
 - The harness reads results from its own test runner, not from files in the workspace.
 
 **`ResultBundle`** ([Q11.44](conversation.md), [Q11.45](conversation.md)): run ID, `patch_sha256` (computed by the harness from the applied content), base revision, image digest, sandbox spec version, harness version, reproduction before and after, each suite (required, ran, passed, failed, errors), new error signatures, exit code, duration, timed-out flag, and the fingerprint of the full log (secret-scanned, capped at 50 MB). Nothing else leaves: no workspace files, no binaries. The bundle's own digest goes into the action as `test_bundle_digest`.
+
+The bundle reaches the launcher as the last line of the harness's stdout, read by `read_bundle`. That is the only channel left, because `--rm` removes the container and a tmpfs volume empties with it. Suite errors and new error signatures are free text, so `read_bundle` masks secrets in them before they leave (ST-24). The harness must keep that stdout away from the tests, and must report at least one check in `error_signature`, or every run is `inconclusive`. Unreadable output is no bundle, which classifies as `crashed`. `read_bundle` takes `exit_code` from what Docker reported, not from the bundle.
 
 `exit_code` is the harness's own exit status, not the test runner's. It is 0 when the harness finished and wrote a bundle, even if tests failed. Non-zero means the harness itself died or was killed.
 
@@ -406,6 +410,8 @@ Service identities use least privilege (ADR-51). Security staff read the full au
 - the service is marked `critical` in the catalogue
 - the same change is proposed for more than one deployment (provisional). Each action names one deployment (11.8), so this marks every action in that set
 
+`is_high_impact` derives this from the action and from `ImpactFacts`, which trusted storage supplies: confirmed severity, the catalogue's `critical`, the deployment count and a rollback's parent kind. The `high_impact` field can add to the result and never lowers it. `record_decision`, `evaluate` and the database's `action_is_high_impact` all apply it.
+
 **Key separations** ([Q11.52](conversation.md)):
 
 - administrators can't approve changes
@@ -444,7 +450,7 @@ Service identities use least privilege (ADR-51). Security staff read the full au
 | `test_bundle_digest` | The passing harness result for this exact patch. A `rollback` copies the parent's |
 | `recovery_predicates_digest` | What "recovered" means, including the recorded baseline, fixed before execution. A `rollback` copies the parent's |
 | `hold_seconds` | The hold period, from the service catalogue (ADR-64, ADR-66). A `rollback` copies the parent's |
-| `high_impact` | Whether two approvers are needed. A `rollback` copies the parent's |
+| `high_impact` | Whether two approvers are needed, as recorded at creation. A `rollback` copies the parent's. The dispatcher re-derives the rule (11.7), so a false value lowers nothing |
 | `parent_action_id` | For a rollback, the action it reverses |
 | `created_at` | Creation time |
 
@@ -483,6 +489,10 @@ Service identities use least privilege (ADR-51). Security staff read the full au
 7. The target runs exactly `base_revision`. For a rollback, that is the revision the parent produced (ADR-48).
 8. No other deployment is in progress on the target.
 9. No unknown outcome is uncleared on this deployment, for any key (ADR-47).
+10. The write fence allows it: no global or deployment reason, and the dispatcher's token holds the current epoch (12.5). Checked first, and again with no await before the intent write.
+11. The action's status is `approved`, so a withdrawn or expired action is refused here, not only by the transition table.
+12. The stored patch bytes hash to the approved `patch_sha256` (ST-13). Unreadable content is a refusal. The artifact store holds `Patch.canonical_bytes()`, the bytes the fingerprint covers.
+13. A rollback's parent has a `failed` verdict, under a plain approval as well as a conditional one (ADR-48).
 
 Any failure means `REFUSED`, nothing sent, with the reason recorded. Check 9 and the intent record are one transaction.
 
@@ -513,11 +523,13 @@ Any failure means `REFUSED`, nothing sent, with the reason recorded. Check 9 and
 
 | Where | Mechanism | A repeat gets |
 | --- | --- | --- |
-| Dispatcher's ledger | Keyed by the action ID | `applied`: "already applied", with no second write. `unknown` or `started`: reconciliation, never a resend |
+| Dispatcher's ledger | Keyed by the action ID | `applied`: "already applied", with no second write. `unknown`, or `started` past the in-flight window: reconciliation, never a resend. `started` inside the window: `unknown`, with the row and the block unchanged |
 | Release process | Ledger keyed by execution key | Its recorded result |
 | Database | At most one `applied` attempt per execution key (`execution_attempts`) | Refused |
 
 **Ledger states** ([dispatcher.py](files/dispatcher.py)): `started` (intent, written before the write), `applied`, `not_applied`, `unknown`. An `applied` entry can never change state.
+
+**In-flight window** (ST-37): a `started` row may belong to a live call, whose write can still land, so a repeat or a reconciliation can't read "no such key" as `not_applied`. For twice the call timeout plus 5 s of clock drift, `reconcile` raises `ReleaseInProgress`, and the row and the deployment block stay. Past that, the row is taken as a dead dispatcher's. A first call that outlives the window writes nothing and never raises. If reconciliation already recorded `not_applied` and the call then saw the change land, it returns `unknown`, for a person to check.
 
 **Target's ledger** ([Q11.72](conversation.md)): key, received time, status, resulting revision. Keys are kept for at least 30 days.
 
@@ -556,14 +568,14 @@ A timeout only means we didn't hear back: the request may never have arrived, ma
 | --- | --- | --- |
 | Applied | Equals the expected revision after | `applied` |
 | Not found or failed | Equals the base | `not_applied` |
-| In progress | Any | Ask again with backoff, for up to 10 minutes (Artifact 8, 8.9) |
+| In progress | Any | `reconcile` raises the retryable `ReleaseInProgress`. It looks once per call, and Temporal's `READ_RETRY` asks again with backoff, for up to 10 minutes (Artifact 8, 8.5, 8.9) |
 | Disagreement, or still unclear | Any | `unknown`; hand over; a person checks |
 
 The release record alone never gives `applied`. `expected_after_revision` is required on every action (11.8), so the second source always exists. A fix that can't be compared stays `unknown`.
 
 Tested: a lost response reconciles to applied with one `apply` call; a lost request reconciles to not applied; the release saying applied while the revision is still the base stays unknown, with no resend. Retry rules are in 11.10 ([Q11.77](conversation.md), [Q11.78](conversation.md)).
 
-**Clearing an unknown outcome** (ADR-47). While a key stays `unknown`, the dispatcher refuses every action on that deployment. To clear it, the incident lead checks the target and calls `POST /v1/actions/{id}/outcome-resolutions` with the outcome (`applied` or `not_applied`), the observed revision and a reason. The call needs `action:resolve_outcome`, a recent sign-in with two-factor, `If-Match` and an `Idempotency-Key`, and uses the refusals in 11.6. The action then leaves `outcome_unknown`, and the record stays with the attempt.
+**Clearing an unknown outcome** (ADR-47). While a key stays `unknown`, the dispatcher refuses every action on that deployment. To clear it, the incident lead checks the target and calls `POST /v1/actions/{id}/outcome-resolutions` with the outcome (`applied` or `not_applied`), the observed revision and a reason. The call needs `action:resolve_outcome`, a recent sign-in with two-factor, `If-Match` and an `Idempotency-Key`, and uses the refusals in 11.6. The action then leaves `outcome_unknown`. The record stays with the attempts: a reconciliation row of `execution_attempts` carries `resolved_by`, `observed_revision` and `resolution_reason`, with the `aisre.execution.outcome_resolved.v1` event.
 
 ## 11.12 Verification predicates
 
@@ -705,7 +717,7 @@ The answers in this layer have no labelled assumptions list, so these are the va
 | `expected_after_revision` can be known before execution, because the release process deploys the draft pull request's head (11.8) | Provisional | Platform owner | Scenario revert ends on the revision named in the action |
 | Error-rate floor of 0.1% for a zero baseline (11.12) | Provisional | SRE lead | Pilot verifications on low-error services show no false `failed` |
 | 15-minute margin in a conditional approval's lifetime (ADR-48) covers the time to deploy a fix | Provisional | Security lead | Pilot deployments finish within it, and conditional approvals are not lapsing unused |
-| 30 s wait between reconciliation checks, 10 checks in all (11.11) | Provisional | Security lead | A scenario revert finishes within 5 minutes through the real release process |
+| `READ_RETRY`'s backoff between reconciliation checks (5 s doubling to 1 minute, 10 attempts) fits the 10-minute limit (Artifact 8, 8.5; 11.11) | Provisional | Security lead | A scenario revert finishes within that limit through the real release process |
 | 30 s dispatcher call timeout (`call_timeout_s`) | Provisional | Security lead | The real release process accepts `apply` within it |
 | A memory-backed volume is acceptable for the 2 GB workspace (`workspace_mb`) | Provisional | Security lead | 3 sandboxes at once run on the test host without memory pressure |
 | A change to more than one deployment counts as high-impact (ADR-49) | Provisional | Engineering manager | The pilot approval review confirms it |
@@ -724,9 +736,9 @@ The answers in this layer have no labelled assumptions list, so these are the va
 | Value: approver count | 1, or 2 if high-impact | ADR-49 |
 | Value: hold period | 600 s default, longer per service; open decision closed | ADR-66 |
 | Value: interval and minimum requests | 60 s, 50 | ADR-66 |
-| Value: reconciliation checks | 10, in code and answers | Q11.74 |
+| Value: reconciliation checks | One look per `reconcile` call. `READ_RETRY` allows 10 attempts, within the 10-minute limit (Artifact 8) | Q11.74, Layer decision (proposed) |
 | Value: dispatcher call timeout | 30 s, code only; kept as provisional | Layer decision (proposed) |
-| Value: wait between reconciliation checks | Code default of 0 s never waits. 30 s, provisional | Layer decision (proposed) |
+| Value: wait between reconciliation checks | `READ_RETRY`'s backoff. `max_checks` and `wait_s` are removed, because a wait inside the activity would hide progress from Temporal | Layer decision (proposed) |
 | Value: sandbox limits and patch limits | As in 11.2, 11.4; enforcement in C14 | Layer decision (proposed) |
 | Approval expiry "15 vs 60 minutes" | Two different timers, not a conflict | ADR-49 |
 | C1 Execution key | The action ID, on every attempt. `exec:<approval_id>` and `undo:<approval_id>` retired | ADR-47 |
@@ -760,11 +772,36 @@ The answers in this layer have no labelled assumptions list, so these are the va
 | Rollback's `patch_sha256` | None. It restores a revision | Layer decision (proposed) |
 | Rollback's verification | Runs while the incident stays `not_recovered`, or `reconciling` if its outcome was unknown, and triggers nothing | ADR-48 |
 | Baseline zero or missing | Floor of 0.1% on error-rate limits; missing baseline gives `inconclusive` | Layer decision (proposed) |
-| Sandbox network option | `package_mirror` removed; `--network=none` required | ADR-60 |
+| Sandbox network option | `package_mirror` removed; `--network=none` required, and a missing network flag or `--net=` is refused | ADR-60 |
+| How the result leaves the sandbox | The last line of the harness's stdout, because the volume can't be read after the run (11.5) | Layer decision (proposed) |
+| Target answers neither `applied` nor `rejected` | `unknown`, not `not_applied`, because 11.10 lets the target say "in progress" | Layer decision (proposed) |
+| Reader with no access to a service | `not_found`, not `forbidden`, as the 11.6 table and ADR-58 say | ADR-58 |
 
-**Needs the team:** whether the amended behaviour works in code, Owner: Platform owner, settled when: the changes in `docs/code-changes-required.md` are made and tested.
+**Needs the team:** whether the amended behaviour works in code, Owner: Platform owner, settled when: the items in Reference code status below are built and tested on the real services.
 
-**Not checked:** `test_remediation.py` wasn't run, because its dependencies aren't installed here. "Tested" in this artifact repeats the answers' claims. These were checked on 2026-11-02 with scratch copies: `classify` returns `passed` today for `exit_code=137`, for `reproduction_after=None`, for no suites and for a suite with zero tests; the glob results in 11.1; and Docker refuses `--pid=private` and `--uts=private`, which `launch_args` passes.
+**Reference code status.** [files/test_remediation.py](files/test_remediation.py) has 167 passing tests, and 19 safety lines broken one at a time were all caught. "Tested" in this artifact means that suite. It uses fakes for Docker and the release process, and these modules hold their ledger in memory.
+
+**Docker and gVisor are not proven on a real run.** Checked on Docker 29, on 2026-11-02:
+
+| Ran on real Docker | Did not run |
+| --- | --- |
+| Docker refuses `--pid=private` and `--uts=private`, so `launch_args` no longer passes them | `--runtime=runsc`: gVisor isn't installed, so nothing here has run under it, and no escape test has |
+| Docker accepts the other launch flags | `docker volume create` for the size-limited workspace, and `docker volume rm` |
+| The tmpfs size limit, user and read-only filesystem, through an equivalent anonymous `--mount` on a `--rm` container | The exit code after `docker stop`, so the timed-out path |
+| One `docker run --rm` of a flag-check image finished normally | `reap()` and the volume deletion in `finally`, which are tested with fakes only, and a final listing of `aisre.sandbox=1` leftovers |
+
+`docker stop --time` prints a deprecation warning on Docker 29 and still works. It is kept as 11.4 states it.
+
+What remains:
+
+| Item | What remains |
+| --- | --- |
+| Launcher | A real run of the table above, on the test host |
+| Harness | It isn't in `files/`. It must meet the stdout and `error_signature` rules in 11.5 |
+| Test Runner | Scheduling `reap()` every `REAP_INTERVAL_S`, and setting `aisre_sandboxes_leftover` |
+| Dispatcher ledger | `Ledger.put` writes attempt, status and version together in memory. The real transaction, the `aisre_dispatcher` connection and the advisory lock remain. The deployment block is in `Ledger.begin` with the intent write, so the two can't be separated |
+| Outcome resolution | `resolve_outcome` records it and clears the block. The HTTP layer, `If-Match`, `Idempotency-Key` and a refusal event remain |
+| Refused approvals | Every refusal appends the event, with `security_alert` set per 11.6. Delivering the alert is outside these modules |
 
 ## Acceptance checks
 

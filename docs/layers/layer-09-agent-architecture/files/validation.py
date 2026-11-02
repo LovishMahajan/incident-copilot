@@ -210,26 +210,41 @@ def code_checks(draft: DiagnosisDraft, evidence: dict[UUID, Evidence], incident_
     return issues
 
 
-# ADR-59. Pattern lists are provisional. The secret patterns are telemetry.SECRET_PATTERNS'
-# credential rows (Layer 12); its e-mail, card and address rows would match ordinary IDs.
+# ADR-59. All three lists are provisional: each wider form can reject ordinary text, and the first
+# evaluation run decides how far they go. The secret patterns are telemetry.SECRET_PATTERNS'
+# credential rows (Layer 12, tested equal); its e-mail, card and address rows would match ordinary IDs.
 _SECRET_PATTERNS = [
-    re.compile(r"(?i)\b(bearer|token|api[_-]?key|secret|password|passwd)\b\s*[:=]\s*\S+"),
+    re.compile(r"""(?i)(?:bearer|token|api[_-]?key|access[_-]?key|private[_-]?key|secret|password|passwd|pwd)"""
+               r"""(?:[_-](?:access[_-])?(?:key|value))?["']?\s*[:=]\s*(?:"[^"]*"|'[^']*'|[^\s"',;]+)"""),
+    re.compile(r"""(?i)\bauthorization["']?\s*[:=]\s*["']?(?:bearer|basic|digest|token)\s+[^\s"',;]+"""),
+    re.compile(r"(?i)\bbearer\s+(?=[\w.~+/-]*\d)[\w.~+/-]{16,}=*"),      # needs a digit: "bearer authentication" is prose
     re.compile(r"\bsk-[A-Za-z0-9_-]{16,}\b"),
     re.compile(r"\bAKIA[0-9A-Z]{16}\b"),
-    re.compile(r"-----BEGIN [A-Z ]*PRIVATE KEY-----"),
+    re.compile(r"\b(?:gh[pousr]_[A-Za-z0-9]{20,}|github_pat_[A-Za-z0-9_]{20,})\b"),
+    re.compile(r"\beyJ[\w-]+\.[\w-]+\.[\w-]+"),                          # a JWT
+    re.compile(r"(?s)-----BEGIN [A-Z ]*PRIVATE KEY-----.*?(?:-----END [A-Z ]*PRIVATE KEY-----|\Z)"),   # with its body
 ]
-_LINK = re.compile(r"(?i)\b[a-z][a-z0-9+.-]*://|\bwww\.")
+_LINK = re.compile(
+    r"(?i)\b[a-z][a-z0-9+.-]*://|\bwww\."
+    r"|(?<![\w:/.-])//[\w-]+(?:\.[\w-]+)+"                     # scheme-relative
+    r"|(?<![\w/.@-])(?:[a-z0-9-]+\.)+[a-z]{2,}/\S*"            # a bare host with a path, not a/b/file.yaml
+    r"|\b(?:javascript|vbscript):\S|\bdata:[a-z]+/[\w.+-]+[;,]")
 _COMMAND = re.compile(
     r"(?im)^\s*\$\s"
-    r"|\b(sudo\s+\S|rm\s+-[rf]|curl\s+\S|wget\s+\S|kubectl\s+\S|psql\s+\S|bash\s+-c|sh\s+-c|chmod\s+\S|docker\s+(run|exec)\b)"
-    r"|\b(drop\s+table|delete\s+from|truncate\s+table)\b")
+    r"|\b(sudo\s+\S|rm\s+-[rf]|curl\s+\S|wget\s+\S|kubectl\s+\S|psql\s+\S|bash\s+-c|sh\s+-c|chmod\s+\S|docker\s+(run|exec)\b"
+    r"|terraform\s+(destroy|apply)\b|helm\s+(uninstall|delete)\b|systemctl\s+(stop|disable|mask|restart)\b"
+    r"|(python\d?|perl|ruby|node)\s+-[ce]\b)"
+    r"|\b(drop\s+(table|database|schema)|delete\s+from|truncate\s+table|update\s+\S+\s+set\s+\S+\s*=)")
 
 
 def _strings(value) -> Iterable[str]:
     if isinstance(value, str):
         yield value
     elif isinstance(value, dict):
-        for v in value.values():
+        for k, v in value.items():                  # keys too: EvidenceRequest.params is free-form
+            yield str(k)
+            if isinstance(v, str):
+                yield f"{k}: {v}"                   # a secret split across a key and its value
             yield from _strings(v)
     elif isinstance(value, list):
         for v in value:

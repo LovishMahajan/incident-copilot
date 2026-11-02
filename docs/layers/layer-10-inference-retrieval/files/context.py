@@ -15,7 +15,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Optional
 
-from gateway_contracts import estimate_tokens
+from gateway_contracts import escape_data, estimate_tokens
 
 
 @dataclass(frozen=True)
@@ -112,11 +112,11 @@ def assemble(*, prompt_id: str, prompt_version: str, prompt_sha256: str, facts: 
     out: list[dict] = []
     for it in items:
         text = it.text
-        cost = estimate_tokens(text)
+        cost = estimate_tokens(escape_data(text))
         if cost > max_item_tokens and it.priority >= 3:
             marker = f" … [truncated; full record: {it.ref}]"                 # reference kept (Q10.62)
             text = text[:(max_item_tokens - estimate_tokens("")) * 3 - len(marker)] + marker
-            cost = estimate_tokens(text)
+            cost = estimate_tokens(escape_data(text))
         always = it.priority <= 3
         if man.used_tokens + cost > budget_tokens and not always:
             man.excluded.append({"ref": it.ref, "reason": "token budget", "tokens": cost})

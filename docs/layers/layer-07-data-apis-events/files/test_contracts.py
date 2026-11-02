@@ -169,13 +169,9 @@ def artifact_event_types() -> set[str]:
     return found
 
 
-# In schema.sql and contracts.py, and owed to the 7.5 table. Empty this once 7.5 lists them.
-NOT_YET_IN_ARTIFACT = {"aisre.evidence.content_removed.v1", "aisre.execution.outcome_resolved.v1"}
-
-
 def test_every_event_type_in_the_artifact_has_a_payload_model():
     assert len(c.EVENT_DATA) == 41
-    assert set(c.EVENT_DATA) == artifact_event_types() | NOT_YET_IN_ARTIFACT
+    assert set(c.EVENT_DATA) == artifact_event_types()
 
 
 def test_every_payload_model_is_registered_once():

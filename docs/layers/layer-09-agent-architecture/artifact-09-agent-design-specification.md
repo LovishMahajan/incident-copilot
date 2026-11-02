@@ -2,7 +2,7 @@
 
 - **Layer:** 9, Agent Architecture and Engineering Reasoning
 - **Built from:** Artifact 3 (Incident and Evidence Catalog), Artifact 7 (Data and Interface Specification), Artifact 8 (Workflow Specification)
-- **Status:** Proposed: gaps resolved 2026-11-02 per [decisions.md](../../decisions.md); pending team sign-off
+- **Status:** Proposed: gaps resolved and reference code aligned 2026-11-02 per [decisions.md](../../decisions.md); pending team sign-off
 - **Sources:** [conversation.md](conversation.md), [files/coordinator.py](files/coordinator.py), [files/agent_contracts.py](files/agent_contracts.py), [files/tool_registry.py](files/tool_registry.py), [files/validation.py](files/validation.py), [files/test_agent.py](files/test_agent.py), [assets/image2.png](assets/image2.png), [technical-specification.md](../../reference/technical-specification.md), [system-design.md](../../reference/system-design.md), [Layer 3](../layer-03-sre-fundamentals/conversation.md), [Layer 4](../layer-04-requirements/conversation.md), [Layer 7 schema](../layer-07-data-apis-events/files/schema-tables.sql), [Layer 7 contracts](../layer-07-data-apis-events/files/contracts.py), [Layer 8 workflow.py](../layer-08-workflows-state-machines/files/workflow.py), [Layer 10](../layer-10-inference-retrieval/conversation.md), [Layer 12 eval_harness.py](../layer-12-reliability-evaluation/files/eval_harness.py), [decisions.md](../../decisions.md)
 
 ## Required sections
@@ -37,13 +37,13 @@ while True:
     step = coordinator.next_step(state, workflow.now())   # pure: decides, logs the reason
     if step in (Step.FINISH_ESTABLISHED, Step.FINISH_INCONCLUSIVE):
         break
-    result = await self._investigation_act(ACTIVITY[step], skill_input(state, step), deadline)
-    apply_result(state, step, result)                     # after_collect, after_hypotheses, ...
     await self._safe_point()
+    result = await self._cancellable(plan.fn, self._step_input(step, state), ...)  # capped by the deadline
+    apply_result(state, step, result)                     # after_collect, after_hypotheses, ...
 ```
 
 - **One step, one activity.** Each result is checkpointed by Temporal, and `AgentState` lives in the workflow, so a replay rebuilds it exactly.
-- **A skill failure is a value, not an exception.** The activity returns a typed `SkillFailure` (9.3), and the coordinator stops the loop (9.10). A deadline with no result is recorded the same way, as `deadline_passed`.
+- **A skill failure is a value, not an exception.** The activity returns a typed `SkillFailure` (9.3), `apply_result` passes it to `after_failure`, and the coordinator stops the loop (9.10). An activity timeout with no result is recorded the same way, as `deadline_passed`; any other lost result is `store_failed`.
 - **Crash recovery.** If a worker is lost, Temporal re-runs the activity once on another worker (ADR-27). A completed model result is reused by `input_sha256` (ADR-61), so nothing is re-billed.
 - **First summary.** The workflow sends it after the first `HYPOTHESISE` result, marked as not yet reviewed.
 - **Leaving the loop.** `FINISH_ESTABLISHED` moves the incident to `diagnosed`, then the Patch Proposer runs (ADR-51). `FINISH_INCONCLUSIVE` follows the incident path in 9.10.
@@ -161,12 +161,12 @@ All contracts are in [agent_contracts.py](files/agent_contracts.py). Every skill
 
 | Skill | Input | Output |
 | --- | --- | --- |
-| Evidence Collector | `CollectIn` (proposed) | `EvidenceOut` |
-| Knowledge Retriever | `KnowledgeIn` (proposed) | `KnowledgeOut` (proposed) |
+| Evidence Collector | `CollectIn` | `EvidenceOut` |
+| Knowledge Retriever | `KnowledgeIn` | `KnowledgeOut` |
 | Hypothesis Generator | `HypothesisIn` | `HypothesesOut` |
-| Diagnoser | `DiagnoseIn` | `DiagnosisDraft` |
-| Critic | `CritiqueIn` | `CriticVerdict` |
-| Patch Proposer | `PatchIn` (proposed) | Model: `PatchProposal` (proposed). Activity: `PatchOut` |
+| Diagnoser | `DiagnoseIn` | Model: `DiagnosisDraft`. Activity: `DiagnosisResult` |
+| Critic | `CritiqueIn` | Model: `CriticVerdict`. Activity: `ReviewResult` |
+| Patch Proposer | `PatchIn` | Model: `PatchProposal`. Activity: `PatchOut` |
 
 | Input contract | Fields |
 | --- | --- |
@@ -175,7 +175,7 @@ All contracts are in [agent_contracts.py](files/agent_contracts.py). Every skill
 | `DiagnoseIn` | `context`, `evidence`, `hypotheses`, `critic` (optional) |
 | `CritiqueIn` | `context`, `evidence`, `diagnosis`. The critic sees evidence and the diagnosis only, never the diagnoser's reasoning |
 
-**Proposed contracts.** These follow `Strict` and aren't yet in [agent_contracts.py](files/agent_contracts.py). `EvidenceOut` and `PatchOut` keep Layer 8's field names and types, and `PatchDraftParams` stays as it is in [tool_registry.py](files/tool_registry.py).
+**The contracts added by ADR-52.** These follow `Strict` and are in [agent_contracts.py](files/agent_contracts.py), apart from `EvidenceOut` and `PatchOut`, which are Layer 8's, in `activities.py`. `PatchDraftParams` stays as it is in [tool_registry.py](files/tool_registry.py). Layer 8's activities take `EvidenceIn` or `SkillIn`, and each activity builds the skill input above from them, loading evidence by ID.
 
 `CollectIn`, Evidence Collector input:
 
@@ -202,7 +202,7 @@ All contracts are in [agent_contracts.py](files/agent_contracts.py). Every skill
 
 Permitted groups come from the platform's identity, never the input. Stale passages are excluded.
 
-`KnowledgeOut`, Knowledge Retriever output. It replaces Layer 8's `list[str]`:
+`KnowledgeOut`, Knowledge Retriever output:
 
 | Field | Type | Rule |
 | --- | --- | --- |
@@ -244,11 +244,27 @@ Permitted groups come from the platform's identity, never the input. Stale passa
 | `action_id` | str | The new action |
 | `patch_sha256` | 64 hex characters | Fingerprint computed by code (ADR-64) |
 
-**Every activity's result** (proposed, ADR-52). Each skill's output arrives in `SkillResult`, so the coordinator gets one shape.
+`DiagnosisResult`, the `diagnose` activity's output: the draft, plus the code-computed facts the coordinator reads.
+
+| Field | Type | Rule |
+| --- | --- | --- |
+| `diagnosis_id` | UUID | The stored diagnosis |
+| `draft` | `DiagnosisDraft` | The model's validated output |
+| `fingerprint` | 64 hex characters | `validation.fingerprint` |
+| `supported_ratio` | float | 0 to 1, from `CitationReport` |
+
+`ReviewResult`, the `review_diagnosis` activity's output, from `validation.combine`:
+
+| Field | Type | Rule |
+| --- | --- | --- |
+| `verdict` | `CriticVerdict`, optional | Absent means invalid critic output after its retries |
+| `confidence` | `Confidence`, optional | Final: the lower of scored and `confidence_cap`. Comes with a verdict, and only then |
+
+**Every activity's result** (ADR-52). Each skill's output arrives in `SkillResult[T]`, so the coordinator gets one shape, through `coordinator.apply_result`.
 
 | Contract | Field | Type | Rule |
 | --- | --- | --- | --- |
-| `SkillResult` | `output` | The skill's output, optional | Absent on failure |
+| `SkillResult[T]` | `output` | `T`, optional | Absent on failure. A result has an output or a failure, never both or neither |
 | | `failure` | `SkillFailure`, optional | Absent on success |
 | | `usage` | `SkillUsage` | Always present |
 | `SkillFailure` | `skill` | str | Which skill |
@@ -260,7 +276,7 @@ Permitted groups come from the platform's identity, never the input. Stale passa
 | | `cost_micros` | int | Charged amount |
 | | `daily_spend_exhausted` | bool | Daily limit reached (ADR-55) |
 
-The Critic's invalid output isn't a `SkillFailure`: it returns `verdict = None` and runs once more (9.8).
+The Critic's invalid output isn't a `SkillFailure`: `ReviewResult` comes back with `verdict = None`, and the step runs once more (9.8).
 
 **What typed contracts fix** ([Q9.14](conversation.md)):
 
@@ -280,7 +296,7 @@ Direct access would risk destructive commands, injection becoming code execution
 
 1. The model sees only a name, a one-line purpose and a strict input schema.
 2. It returns a structured request naming a tool and parameters as JSON, never free text the application interprets.
-3. The ToolGate checks it.
+3. The ToolGate checks it. The free-text fields (`path`, `contains`, `release`, `alert_id`, `query`) refuse a link or an internal or metadata address in the schema (ST-30, provisional list). The knowledge tools fix their own `doc_type`, which the model can't set.
 4. If it passes, the adapter (which holds the credential) runs it read-only, redacts the result, and stores it as evidence.
 5. The model gets the evidence ID and a short extract, or the refusal code. Refusals are recorded.
 
@@ -472,14 +488,15 @@ Strength belongs to the observation, not the evidence kind. Code assigns `streng
 - **The threshold is medium** (provisional, ADR-53). The SRE lead recalibrates it on the frozen suite before Release A.
 - **Independent** means from different `source_system` values (provisional).
 - **Final confidence** is the lower of the scored level and the critic's `confidence_cap`.
-- `validation.STRENGTH` is retired. `context.EVIDENCE_PRIORITY` stays under a new name, as it orders context for reading (ADR-53).
+- `validation.STRENGTH` is retired. `context.EVIDENCE_PRIORITY` is now `CONTEXT_KIND_ORDER`, as it orders context for reading (ADR-53).
+- `assign_tier(kind, ObservationFacts)` applies the rules in this table. Computing the facts from real source data needs the M1 adapters.
 
 **Code checks on a draft** ([validation.py](files/validation.py)):
 
 - `check_citations` returns a `CitationReport`: `claims`, `supported`, `unknown_ids`, `foreign_ids`, and `supported_ratio`.
 - `fingerprint` hashes the outcome, leading statement, cited evidence and action, so rewording isn't a revision.
 - A claim is supported only if it cites at least one record that isn't a gap, isn't flagged and isn't retrieved guidance. So a claim citing only gaps ([Q9.27](conversation.md)), only flagged evidence (ADR-59) or only runbooks and past incidents (Artifact 10) is unsupported. If the skill's output has an invented reference, it retries with the error explained, up to its attempt limit; after that the step fails and the investigation is inconclusive. Nothing with an invented reference is ever stored or shown ([Q9.28](conversation.md)).
-- A secret in model output fails validation and is retried, and is masked first if stored for audit. Commands in model output are rejected. Links are never fetched (ADR-59). Flagged items are shown to the approver.
+- A secret in model output fails validation and is retried, and is masked first if stored for audit. Commands in model output are rejected. Links are never fetched (ADR-59). Flagged items are shown to the approver. `check_output` raises `UnsafeOutput`, and `mask_secrets` does the masking; their pattern lists are provisional.
 
 ## 9.8 Critic schema
 
@@ -604,7 +621,7 @@ The loop stops at the first of these conditions, and every stop records its reas
 | 13 | A revision repeats the same diagnosis | `FINISH_INCONCLUSIVE` | Through `inconclusive` |
 | 14 | A revision doesn't improve support, with no new evidence | `FINISH_INCONCLUSIVE` | Through `inconclusive` |
 
-"Direct" is the `investigating` → `handed_over` transition, for a security or data-risk stop only (ADR-46). "Through `inconclusive`" is `investigating` → `inconclusive` → `handed_over`, so the record says "Root cause not established". A `budget_refused` or `deadline_passed` failure goes through `inconclusive`; only `security_risk` takes the direct path.
+"Direct" is the `investigating` → `handed_over` transition, for a security or data-risk stop only (ADR-46). "Through `inconclusive`" is `investigating` → `inconclusive` → `handed_over`, so the record says "Root cause not established". A `budget_refused` or `deadline_passed` failure goes through `inconclusive`; only `security_risk` takes the direct path. The coordinator sets `state.stop_kind` alongside `FINISH_INCONCLUSIVE`, and the workflow reads it.
 
 A new investigation started after the daily limit is reached is evidence-only: it runs `COLLECT_BASELINE` and `RETRIEVE_KNOWLEDGE`, then stops through `inconclusive` (ADR-46, ADR-55). A running one finishes its current step, then stops.
 
@@ -706,9 +723,15 @@ Layer 9's answers have no Assumptions blocks, although the conversation log refe
 
 ## Decisions and conflicts
 
-The sections above state the resolved position. [test_agent.py](files/test_agent.py) was run on a scratch copy outside the repo before these decisions: 25 passed. C7 and C8 were confirmed by driving `next_step` with scripted results.
+The sections above state the resolved position, and the code in `files/` implements it. [test_agent.py](files/test_agent.py) has 109 passing tests, and 18 deliberate mutants of the key behaviours were all caught. C7 and C8 are tested by driving `next_step` with scripted results.
 
-Code in `files/` is kept as the team's record. Every change it needs is listed in `docs/code-changes-required.md`.
+What remains:
+
+| Item | What remains |
+| --- | --- |
+| Stored diagnosis | `stored_fields()` gives the `category`, `claims` and `ruled_out` row values. The database write isn't done |
+| Tier assignment | `assign_tier` applies the 9.7 rules. Computing `ObservationFacts` from real source data needs the M1 adapters |
+| Output checks (ADR-59) | An activity must call `check_output` and `mask_secrets`. The stored audit copy and the leak procedure aren't in these modules. The secret, link and command lists are provisional: each wider form can reject ordinary text, and the first evaluation run decides how far they go. A bare host with a path counts as a link, so a patch naming `registry.internal/app` fails it |
 
 | Item | Resolution | Decided by |
 | --- | --- | --- |
@@ -722,7 +745,7 @@ Code in `files/` is kept as the team's record. Every change it needs is listed i
 | Limit: attempts per step | 3 gateway attempts; `max_attempts_per_step` in `Limits` | ADR-27, ADR-52 |
 | Limit: invalid critic output | 3 attempts per step, 2 failed runs end it, 6 attempts at most. The specification's "3 times" is the per-step figure | ADR-52 |
 | Limit: tokens and spend | Added to the termination policy and `Limits`: 200,000 input, 20,000 output, $2.00 | ADR-52, ADR-56 |
-| Limit: `Limits` source | `Limits` is the one source, with its own provisional values. The docstring changes | ADR-52 |
+| Limit: `Limits` source | `Limits` is the one source, with its own provisional values, and its docstring says so | ADR-52 |
 | Limit: model-call counting | Gateway attempts count, from `SkillUsage.model_calls`; a reused result counts 0 | ADR-61, Layer decision (proposed) |
 | C1 Pipeline shape | The coordinator loop runs inside `investigating`, with `RETRIEVE_KNOWLEDGE` added | ADR-52 |
 | C2 Where the model is called | Hypothesise, diagnose, critique and patch proposal, through the gateway. Specification section 5 is amended | ADR-52 |
@@ -751,10 +774,13 @@ Code in `files/` is kept as the team's record. Every change it needs is listed i
 | `confidence_cap` | Final confidence is the lower of scored and cap. Low applies when the cap is `low`, since every verdict carries a cap | ADR-53, Layer decision (proposed) for the reading |
 | Required evidence list | ADR-54's list replaces Q9.49's six kinds for blocking and coverage | ADR-54 |
 | Knowledge evidence kinds | `search_runbooks` gives `runbook`, `search_past_incidents` gives `past_incident`. Artifact 10 uses `runbook` for both | Layer decision (proposed) |
+| Skill outputs versus what the coordinator reads | `DiagnosisDraft` carries no fingerprint or support ratio, and `verdict = None` can't fit `CriticVerdict`. `DiagnosisResult` and `ReviewResult` carry them | ADR-52, Layer decision (proposed) |
+| Critic overflow | Requests beyond a round's limit are logged as not run, for critic requests as for hypothesis requests | Layer decision (proposed) |
+| Accept with no confidence | Ends inconclusive, so it fails closed | ADR-53, Layer decision (proposed) |
 
 **Needs the team:** whether any Claude and ChatGPT disagreement affected a decision in this layer, Owner: Team, settled when: the conversation logs are filled in.
 
-**Needs the team:** whether the amended behaviour works in code, Owner: Platform owner, settled when: the changes in `docs/code-changes-required.md` are made and tested.
+**Needs the team:** whether the amended behaviour works in code, Owner: Platform owner, settled when: the items under What remains are built and tested on real adapters and storage.
 
 ## Acceptance checks
 
