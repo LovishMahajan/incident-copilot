@@ -29,7 +29,8 @@ Answers are complete for Layers 1–12. Artifacts have had their gaps and confli
 ## Start here for decisions
 
 - [decisions.md](decisions.md): the decision register, which also says which document wins when two disagree
-- [code-changes-required.md](code-changes-required.md): 308 changes the reference code needs, with the top eight first
+- [code-changes-required.md](code-changes-required.md): test results, what the code now does, and what remains
+- [tests/security/](../tests/security/README.md): the 40 security tests
 
 ## Reference
 
@@ -45,11 +46,11 @@ Both are the original documents, with a note at the top listing what is amended.
 | `conversation.md` headers | Layer map and method pages of `AI_SRE_Engineering_Worksheet_1.pdf` |
 | `conversation.md` questions and answers | Main tab of `worksheet - room 7.docx`, unchanged |
 | `artifact-*.md` | Compiled from the answers, the code tabs and the reference docs. Sections 6.4–6.6 and 7.4–7.9 and ADR-19 to ADR-24 are the team's own artifact text |
-| `files/` | One code tab each from Room 7, copied verbatim |
+| `files/` | One code tab each from Room 7, since changed to implement the decisions. Originals are in git commit `013bcf4` |
 | `layer-06`, `layer-07`, `layer-09` `assets/` | Images from Room 7 |
 | `layer-07` `files/schema.mmd` | `schema.mmd`, identical to its Room 7 tab |
 | `reference/` | The two `.docx` specs, identical to their Room 7 tabs apart from one code block, plus the amendment note at the top |
-| `layer-07` `files/schema.sql`, `schema-tests.sql` | New and proposed (ADR-64). Tested on PostgreSQL 17.11: 122 of 122 checks pass. The spec targets 16, which was not tested |
+| `layer-07` `files/schema.sql`, `schema-tests.sql` | New and proposed (ADR-64). Tested on PostgreSQL 17.11: 182 of 182 checks pass. The spec targets 16, which was not tested |
 | `layer-03` `files/reference-incident/` | New and proposed: a synthetic `orders-api` incident. No real data |
 
 **File names.** Most come from the code itself: imports, `Run:` lines and `alerts.yml` in `test_layer12.py`. Two are inferred, because nothing names them: `schema-tables.sql` and `contracts.py`.
@@ -77,9 +78,9 @@ ADR-56's money values, including the $500 monthly ceiling and $2.00 per incident
 
 ### Not yet proven
 
-- The code in `files/` does not implement these decisions yet. Until [code-changes-required.md](code-changes-required.md) is done, the docs describe the intended design.
-- Security tests ST-01 to ST-40 are specified, and their test files don't exist yet.
-- The Layer 8, 11 and 12 test files have not been run.
+- The code in `files/` implements these decisions and its tests pass, but it is a set of in-memory reference modules. There is no running application, API or database connection yet. See [what remains](code-changes-required.md#what-remains).
+- 21 security test functions are skipped, because they need a running API, gVisor, evidence adapters, or the review or notifier systems.
+- The sandbox has not been proven under gVisor, and `schema.sql` has been tested on PostgreSQL 17.11, not the 16 the spec targets.
 
 ### Layer 13
 

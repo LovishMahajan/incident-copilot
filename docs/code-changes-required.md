@@ -1,23 +1,74 @@
-# Code Changes Required
+# Code Changes
 
-The reference code in each layer's `files/` folder is kept as the team wrote it. These are the 308 changes needed for it to match the [decision register](decisions.md) and the artifacts. None has been made.
+The reference code in each layer's `files/` folder now implements the [decision register](decisions.md). The team's original Room 7 versions are in git commit `013bcf4`.
 
-## Do these first
+## Test results
 
-| Why | File | Change | Decision |
+Run together on 2026-11-02, with Python 3.12 and PostgreSQL 17.11.
+
+| Suite | Result |
+| --- | --- |
+| `test_contracts.py` | 95 passed |
+| `test_workflow.py` | 104 passed |
+| `test_agent.py` | 109 passed |
+| `test_layer10.py` | 88 passed |
+| `test_remediation.py` | 167 passed |
+| `test_layer12.py` | 113 passed |
+| `tests/security/` | 507 passed, 21 skipped |
+| `schema-tests.sql` | 182 passed |
+
+Python total: 1,183 passed, 21 skipped, 0 failed. Before these changes there were 121 tests.
+
+## Status
+
+Of the roughly 300 changes tracked, about 260 are done, about 34 are partly done, and 2 are not done. Rows were grouped differently by each layer, so counts are approximate.
+
+The eight first priorities are all done:
+
+| Why | File | Change | Status |
 | --- | --- | --- | --- |
-| Every model request fails | `layer-10/files/adapters.py` | Stop sending `temperature: 0`, which the proposed Claude models reject | Layer 10 decision |
-| A bad patch can read as tested | `layer-11/files/sandbox.py` | `classify` must return `crashed` for a non-zero harness exit, and `inconclusive` for a missing result or an empty required suite | Layer 11 C13 |
-| The agent never runs | `layer-08/files/workflow.py` | Drive the investigation from `coordinator.next_step` | ADR-52 |
-| Sandbox can't start | `layer-11/files/sandbox.py` | Remove `--pid=private` and `--uts=private`, which Docker refuses; apply `workspace_mb` and `wall_clock_s` | Layer 11 C14 |
-| State model differs | `layer-07/files/contracts.py`, `layer-08/files/states.py` | Apply ADR-46 and ADR-64 together, and load `schema.sql` | ADR-46, ADR-64 |
-| Duplicate-change risk | `layer-08/files/workflow.py`, `layer-08/files/activities.py`, `layer-11/files/dispatcher.py` | Use the action ID as the execution key; remove `is_undo` | ADR-47, ADR-48 |
-| Limits missing | `layer-10/files/gateway.py` | Enforce 16,000 input tokens per call, and the daily and monthly limits | ADR-56, ADR-61 |
-| Weak release gates | `layer-12/files/eval_harness.py` | Add the 80% floor and the honesty, conflicting-evidence and security gates | ADR-65 |
+| Every model request failed | `layer-10/files/adapters.py` | `temperature` removed | Done |
+| A bad patch could read as tested | `layer-11/files/sandbox.py` | `classify` fails closed | Done |
+| The agent never ran | `layer-08/files/workflow.py` | Investigation driven by `coordinator.next_step` | Done |
+| Sandbox couldn't start | `layer-11/files/sandbox.py` | Refused flags removed, limits applied | Flags done; not proven under gVisor |
+| State model differed | `contracts.py`, `states.py`, `schema.sql` | One model, with tests that fail on drift | Done |
+| Duplicate-change risk | `workflow.py`, `activities.py`, `dispatcher.py` | Action ID is the execution key; `is_undo` removed | Done |
+| Limits missing | `layer-10/files/gateway.py` | Per-call cap enforced; daily and monthly limits added | Done in memory; persistence remains |
+| Weak release gates | `layer-12/files/eval_harness.py` | All ADR-65 gates | Done |
 
-## Full list
+The security tests also found 52 failures across 14 cases, all now fixed. The most serious were: patch bytes swapped after approval still deployed, the dispatcher ignored the write fence, a repeat dispatch could lift the deployment block during a live apply, and a `release_rollback` could run on one approval.
 
-Grouped by the layer that found the change. Exact duplicates are removed; near-duplicates between layers can remain.
+## What remains
+
+### Needs a running system
+
+These modules are in-memory references. The logic is written and tested, but not connected to real services.
+
+| Area | Remaining |
+| --- | --- |
+| Database | Real SQL for the ledgers, attempts, reservations, corpus, stored fields and `dispatcher` transactions. `schema.sql` is ready and tested, but no module connects to it |
+| API | No HTTP layer exists, so ST-19 and ST-21 and the endpoint routes are untested |
+| Activities | Real bodies for the Layer 8 interfaces: the queue row delete, heartbeats, and the Test Runner's sandbox kill |
+| Evidence | Real source adapters, which `assign_tier` needs for its facts |
+| Sandbox | Real runs under gVisor, volume creation, the cleanup and reaper commands. `runsc` isn't installed here. ST-27 is skipped |
+| Telemetry | `/readyz`, dependency probes, the relay and the Notifier must publish the new metrics. Alert delivery needs an Alertmanager configuration |
+| Jobs | Scheduling for reservation expiry, spend reconciliation and the sandbox reaper; the reconciliation activity body; the weekly audit-chain check. Until that check runs, `AisreAuditChainBroken` can't fire |
+
+### Not done
+
+- The relay doesn't observe `aisre_event_available_seconds`, because no relay exists yet.
+- No caller of `aisre_verification_outcomes_total` exists, because `verify_recovery` is an interface only.
+
+### Known risks
+
+- **Late apply:** if a first call stalls past its window, reconciliation records `not_applied`, and the change then lands, the call returns `unknown` and tells a person to check. The deployment block isn't put back, because the schema allows no further row after `not_applied`.
+- **Refused patch response:** a mismatched patch is refused and the event written, but nothing voids the approval or alerts the approver yet (ST-13).
+- **Provisional patterns can reject real text:** a bare host with a path counts as a link, so a patch naming `registry.internal/app` fails, and a four-part version such as `10.2.1.3` is refused in `release`.
+- **Legal deletion:** `documents` and `chunks` have no delete path, so runbook text stays in PostgreSQL after a purge.
+
+## Original change list
+
+Kept as the record of what was asked for. Grouped by the layer that found the change. See Status above for what was completed.
 
 
 ### Cross-layer corrections (these win where rows overlap)

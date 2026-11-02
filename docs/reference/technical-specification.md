@@ -8,7 +8,7 @@ The engineering detail behind the System Design tab: invariants, lifecycle, secu
 > | --- | --- |
 > | 2 Lifecycle | ADR-46: `states.py` plus three additions is canonical, 30 incident and 20 action transitions |
 > | 3 Permissions | ADR-50: one matrix; responders may reject |
-> | 4 Data model | ADR-64: 33 tables; `org_id` on top-level records only; [schema.sql](../layers/layer-07-data-apis-events/files/schema.sql) is canonical |
+> | 4 Data model | ADR-64: 34 tables; `org_id` on top-level records only; [schema.sql](../layers/layer-07-data-apis-events/files/schema.sql) is canonical |
 > | 5 Pipeline | ADR-52: coordinator loop; model called in hypothesise, diagnose, critique and patch proposal; `DiagnosisDraft` replaces `ModelDiagnosisOutput` |
 > | 5.5 Undo | ADR-48: the workflow triggers a separate rollback action, not the Verifier |
 > | 6 Validation | ADR-49, ADR-59: refused approvals are logged as events; secrets in output fail and are masked |
