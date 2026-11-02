@@ -2,7 +2,7 @@
 
 - **Layer:** 8, Distributed Workflows and State Machines
 - **Built from:** Artifacts 6 and 7
-- **Status:** Proposed: gaps resolved 2026-11-02 per [decisions.md](../../decisions.md); pending team sign-off
+- **Status:** Proposed: gaps resolved and reference code aligned 2026-11-02 per [decisions.md](../../decisions.md); pending team sign-off
 - **Sources:** [decisions.md](../../decisions.md), [conversation.md](conversation.md), [files/workflow.py](files/workflow.py), [files/activities.py](files/activities.py), [files/states.py](files/states.py), [files/test_workflow.py](files/test_workflow.py), [System Design](../../reference/system-design.md), [Technical specification](../../reference/technical-specification.md), [Layer 7 schema](../layer-07-data-apis-events/files/schema-tables.sql), [Layer 7 contracts](../layer-07-data-apis-events/files/contracts.py)
 
 ## Required sections
@@ -24,13 +24,13 @@
 
 *Answers Q8.1–Q8.3, Q8.10, Q8.12–Q8.16.*
 
-Code: [files/workflow.py](files/workflow.py), `IncidentWorkflow`; the order is visible in one place, `IncidentWorkflow._lifecycle`. This artifact states the amended design. The files in `files/` stay unchanged as the team's reference, and every place they differ is listed in `docs/code-changes-required.md`.
+Code: [files/workflow.py](files/workflow.py), `IncidentWorkflow`; the order is visible in one place, `IncidentWorkflow._lifecycle`. This artifact states the amended design, and the reference code in `files/` implements it. What the code can't yet prove is listed under Decisions and conflicts, in Reference code status.
 
 **Why a workflow.** One workflow per incident, written as ordinary sequential code that calls activities for each step ([Q8.1](conversation.md)). Progress must live outside the process ([Q8.2](conversation.md)). An HTTP request can't carry this work because of timeouts, duplicates, no survival across restarts, no waiting, and wasted capacity, so intake returns in milliseconds and the workflow runs separately ([Q8.3](conversation.md)). Temporal replaces background threads and database flags; the fallback, a PostgreSQL job queue behind the same Workflow Orchestrator interface, stays recorded in ADR-06 ([Q8.12](conversation.md)). Temporal is self-hosted on a single node, in its own database on the same PostgreSQL instance (ADR-51).
 
 | Item | Value |
 | --- | --- |
-| Workflow type | `IncidentWorkflow` |
+| Workflow type | `IncidentWorkflow`. `ReconciliationWorkflow` is a separate short workflow, started by the `aisre-reconciliation` schedule (8.9) |
 | Workflow ID | `incident-<incident_id>`; a re-investigation runs as `incident-<incident_id>-r2`, then `-r3` and so on (ADR-46) |
 | Input | `IncidentWorkflowInput(incident_id, run)` |
 | Signals | `approval_decided` (one per decision, ADR-49), `cancellation_requested`, `lead_decision` (`confirm_severity`, `close`, `reinvestigate`); each carries a dedupe ID |
@@ -43,7 +43,7 @@ Code: [files/workflow.py](files/workflow.py), `IncidentWorkflow`; the order is v
 | --- | --- | --- |
 | Load | `load_incident` | `open` |
 | Queue | `acquire_investigation_slot` | `open` until a slot is granted (8.1, Workers and routing) |
-| Investigate | Coordinator loop, below | `investigating`, then `diagnosed`, `inconclusive` or `handed_over` |
+| Investigate | `read_spend_state`, then the coordinator loop, below | `investigating`, then `diagnosed`, `inconclusive` or `handed_over` |
 | Patch and test | `draft_patch`, `run_sandbox_test` | `testing`, or `handed_over` |
 | Approval wait (Release B) | `request_approval`, `escalate_approval`, `close_approval_request` | `awaiting_approval`, then `executing` or `handed_over` |
 | Execute (Release B) | `dispatch_change`, `reconcile_execution` if unknown | `executing`, `reconciling` |
@@ -55,7 +55,7 @@ Every business step also goes through `record_transition`; `notify` and `hand_ov
 
 **The investigating phase is the coordinator's loop** (ADR-52). The workflow owns durability, and the Layer 9 coordinator owns the investigation's decisions:
 
-1. The workflow calls pure `coordinator.next_step(state)` from [coordinator.py](../layer-09-agent-architecture/files/coordinator.py).
+1. The workflow calls pure `coordinator.next_step(state, now)` from [coordinator.py](../layer-09-agent-architecture/files/coordinator.py).
 2. It runs the returned step as one activity.
 3. It feeds the result back into the coordinator's state. Temporal checkpoints each result.
 4. It repeats until the coordinator returns a stop verdict.
@@ -78,6 +78,7 @@ Every business step also goes through `record_transition`; `notify` and `hand_ov
 
 - A skill failure returns a typed failure to the coordinator, which stops as inconclusive (ADR-52).
 - Limits read from one configuration object, including tokens and spend (ADR-52).
+- `read_spend_state` runs once at the start and sets `AgentState.evidence_only` when the daily limit is reached. If spend can't be read, the investigation runs evidence-only (ADR-55).
 - Model calls happen in hypothesise, diagnose, critique and patch proposal, always through the gateway (ADR-52). The Patch Proposer is a skill inside the Diagnosis Engine and runs after the critic accepts (ADR-51).
 
 **How Release A ends** (ADR-44). "First version" means everything built through M4, shipped in two releases. In Release A the workflow stops at the end of Patch and test: `testing` → `handed_over`, carrying the tested recommendation, and people change production by hand. The production write credential isn't provisioned at all. A draft pull request is allowed in both releases; a direct commit never is. `IncidentSnapshot.remediation_enabled` selects the path: it is false until the recorded decision that opens Release B, and a running workflow keeps the value it read. If the sandbox is unavailable in Release A, `PatchOut.sandbox_available` is false and the incident goes `diagnosed` → `handed_over` with the untested draft. The Approval Service, dispatcher and Verifier are built and tested at M3 on synthetic targets, and run against production only in Release B.
@@ -91,7 +92,7 @@ Every business step also goes through `record_transition`; `notify` and `hand_ov
 
 | Constant | Value | Source |
 | --- | --- | --- |
-| `INVESTIGATION_LIMIT` | 15 min, from the slot grant | `workflow.py` |
+| `INVESTIGATION_LIMIT` | 15 min, from the slot grant | `Limits.investigation` (ADR-52) |
 | `APPROVAL_ESCALATE_AFTER` | 15 min | ADR-49 |
 | `APPROVAL_EXPIRES_AFTER` | 60 min | ADR-49 |
 | `APPROVAL_VALID_FOR` | 15 min | ADR-49 |
@@ -122,7 +123,7 @@ Every business step also goes through `record_transition`; `notify` and `hand_ov
 **Concurrency.** 5 investigations run at once across all workers, queued up to 50 by severity, and the rest are never dropped (System Design section 9). A per-worker setting can't enforce a global limit, and Temporal task priority orders work without capping it, so the limiter is a PostgreSQL queue table:
 
 1. `acquire_investigation_slot` inserts the incident into `investigation_queue` ([schema.sql](../layer-07-data-apis-events/files/schema.sql): incident, severity, queued time, granted time) and notifies on-call that it is queued.
-2. In one locked transaction it grants a slot only if fewer than 5 are granted and this incident is first in order: severity (confirmed, else proposed), then oldest. Otherwise it raises the retryable `NoSlot`, and Temporal asks again every 15 s (provisional).
+2. In one locked transaction it grants a slot only if fewer than 5 are granted and this incident is first in order: severity (confirmed, else proposed), then oldest. A service already holding 4 slots waits, and the next eligible incident takes the slot (NFR-44, provisional). Otherwise it raises the retryable `NoSlot`, and Temporal asks again every 15 s (provisional).
 3. The incident stays `open` while queued. The 15-minute limit starts at the grant.
 4. `record_transition` deletes the row in the same transaction that takes the incident out of `investigating`, so a crash can't leak a slot.
 5. Beyond 50 queued, the incident lead is alerted and the incident is still recorded and queued (NFR-39).
@@ -135,18 +136,22 @@ Each worker still caps concurrent activities and model activities to protect its
 
 Contracts: [files/activities.py](files/activities.py). Each activity has one job, takes a small input including its idempotency key, returns a small output (large items travel as artifact IDs), and reports heartbeats if it runs long ([Q8.16](conversation.md)). Implementations live in the platform's modules; the file defines interfaces only. Timeouts and retries are in 8.5.
 
+Skill activities take `SkillIn` and return `SkillResult[...]`, which carries a typed failure as a value. Evidence travels by ID and the activity loads it. Hypotheses, the diagnosis and the critic's verdict travel in `SkillIn`, so they sit in history. `review_diagnosis` gets the diagnosis only, never the diagnoser's reasoning. All activities and workers use `DATA_CONVERTER`, Temporal's Pydantic converter.
+
 | Activity | Queue | Input → output | Idempotency key | Job |
 | --- | --- | --- | --- | --- |
-| `load_incident` | Investigation | `IncidentIn` → `IncidentSnapshot` | `idempotency_key` | Read the incident |
+| `load_incident` | Investigation | `IncidentIn` → `IncidentSnapshot`, or none if there is no record | `idempotency_key` | Read the incident |
 | `acquire_investigation_slot` | Investigation | `IncidentIn` → none | `idempotency_key` | Queue by severity; grant one of 5 slots |
+| `read_spend_state` | Investigation | `IncidentIn` → `SpendOut` | `idempotency_key` | Read whether the daily limit puts this investigation in evidence-only mode (ADR-55) |
 | `record_transition` | Investigation | `TransitionIn` → `TransitionOut` | `transition_id` | Check the table and expected version; write status, timeline event and queue-row removal in one transaction |
 | `notify` | Investigation | `NotifyIn` → none | `notification_id` | Send a notification |
-| `collect_evidence` | Investigation | `EvidenceIn` → `EvidenceOut` | `idempotency_key` | Fixed plan or requested tools, each through the ToolGate: parallel read-only queries, redaction, gaps |
-| `retrieve_knowledge` | Investigation | `IncidentIn` → `list[str]` | `idempotency_key` | Relevant knowledge passages |
-| `hypothesise` | Investigation | `IncidentIn` → `HypothesesOut` | `idempotency_key` | Model Gateway: 2–5 hypotheses and evidence requests |
-| `diagnose` | Investigation | `IncidentIn` → `DiagnosisOut` | `idempotency_key` | Model Gateway: reserve budget, call, validate, settle |
-| `review_diagnosis` | Investigation | `IncidentIn` → `ReviewOut` | `idempotency_key` | Code checks, then the independent critic |
-| `draft_patch` | Investigation | `IncidentIn` → `PatchOut` | `idempotency_key` | Draft the patch through the Patch Proposer, or report that no allowed fix exists |
+| `record_notification_failed` | Investigation | `NotifyIn` → none | `notification_id` | Write `aisre.notification.failed.v1` and raise an alert, where no further transition exists (8.10) |
+| `collect_evidence` | Investigation | `EvidenceIn` → `SkillResult[EvidenceOut]` | `idempotency_key` | Fixed plan or requested tools, each through the ToolGate: parallel read-only queries, redaction, gaps |
+| `retrieve_knowledge` | Investigation | `SkillIn` → `SkillResult[KnowledgeOut]` | `idempotency_key` | Relevant knowledge passages |
+| `hypothesise` | Investigation | `SkillIn` → `SkillResult[HypothesesOut]` | `idempotency_key` | Model Gateway: 2–5 hypotheses and evidence requests |
+| `diagnose` | Investigation | `SkillIn` → `SkillResult[DiagnosisResult]` | `idempotency_key` | Model Gateway: reserve budget, call, validate, settle |
+| `review_diagnosis` | Investigation | `SkillIn` → `SkillResult[ReviewResult]` | `idempotency_key` | Code checks, then the independent critic |
+| `draft_patch` | Investigation | `SkillIn` → `SkillResult[PatchOut]` | `idempotency_key` | Draft the patch through the Patch Proposer, or report that no allowed fix exists |
 | `run_sandbox_test` | Investigation | `TestIn` → `TestOut` | `test_key` | Fresh isolated environment: reproduce first, apply, check, destroy. Beyond 3 copies at once it queues (ADR-56) |
 | `request_approval` | Investigation | `ApprovalRequestIn` → `ApprovalRequestOut` | `request_key` | Open the approval request, set `approvers_needed` (ADR-49), create the rollback action |
 | `escalate_approval` | Investigation | `ApprovalRequestIn` → none | `request_key` | Notify the next approver |
@@ -155,17 +160,19 @@ Contracts: [files/activities.py](files/activities.py). Each activity has one job
 | `reconcile_execution` | Dispatcher | `DispatchIn` → `DispatchOut` | `action_id`, which is the execution key | Look up the key, compare the live service with the target; read-only |
 | `verify_recovery` | Investigation | `VerifyIn` → `VerifyOut` | `verification_key` | Read monitoring directly for the hold period |
 | `hand_over` | Investigation | `HandOverIn` → none | `handover_key` | Hand over to a person, with findings |
+| `reconcile_workflows` | Investigation | `ReconciliationIn` → `ReconciliationOut` | `idempotency_key` | The 8.9 job: compare open incidents, running workflows and the queue; remove orphaned queue rows |
 
 Key formats are derived from history, so a replay rebuilds the same key. `<run>` is the incident ID, plus `-r2` and so on for a re-investigation, so a later run can't collide with the first.
 
 | Key | Format |
 | --- | --- |
 | Transition, notification, hand-over | `<run>:t<step>`, `<run>:n<step>`, `<run>:h<step>` |
-| Load, slot, coordinator step | `<run>:load`, `<run>:slot`, `<run>:s<step>` |
+| Load, slot, spend, coordinator step | `<run>:load`, `<run>:slot`, `<run>:spend`, `<run>:s<step>` |
+| Reconciliation job | The Temporal run ID |
 | Test, approval request, verification | `<action_id>:test:1`, `<action_id>:approval:1`, `<action_id>:verify:1` |
 | Execution key | The `action_id`, unchanged on every attempt (ADR-47) |
 
-Every activity is idempotent on the key named in its input, and every input carries one. `IncidentIn` and the new `EvidenceIn` carry `idempotency_key`, and `VerifyIn` gains `verification_key`. Model results are also reused by `input_sha256` within an incident (ADR-61).
+Every activity is idempotent on the key named in its input, and every input carries one. `IncidentIn`, `EvidenceIn` and `SkillIn` carry `idempotency_key`, and `VerifyIn` carries `verification_key`. Model results are also reused by `input_sha256` within an incident (ADR-61).
 
 `DispatchIn` carries only the action ID (ADR-51). The API stores the signed approval, and the dispatcher reloads the action and signatures from trusted storage. `approval_id` is not an input: each attempt records the deciding `approval_id` for audit (ADR-47).
 
@@ -173,9 +180,9 @@ Every activity is idempotent on the key named in its input, and every input carr
 
 *Answers Q8.25, Q8.26.*
 
-Rendered from the ADR-46 tables: `INCIDENT_TRANSITIONS` and `ACTION_TRANSITIONS` in [files/states.py](files/states.py), plus the three added transitions, labelled `added, ADR-46`. One diagram per table. The table holds no triggers, start markers or end markers, so none are drawn. The initial incident state is `open` ([Q8.26](conversation.md)). `closed` and `cancelled` have no outgoing transitions.
+Rendered from the ADR-46 tables: `INCIDENT_TRANSITIONS` and `ACTION_TRANSITIONS` in [files/states.py](files/states.py). The three transitions ADR-46 added are labelled `added, ADR-46`. One diagram per table. The table holds no triggers, start markers or end markers, so none are drawn. The initial incident state is `open` ([Q8.26](conversation.md)). `closed` and `cancelled` have no outgoing transitions.
 
-**Incident (30 transitions: 28 from `states.py`, 2 added)**
+**Incident (30 transitions: the team's 28, 2 added)**
 
 ```mermaid
 stateDiagram-v2
@@ -211,7 +218,7 @@ stateDiagram-v2
     handed_over --> investigating: added, ADR-46
 ```
 
-**Action (20 transitions: 19 from `states.py`, 1 added)**
+**Action (20 transitions: the team's 19, 1 added)**
 
 ```mermaid
 stateDiagram-v2
@@ -241,7 +248,7 @@ stateDiagram-v2
 
 *Answers Q8.25–Q8.31, Q8.35, Q8.36, Q8.38, Q8.39.*
 
-Code: [files/states.py](files/states.py). `states.py` is the authoritative base, with the three additions from ADR-46, and everything else (schema enums, contracts, Technical specification section 2, tests) must match it (ADR-46, ADR-64). One table of allowed transitions, shared by the workflow and the Incident Record. Every entry has a path.
+Code: [files/states.py](files/states.py). `states.py` is authoritative and holds the three additions from ADR-46. Everything else (schema enums, contracts, Technical specification section 2, tests) must match it (ADR-46, ADR-64), and `test_transition_tables_match_schema_exactly` compares it with `schema.sql` both ways. One table of allowed transitions, shared by the workflow and the Incident Record. Every entry has a path.
 
 **Incident states** ([Q8.25](conversation.md))
 
@@ -334,8 +341,8 @@ A rollback action ends at `executed`, `verified`, `not_applied`, `outcome_unknow
 
 **Preventing invalid transitions** ([Q8.38](conversation.md))
 
-1. **One writer:** while a run is live, only the incident's workflow changes its state, and Temporal runs one workflow per ID. There are three named exceptions: the API records `closed`; the dispatcher records action `applying` and its outcomes (ADR-51, C18); and the API records a person's outcome resolution on an `outcome_unknown` action (ADR-49). All go through the same table and version checks.
-2. **The transition table:** `check_incident` and `check_action` refuse any transition not listed, in the workflow before it asks and in `record_transition` before it writes.
+1. **One writer:** while a run is live, only the incident's workflow changes its state, and Temporal runs one workflow per ID. There are three named exceptions: the API records `closed`; the dispatcher records action `applying` and its outcomes (ADR-51, C18); and a person's outcome resolution on an `outcome_unknown` action, which the API accepts and the dispatcher writes, because only its role can write attempts (ADR-49, ADR-51). All go through the same table and version checks.
+2. **The transition table:** `check_incident` and `check_action` refuse any transition not listed, in the workflow before it asks and in `record_transition` before it writes. `check_action` requires the action's kind, because only a rollback may go `proposed` → `awaiting_approval`.
 3. **Optimistic concurrency:** `record_transition` writes only if `version = expected_version`.
 4. **Idempotent transition IDs:** `<run>:t<step>` is derived from history, so a retried transition is recognised, not applied twice.
 
@@ -355,21 +362,23 @@ A rollback action ends at `executed`, `verified`, `not_applied`, `outcome_unknow
 
 | Policy | Initial interval | Backoff | Maximum interval | Maximum attempts | Other |
 | --- | --- | --- | --- | --- | --- |
-| `DB_RETRY` | 1 s | 2.0 | 30 s | 0 (unlimited; stops at schedule-to-close where one is set) | |
+| `DB_RETRY` | 1 s | 2.0 | 30 s | 0 (unlimited; stops at schedule-to-close where one is set) | Non-retryable: `InvalidTransition`. A record that refuses the write (SQLSTATE 23514, 23001) fails the workflow, so it doesn't spin |
 | `TOOL_RETRY` | 2 s | 2.0 | 20 s | 3 | |
 | `NO_RETRY` | Not set | Not set | Not set | 1 | The sandbox and production writes |
 | `MODEL_RETRY` | Not set | Not set | Not set | 2 | Model activities. Every model failure returns as a value, so the only failure Temporal sees is a lost worker (ADR-27, ADR-52) |
 | `READ_RETRY` | 5 s | 2.0 | 1 min | 10 | Non-retryable: `PermissionDenied` |
 | `SLOT_RETRY` (provisional) | 15 s | 1.0 | 15 s | 0 (unlimited) | `NoSlot` is the normal answer while queued |
 
-**Per activity (provisional).** Schedule-to-close is 4× start-to-close, capped by the remaining investigation time for investigation steps (Q8.18). The only exceptions are the four activities marked "None", which run within the 24-hour workflow limit.
+**Per activity (provisional).** Schedule-to-close is 4× start-to-close, capped by the remaining investigation time for investigation steps (Q8.18). The only exceptions are the five activities marked "None", which run within the 24-hour workflow limit.
 
 | Activity | Start-to-close | Schedule-to-close | Heartbeat timeout | Policy | Retry owner |
 | --- | --- | --- | --- | --- | --- |
 | `load_incident` | 10 s | None | None | `DB_RETRY` | Temporal |
 | `acquire_investigation_slot` | 10 s | None | None | `SLOT_RETRY` | Temporal |
+| `read_spend_state` | 10 s | 40 s | None | `DB_RETRY` | Temporal |
 | `record_transition` | 10 s | None | None | `DB_RETRY` | Temporal |
 | `notify` | 15 s | 60 s | None | `TOOL_RETRY` | Temporal |
+| `record_notification_failed` | 10 s | None | None | `DB_RETRY` | Temporal |
 | `collect_evidence` | 180 s, or remaining time if less | 720 s, or remaining time if less | 20 s | `TOOL_RETRY` | Temporal |
 | `retrieve_knowledge` | 30 s, or remaining time if less | 120 s, or remaining time if less | None | `TOOL_RETRY` | Temporal |
 | `hypothesise` | 300 s, or remaining time if less | 1,200 s, or remaining time if less | 20 s | `MODEL_RETRY` | Model Gateway; Temporal for a lost worker only |
@@ -384,6 +393,7 @@ A rollback action ends at `executed`, `verified`, `not_applied`, `outcome_unknow
 | `reconcile_execution` | 150 s | 600 s, the 10-minute limit from Q8.34 | None | `READ_RETRY` | Temporal |
 | `verify_recovery` | Hold period + 300 s (900 s at the default) | 4× (3,600 s at the default) | 60 s | `READ_RETRY` | Temporal |
 | `hand_over` | 15 s | None | None | `DB_RETRY` | Temporal |
+| `reconcile_workflows` | 60 s | 240 s | None | `TOOL_RETRY` | Temporal |
 
 `reconcile_execution` keeps 4× and the 10-minute limit together: while the release process says "in progress", an attempt raises a retryable error, and `READ_RETRY`'s backoff is the wait between checks.
 
@@ -399,7 +409,7 @@ A rollback action ends at `executed`, `verified`, `not_applied`, `outcome_unknow
 
 Long activities also send heartbeats; a missing heartbeat ends the attempt early instead of waiting for the full timeout. A heartbeat is also how an activity receives cancellation, so every long activity that can be cancelled has a 20 s heartbeat timeout (8.7). `verify_recovery` isn't cancelled, and keeps 60 s, the crash-detection value in the Technical specification.
 
-**`record_transition` in a database outage** (layer decision). It retries with no schedule-to-close limit while within the 24-hour workflow limit, so a run pauses and continues when the database returns ([Q8.46](conversation.md)). `load_incident` and `hand_over` do the same: nothing can be handed over from `open` without a readable record, and a hand-over is the last step that must not be lost.
+**`record_transition` in a database outage** (layer decision). It retries with no schedule-to-close limit while within the 24-hour workflow limit, so a run pauses and continues when the database returns ([Q8.46](conversation.md)). `load_incident`, `hand_over` and `record_notification_failed` do the same: nothing can be handed over from `open` without a readable record, and a hand-over is the last step that must not be lost.
 
 **Model calls** ([Q8.17](conversation.md), [Q8.44](conversation.md), ADR-27)
 
@@ -446,7 +456,7 @@ This section applies in Release B (ADR-44). The rules are in ADR-49.
 
 - Two different people with approve rights are needed for 2. The incident lead may be one, but isn't required to be.
 - Two approvers authorise one action, and so one execution key (ADR-47).
-- A decision counts only while it is valid. An approval older than 15 minutes stops counting, and the workflow keeps waiting for the request's 60 minutes.
+- A decision counts only while it is valid. An approval older than 15 minutes stops counting, and the workflow keeps waiting for the request's 60 minutes. The signal carries no decision time, so the workflow measures age from receipt; the dispatcher's check stays final.
 - Any valid rejection wins, regardless of order. A rejection needs authentication, not a recent sign-in.
 - Nobody approves their own request, nobody may be the sole approver of a revert of their own change, and the platform can never approve.
 - A failed approval attempt sends no signal. It writes no approval row, but it writes a `aisre.approval.refused.v1` timeline event and raises a security alert.
@@ -505,7 +515,7 @@ Tests: `test_happy_path_reaches_closed` (duplicate approval), `test_unanswered_a
 | Moment | Behaviour | Result |
 | --- | --- | --- |
 | Before any change: `open`, `investigating`, `diagnosed`, `inconclusive`, `testing`, `awaiting_approval` | Cancel the running activity, then stop at the safe point: between steps, or while waiting for approval. Close any open approval request, withdraw the action, destroy the sandbox, record who asked and why | `cancelled`, final for the platform (ADR-46). A later problem is a new incident |
-| During a production write: `executing`, `reconciling`, `not_recovered` | The write runs to its outcome: the dispatcher activity is shielded and the workflow waits. The request is recorded as an event, with who and when | Depends on the outcome, below |
+| During a production write: `executing`, `reconciling`, `not_recovered` | The write runs to its outcome: the dispatcher activity is shielded and the workflow waits. The API records the request as an event, with who and when; the workflow writes nothing for it | Depends on the outcome, below |
 | `verifying` | No `cancelled` transition; `verify_recovery` runs in `_protected` | `recovered`, `handed_over` or `not_recovered` |
 | `recovered`, `handed_over` | A person owns it; cancellation changes nothing | Unchanged |
 
@@ -522,7 +532,7 @@ Tests: `test_happy_path_reaches_closed` (duplicate approval), `test_unanswered_a
 
 Action on cancellation: `withdrawn`, from proposed, testing or awaiting approval at a safe point, or from approved through that revocation ([Q8.36](conversation.md)).
 
-**Writes are shielded.** A Temporal-level cancel can't interrupt `record_transition`: the write is shielded in every state, so the outcome is always recorded before `run` handles the cancel (C20). This needs a code change and a test (`test_temporal_cancel_during_transition_write_records_outcome`).
+**Writes are shielded.** A Temporal-level cancel can't interrupt `record_transition`: the write is shielded in every state, so the outcome is always recorded before `run` handles the cancel (C20). `_act` shields every non-cancellable activity, so `notify` and `hand_over` survive a Temporal cancel too. Test: `test_temporal_cancel_during_transition_write_records_outcome`.
 
 Tests: `test_cancel_while_awaiting_approval_withdraws_action`, `test_cancel_during_write_lets_write_finish_and_does_not_pretend_reversal`, `test_temporal_cancel_during_write_waits_for_outcome`.
 
@@ -606,7 +616,7 @@ Test: `test_completed_history_replays_deterministically`.
 
 A reconcile that finds no intent row means nothing was sent: the action is still `approved`, so it goes to `withdrawn` and the incident hands over.
 
-When the activity is retried or the workflow resumes, the dispatcher sees the `started` attempt and reconciles first; it never applies the change again blindly. The event is `aisre.execution.completed.v1` with outcome `unknown`. Only reconciliation, or the incident lead's outcome resolution (ADR-49), can leave `outcome_unknown`.
+When the activity is retried or the workflow resumes, the dispatcher sees the `started` attempt and reconciles first; it never applies the change again blindly. The event is `aisre.execution.completed.v1` with outcome `unknown`. Only reconciliation, or the incident lead's outcome resolution (ADR-49, event `aisre.execution.outcome_resolved.v1`), can leave `outcome_unknown`.
 
 **An unknown outcome blocks the deployment** (ADR-47). The block follows from the action's status, so it needs no separate write: a new attempt on a deployment is refused while another action there is `outcome_unknown`, or `applying` with an unresolved attempt (Layer 7 schema). It blocks every further change on that deployment, not just that key. A definite reconciliation result clears it. If the outcome stays unknown, it holds until a person records the actual state.
 
@@ -633,7 +643,7 @@ A retry exists only while the action is still `applying`: same key, next `attemp
 1. Verdict `failed`: incident `verifying` → `not_recovered`.
 2. Rollback action `proposed` → `awaiting_approval`. Its conditional approval starts, and it goes to `approved`. Without one, the workflow requests a fresh approval (8.6).
 3. The dispatcher applies the rollback action, with its own execution key. It isn't re-tested in the sandbox, because it restores the known prior revision; `test_bundle_digest` and `recovery_predicates_digest` copy the parent's values. It is refused if the deployment is no longer at the parent's produced revision.
-4. Applied: rollback action `executed`, parent action `executed` → `undone`, in one transaction. `verify_recovery` then checks the rollback over the hold period while the incident stays `not_recovered`, with no `verifying` state. The result is reported to the person taking over and triggers nothing.
+4. Applied: the dispatcher writes rollback action `executed`. The workflow then writes parent action `executed` → `undone` right after, as its own transition. These aren't one transaction, because the dispatcher's role can't write `undone` (ADR-51). `record_transition` is retried and a run resumes from history, so a crash between the two doesn't lose the second. `verify_recovery` then checks the rollback over the hold period while the incident stays `not_recovered`, with no `verifying` state. The result is reported to the person taking over and triggers nothing.
 5. Unknown: incident `not_recovered` → `reconciling`, rollback action `outcome_unknown`, and the deployment is blocked. Reconciliation runs the same way. If it finds the rollback applied, the check in step 4 runs while the incident stays `reconciling`. Then incident `reconciling` → `handed_over`.
 6. Otherwise, or once the check ends, incident `not_recovered` → `handed_over`: "fix did not hold; person decides next step".
 7. The approver and on-call are notified. If the rollback couldn't run, or its outcome stays unknown, the incident lead is told at once (Artifact 11).
@@ -649,10 +659,10 @@ A verdict of `inconclusive` means too little data: hand over, no rollback, and a
 | Item | Value |
 | --- | --- |
 | Schedule | Every 5 minutes (provisional) |
-| Implementation | A Temporal schedule, `aisre-reconciliation`, running one activity on `aisre-investigation` |
+| Implementation | A Temporal schedule, `aisre-reconciliation`, starting `ReconciliationWorkflow`, which runs one activity, `reconcile_workflows`, on `aisre-investigation` |
 | Owner | Platform owner |
 | Runbook | RB-04 (Release A onward). An unknown production outcome stays with RB-07 |
-| Authority | Read-only, and alerts only. The one write is removing an orphaned queue row |
+| Authority | Read-only, and alerts only: mismatches count in `aisre_workflows_stalled`, which raises `AisreWorkflowStalled`. The one write is removing an orphaned queue row |
 
 | Finding | Response |
 | --- | --- |
@@ -665,7 +675,9 @@ A verdict of `inconclusive` means too little data: hand over, no rollback, and a
 
 If Temporal is down the schedule doesn't run, and the outbox alert in 8.10 covers that period.
 
-Tests: `test_unknown_outcome_is_reconciled_not_retried`, `test_still_unknown_after_reconciliation_hands_over`, `test_failed_verification_undoes_and_hands_over`.
+The findings logic is `reconciliation_findings`, a pure function that is tested. The schedule definition is written, but `create_schedule` hasn't been run, because the test server has no schedules. The `reconcile_workflows` body and the gauge write remain to be built.
+
+Tests: `test_unknown_outcome_is_reconciled_not_retried`, `test_still_unknown_after_reconciliation_hands_over`, `test_failed_verification_rolls_back_as_its_own_action_and_hands_over`.
 
 ## 8.10 Failure scenarios
 
@@ -686,7 +698,7 @@ Tests: `test_unknown_outcome_is_reconciled_not_retried`, `test_still_unknown_aft
 | Dispatcher crash mid-write | Intent stays recorded; reconcile first | Q8.32 |
 | Dispatch timeout | `unknown`, reconciled, never retried | `test_unknown_outcome_is_reconciled_not_retried` |
 | Still unknown after reconciliation | Hand over, no verification, deployment blocked | `test_still_unknown_after_reconciliation_hands_over`, ADR-47 |
-| Fix doesn't hold | Rollback once, hand over | `test_failed_verification_undoes_and_hands_over`, ADR-48 |
+| Fix doesn't hold | Rollback once, hand over | `test_failed_verification_rolls_back_as_its_own_action_and_hands_over`, ADR-48 |
 | Verification inconclusive | Hand over, no rollback | ADR-66 |
 | 24-hour limit reached | Hands over; `recovered` stays `recovered` (8.1) | ADR-46 |
 | Stale or duplicate signal | Ignored | Q8.19 |
@@ -702,14 +714,14 @@ Tests: `test_unknown_outcome_is_reconciled_not_retried`, `test_still_unknown_aft
 | `load_incident` | Pauses, as above | `open` | None |
 | `acquire_investigation_slot` | Doesn't exhaust; it waits, within the 24-hour limit | `open`, then 8.1's limit path | None |
 | `hand_over` | Pauses, as above | Already `handed_over` | Unchanged |
-| `notify` | Hands over, through `inconclusive` from `investigating`. A failed notification in `recovered`, or within a hand-over, writes an `aisre.notification.failed.v1` timeline event and raises an alert instead, because no further transition exists | `→ handed_over`, or unchanged | `awaiting_approval` → `withdrawn` if waiting; otherwise unchanged |
+| `notify` | Hands over, through `inconclusive` from `investigating`. A failed notification in `recovered`, or within a hand-over, runs `record_notification_failed` instead, which writes an `aisre.notification.failed.v1` timeline event and raises an alert, because no further transition exists | `→ handed_over`, or unchanged | `awaiting_approval` → `withdrawn` if waiting; otherwise unchanged |
 | `collect_evidence`, `retrieve_knowledge`, `hypothesise`, `diagnose`, `review_diagnosis` | Typed failure; the coordinator stops as inconclusive (ADR-52) | `investigating` → `inconclusive` → `handed_over` | None |
 | `draft_patch` | Hands over | `diagnosed` → `handed_over` | None |
 | `run_sandbox_test` | Hands over; the Test Runner destroys the sandbox | `testing` → `handed_over` | `testing` → `test_failed` |
 | `request_approval`, `escalate_approval` | Closes the request if one exists, then hands over | `awaiting_approval` → `handed_over` | `awaiting_approval` → `withdrawn` |
 | `close_approval_request` | Hands over on the path already chosen. The API refuses late approvals because the action has left `awaiting_approval` | `→ handed_over` or `cancelled` | `expired`, `withdrawn`, as chosen |
 | `dispatch_change` | Treated as `unknown`, never assumed. Reconcile | `executing` or `not_recovered` → `reconciling` | Unchanged until reconciliation reports |
-| `reconcile_execution` | Treated as still unknown. Deployment blocked until a person clears it (ADR-47) | `reconciling` → `handed_over` | `applying` → `outcome_unknown`, or stays `outcome_unknown` |
+| `reconcile_execution` | Treated as still unknown. Deployment blocked until a person clears it (ADR-47) | `reconciling` → `handed_over` | `applying` → `outcome_unknown`, or stays `outcome_unknown`. That is the dispatcher's write: if the dispatcher is unreachable the action stays `applying`, which still blocks the deployment |
 | `verify_recovery` | Hands over, as an inconclusive verdict: no rollback (ADR-66). On a rollback's check, the person taking over is told it gave no result | `verifying`, `not_recovered` or `reconciling` → `handed_over` | Stays `executed` |
 
 **PostgreSQL unavailable** ([Q8.46](conversation.md))
@@ -755,7 +767,7 @@ The answers that state an assumptions line, Q8.1 and Q8.2, say "None needed". Th
 | Heartbeat timeout of 20 s gives cancellation ≤ 30 s p95 (FR-33) | Provisional | Platform owner | The cancellation test measures ≤ 30 s p95, including sandbox destruction |
 | Reconciliation job every 5 minutes | Provisional | Platform owner | A drill with an injected mismatch alerts within two runs |
 | The release process supports apply, rollback and lookup by key (System Design section 12, ADR-47) | Provisional | Platform owner | Scenario revert done through it |
-| The amended behaviour works in code | Provisional | Platform owner | The changes in `docs/code-changes-required.md` are made and tested |
+| The amended behaviour works in code | Provisional | Platform owner | The reference code passes on Temporal's test server; the items in Reference code status run against real PostgreSQL and a real Temporal schedule |
 
 ## Decisions and conflicts
 
@@ -787,7 +799,7 @@ The answers that state an assumptions line, Q8.1 and Q8.2, say "None needed". Th
 | C9 Who checks what before applying | The workflow checks what its signals carry; the dispatcher checks all eight (8.6) | ADR-49, ADR-51 |
 | C10 Unknown rollback outcome | `not_recovered` → `reconciling`, then `handed_over` | ADR-46, ADR-48 |
 | C11 Service changed after approval | Dispatcher refuses, voids, alerts; hand over. No new request, because the action names its base revision | ADR-47, ADR-49 |
-| C12 24-hour limit | Every non-terminal, non-waiting state hands over; `recovered` stays. Needs a whole-run timer | ADR-46 |
+| C12 24-hour limit | Every non-terminal, non-waiting state hands over; `recovered` stays. A whole-run timer, `_limit_timer` | ADR-46 |
 | C13 Concurrency scope | 5 investigations globally, enforced by a PostgreSQL queue table, ordered by severity | Layer decision (proposed) |
 | C14 Temporal hosting | Self-hosted single node, own database, same PostgreSQL instance | ADR-51 |
 | C15 Execution key | Equals the `action_id`. `exec:<approval_id>` and `undo:<approval_id>` are retired | ADR-47 |
@@ -795,11 +807,11 @@ The answers that state an assumptions line, Q8.1 and Q8.2, say "None needed". Th
 | C17 `inconclusive` verification | Hand over, no rollback. `workflow.py` is corrected | ADR-66 |
 | C18 Who records `applying` | The dispatcher, with the intent record, and the outcomes that follow. `_record_action(A.APPLYING)` is removed. The Layer 7 grants give it `actions.status` and `version` only, limited by trigger to `applying` and its outcomes | ADR-51 |
 | C19 `cancelled` is final | Final for the platform; the incident stays with people outside it | ADR-46 |
-| C20 Temporal cancel during `record_transition` | Shield the write in every state. Required code change and test | Layer decision (proposed) |
+| C20 Temporal cancel during `record_transition` | Shield the write in every state. Done in `_act` and tested | Layer decision (proposed) |
 | 8.6 gap: second approver | Its own signal with the decision ID; the workflow waits for `approvers_needed` valid decisions | ADR-49 |
 | 8.9 gap: reconciliation job | Every 5 minutes (provisional), Temporal schedule, Platform owner, RB-04 | Layer decision (proposed) |
 | 8.10 gap: activity exhaustion | One table in 8.10 | Layer decision (proposed) |
-| New: stop verdict mapping | Only the coordinator's security or data-risk stops go `investigating` → `handed_over`; the rest, time, budget and invalid-output limits included, go through `inconclusive`. `FINISH_INCONCLUSIVE` needs a stop kind | ADR-46, ADR-52 |
+| New: stop verdict mapping | Only the coordinator's security or data-risk stops go `investigating` → `handed_over`; the rest, time, budget and invalid-output limits included, go through `inconclusive`. `FINISH_INCONCLUSIVE` carries a stop kind on `state.stop_kind`, because an enum member can't carry one per stop | ADR-46, ADR-52 |
 | New: Release A's passed action | `testing` → `withdrawn`, reason `release_a_recommendation`. The table has no other exit, and `test_failed` would be false | Layer decision (proposed) |
 | New: dispatcher outcomes | `applied`, `not_applied`, `refused`, `unknown`, from Layer 11. `failed` is dropped | Layer decision (proposed) |
 | New: dispatch failed with no intent | Reconcile finds no intent row: action `approved` → `withdrawn`, incident hands over | Layer decision (proposed) |
@@ -813,9 +825,24 @@ The answers that state an assumptions line, Q8.1 and Q8.2, say "None needed". Th
 | New: failed notification | Hands over like any activity, except in `recovered` or within a hand-over | Layer decision (proposed) |
 | New: `draft_patch` timeout | 300 s, not 120 s: three gateway attempts need up to 186 s | Layer decision (proposed) |
 | New: PostgreSQL outage table | Temporal continues only if its own database is reachable, because ADR-51 shares the instance | ADR-51 |
-| Other code mismatches | Listed in `docs/code-changes-required.md` | ADR-44 to ADR-52, ADR-64, ADR-66 |
+| New: parent `undone` and rollback `executed` | Two writes, not one transaction: the dispatcher's role can't write `undone`, so the workflow writes it right after (8.9) | ADR-51; Layer decision (proposed) |
+| New: who writes an outcome resolution | The API accepts it and the dispatcher writes it, because the API's role can't write `execution_attempts` | ADR-51 |
+| New: approval age in the workflow | Measured from the signal's receipt, because the signal carries no decision time. The dispatcher's check stays final | Layer decision (proposed) |
+| New: failure codes in the loop | A secret in model output is `security_risk`; links and commands are `invalid_output`. An `ActivityError` in the loop is `deadline_passed` on a timeout, otherwise `store_failed` | Layer decision (proposed) |
+| New: cancel during a fresh rollback wait | Withdraws the rollback and hands over | Layer decision (proposed) |
+| New: Release B with no sandbox | It runs the test, which hands over | Layer decision (proposed) |
 
-`Where Claude and ChatGPT disagreed` in [conversation.md](conversation.md) is TBD, so no disagreements are recorded here. The tests in [files/test_workflow.py](files/test_workflow.py) are cited as the answers cite them; they were not run for this compilation.
+`Where Claude and ChatGPT disagreed` in [conversation.md](conversation.md) is TBD, so no disagreements are recorded here.
+
+**Reference code status.** [files/test_workflow.py](files/test_workflow.py) has 104 passing tests on Temporal's time-skipping test server, including sandboxed runs and a replay of a revision round and a fresh rollback approval. Nineteen deliberate mutants of `workflow.py` and `states.py` were all caught. What remains:
+
+| Item | What remains |
+| --- | --- |
+| Activities in `activities.py` | Interfaces only: their bodies are the platform's. So `record_transition`'s queue-row removal and SQL error mapping, and the real Test Runner's kill and destroy, are contract-level and tested with fakes |
+| Tool and output checks | `precheck_requests` and `checked_result` are tested with the real ToolGate and validation. Real activities must call them |
+| Reconciliation job | The real schedule, the `reconcile_workflows` body and the gauge write (8.9) |
+| Dispatcher activities | Layer 11's behaviour is mapped by `dispatch_out`. An unreachable dispatcher leaves the action `applying` (8.10) |
+| Telemetry | The relay's `aisre_event_available_seconds` isn't observed, because no relay exists in these files. `aisre_verification_outcomes_total` has no caller, because `verify_recovery` is an interface |
 
 ## Acceptance checks
 

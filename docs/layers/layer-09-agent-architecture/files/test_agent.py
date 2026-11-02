@@ -21,7 +21,7 @@ from agent_contracts import (Claim, CollectIn, Confidence, CriticIssue, CriticVe
                              ReviewResult, SkillContext, SkillFailure, SkillResult, SkillUsage)
 from coordinator import (AgentState, Limits, Step, StopKind, after_collect, after_critique, after_diagnosis,
                          after_failure, after_hypotheses, after_knowledge, apply_result, next_step)
-from tool_registry import (REGISTRY, SKILL_TOOLS, PatchDraftParams, ToolGate, ToolRefused, agent_tools,
+from tool_registry import (REGISTRY, SKILL_TOOLS, PatchDraftParams, ToolGate, ToolRefused, agent_tools, search_knowledge,
                            tool_schema_for_model)
 from validation import (ObservationFacts, UnsafeOutput, UnsupportedReference, assign_tier, check_citations,
                         check_output, code_checks, combine, fingerprint, mask_secrets,
@@ -794,3 +794,18 @@ def test_skill_result_has_exactly_one_of_output_or_failure():
         SkillFailure(skill="diagnose", code="made_up", detail="x")
     with pytest.raises(ValidationError):
         ReviewResult(confidence=Confidence.high)
+
+
+@pytest.mark.parametrize("tool,doc_type", [("search_runbooks", "runbook"), ("search_past_incidents", "past_incident")])
+def test_each_knowledge_tool_searches_its_own_document_type(tool, doc_type):
+    """The tool picks the type. A model can't widen it: the schema has no doc_type field."""
+    calls = []
+
+    class Index:
+        def search(self, query, **kw):
+            calls.append((query, kw))
+            return []
+    params = REGISTRY[tool].params(service="checkout", query="5xx", k=3)
+    search_knowledge(REGISTRY[tool], params, Index(), {"sre"})
+    assert calls == [("5xx", dict(service="checkout", groups={"sre"}, k=3, doc_type=doc_type))]
+    assert "doc_type" not in REGISTRY[tool].params.model_fields

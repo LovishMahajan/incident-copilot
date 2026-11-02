@@ -206,11 +206,10 @@ class IndexRevision:
         return idx
 
     @staticmethod
-    def load(revision_hash: str, built_at: datetime, document_rows: list[dict], chunk_rows: list[dict],
-             stale_after: timedelta = timedelta(days=180),
-             changed_since_review: Optional[dict[str, datetime]] = None) -> IndexRevision:
+    def load(revision_hash: str, built_at: datetime, document_rows: list[dict], chunk_rows: list[dict]) -> IndexRevision:
         """Rebuilds a revision from its `documents` and `chunks` rows (ADR-62); the caller runs the
-        query joining them through index_revision_documents. Staleness is judged as of built_at."""
+        query joining them through index_revision_documents, whose `stale` comes with each document
+        row. Staleness is what the build judged, so a reload searches the same set (10.9)."""
         docs = {d["document_id"]: d for d in document_rows}
         chunks = []
         for r in sorted(chunk_rows, key=lambda r: (docs[r["document_id"]]["doc_ref"], r["ordinal"])):
@@ -218,9 +217,7 @@ class IndexRevision:
             chunks.append(Chunk(f'{d["doc_ref"]}@{d["doc_version"]}#{r["ordinal"]}', d["doc_ref"], d["doc_version"],
                                 r["ordinal"], tuple(r["heading_path"]), r["body"], r["span_start"], r["span_end"],
                                 r["content_sha256"], frozenset(d["services"]), frozenset(d["allowed_groups"]),
-                                is_stale(d["doc_ref"], d["deprecated"], d["reviewed_at"], built_at, stale_after,
-                                         changed_since_review),
-                                d.get("doc_type", "runbook"), r["document_id"]))
+                                d["stale"], d["doc_type"], r["document_id"]))
         idx = IndexRevision(revision_hash, built_at, chunks)
         idx._rank_stats()
         return idx
@@ -269,14 +266,17 @@ def purge_document(doc_id: str, revisions: Iterable[IndexRevision], evidence: It
                    now: datetime) -> list[dict]:
     """Q10.55: a legal or safety deletion, the one change to an existing revision. Removes the
     document's chunks from every revision, marks the evidence citing it "content removed", and
-    returns one timeline event per affected incident for the caller to write."""
+    returns one timeline event per affected incident for the caller to write. Each marked record
+    holds what protect_evidence lets through: the two content columns and the document reference.
+    A record already marked is left alone, because the mark is write-once."""
     for idx in revisions:
         idx.chunks = [c for c in idx.chunks if c.doc_id != doc_id]
         idx._rank_stats()
     incidents = []
     for e in evidence:
-        if e.get("attributes", {}).get("doc_id") == doc_id:
-            e["summary"] = "content removed"
+        if e.get("attributes", {}).get("doc_id") == doc_id and e.get("content_removed_at") is None:
+            e.update(summary="content removed", attributes={"doc_id": doc_id}, content_removed_at=now,
+                     content_removed_reason=reason)
             e.pop("text", None)
             if e["incident_id"] not in incidents:
                 incidents.append(e["incident_id"])

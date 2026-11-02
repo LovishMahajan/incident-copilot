@@ -2,7 +2,7 @@
 
 - **Layer:** 4, Functional and Non-Functional Requirements
 - **Built from:** Artifacts 1, 2 and 3
-- **Status:** Proposed: gaps resolved 2026-11-02 per [decisions.md](../../decisions.md); pending team sign-off
+- **Status:** Proposed: gaps resolved and reference code aligned 2026-11-02 per [decisions.md](../../decisions.md); pending team sign-off
 - **Sources:** [decisions.md](../../decisions.md), [conversation.md](conversation.md), [System Design](../../reference/system-design.md), [Technical Specification](../../reference/technical-specification.md), [Layer 1](../layer-01-problem-discovery/conversation.md), [Layer 2](../layer-02-scope-and-constraints/conversation.md) and [Layer 12](../layer-12-reliability-evaluation/conversation.md) answers where cited
 
 ## Required sections
@@ -333,7 +333,7 @@ The later milestone names and acceptance criteria are in [Technical Specificatio
 | Conflict 7: Spec criteria "injection 0 unsafe" (M1) and "patches only from the allowed list" (M2) had no row | Register rows FR-39 and FR-40. | ADR-55 |
 | Conflict 8: Spec delivers telemetry in M4; NFR-26 and NFR-15 are M1 | NFR-15 and NFR-26 stay at M1. Telemetry in M4 means hardening only. | Layer decision (proposed) |
 | Conflict 9: provisional tables hold rows with no label, such as NFR-03 and NFR-10 | Everything in a provisional table stays provisional, whether or not its row is labelled. | ADR-55 |
-| Code not yet matching | Daily and monthly ceilings, monthly alerts, dead-letter intake and the per-service slot limit are specified here but not in `files/`. | ADR-56, ADR-58 |
+| Code status | Daily and monthly ceilings are in `gateway.py`, with totals in memory, and the monthly alerts are in `alerts.yml`. Dead-letter intake, the 10-minute same-service join and the per-service slot limit have no module in `files/` yet. | ADR-56, ADR-58 |
 | Disagreements between Claude and ChatGPT | **Needs the team:** [conversation.md](conversation.md) records none; that section is TBD, Owner: Team, settled when: conversation logs are filled in. | Open: can't be set by decision |
 
 ## Acceptance checks

@@ -2,7 +2,7 @@
 
 - **Layer:** 3, SRE Fundamentals
 - **Built from:** Artifact 1, Artifact 2
-- **Status:** Proposed: gaps resolved 2026-11-02 per [decisions.md](../../decisions.md); pending team sign-off
+- **Status:** Proposed: gaps resolved and reference code aligned 2026-11-02 per [decisions.md](../../decisions.md); pending team sign-off
 - **Sources:** [conversation.md](conversation.md), [decisions.md](../../decisions.md), [synthetic reference incident](files/reference-incident/README.md) (proposed), [system-design.md](../../reference/system-design.md), [technical-specification.md](../../reference/technical-specification.md), and, for consistency with later citations of this artifact only, [Layer 4](../layer-04-requirements/conversation.md), [Layer 5](../layer-05-threat-modeling/conversation.md), [Layer 9](../layer-09-agent-architecture/conversation.md), [validation.py](../layer-09-agent-architecture/files/validation.py), [context.py](../layer-10-inference-retrieval/files/context.py)
 
 ## Required sections
@@ -602,7 +602,7 @@ Each incident has one record, with a timestamped entry for every stage change, t
 | Item | Resolution | Decided by |
 | --- | --- | --- |
 | Evidence strength scale | Q3.34's order is authoritative, and strength attaches to the observation. `validation.STRENGTH` is replaced. | ADR-53 |
-| Priority vs strength | Different jobs. `EVIDENCE_PRIORITY` only orders context for reading, and is renamed. | ADR-53 |
+| Priority vs strength | Different jobs. `EVIDENCE_PRIORITY` only orders context for reading, and is now `CONTEXT_KIND_ORDER`. | ADR-53 |
 | System Design list | All eight tiers stand. Hypotheses: at least two (Q3.12), at most five (System Design). | ADR-53 |
 | Decisive evidence in S | Tier 2 and tier 3 are each mechanism evidence. If the rollout isn't gradual, tier 3 still stands alone. | ADR-53 |
 | Unavailable source | A missing source never stops collection. A diagnosis can't be established while a required source is missing, which reconciles Q3.36 and Q3.37. | ADR-54 |

@@ -91,6 +91,7 @@ verification_outcomes = Counter("aisre_verification_outcomes_total", "Verificati
 rollbacks = Counter("aisre_rollbacks_total", "Rollback actions dispatched", ["outcome"], registry=REGISTRY)
 production_writes_fenced = Gauge("aisre_dispatch_fenced", "1 if production writes are currently disabled", ["reason"], registry=REGISTRY)
 clock_drift = Gauge("aisre_clock_drift_seconds", "Absolute clock drift on the dispatcher host", registry=REGISTRY)
+audit_chain_faults = Gauge("aisre_audit_chain_faults", "Incidents whose timeline failed verify_timeline_chain at the last check", registry=REGISTRY)
 
 # ---------------------------------------------------------------------------
 # Telemetry itself (Q12.20)
@@ -104,10 +105,15 @@ ALLOWED_LABEL_VALUES = {"status_class": {"2xx", "3xx", "4xx", "5xx"}, "direction
 # Redaction (Q12.18, Q12.19)
 # ---------------------------------------------------------------------------
 SECRET_PATTERNS = [
-    re.compile(r"(?i)\b(bearer|token|api[_-]?key|secret|password|passwd)\b\s*[:=]\s*\S+"),
+    re.compile(r"""(?i)(?:bearer|token|api[_-]?key|access[_-]?key|private[_-]?key|secret|password|passwd|pwd)"""
+               r"""(?:[_-](?:access[_-])?(?:key|value))?["']?\s*[:=]\s*(?:"[^"]*"|'[^']*'|[^\s"',;]+)"""),
+    re.compile(r"""(?i)\bauthorization["']?\s*[:=]\s*["']?(?:bearer|basic|digest|token)\s+[^\s"',;]+"""),
+    re.compile(r"(?i)\bbearer\s+(?=[\w.~+/-]*\d)[\w.~+/-]{16,}=*"),      # needs a digit: "bearer authentication" is prose
     re.compile(r"\bsk-[A-Za-z0-9_-]{16,}\b"),
     re.compile(r"\bAKIA[0-9A-Z]{16}\b"),
-    re.compile(r"-----BEGIN [A-Z ]*PRIVATE KEY-----"),
+    re.compile(r"\b(?:gh[pousr]_[A-Za-z0-9]{20,}|github_pat_[A-Za-z0-9_]{20,})\b"),
+    re.compile(r"\beyJ[\w-]+\.[\w-]+\.[\w-]+"),                          # a JWT
+    re.compile(r"(?s)-----BEGIN [A-Z ]*PRIVATE KEY-----.*?(?:-----END [A-Z ]*PRIVATE KEY-----|\Z)"),   # with its body
     re.compile(r"\b[\w.+-]+@[\w-]+\.[\w.-]+\b"),                       # e-mail addresses
     re.compile(r"\b(?:\d[ -]?){13,19}\b"),                              # card-like digit runs
     re.compile(r"\b\d{1,3}(?:\.\d{1,3}){3}\b"),                         # IPv4 addresses

@@ -957,6 +957,21 @@ BEGIN
   RETURN NEW;
 END $$;
 
+-- ADR-49, derived: the stored flag can add to the rule and never lower it. action.is_high_impact
+-- is the same rule. Severity not yet confirmed counts as high-impact.
+CREATE FUNCTION action_is_high_impact(a actions) RETURNS boolean
+LANGUAGE sql STABLE AS $$
+  SELECT a.high_impact OR a.kind = 'release_rollback'
+    OR EXISTS (SELECT 1 FROM actions p WHERE p.action_id = a.parent_action_id AND p.kind = 'release_rollback')
+    OR EXISTS (SELECT 1 FROM incidents i WHERE i.incident_id = a.incident_id
+               AND (i.confirmed_severity IS NULL OR i.confirmed_severity = 'sev1'))
+    OR EXISTS (SELECT 1 FROM services s WHERE s.service_id = a.target_service_id AND s.critical)
+    OR EXISTS (SELECT 1 FROM patches mine JOIN patches other ON other.patch_sha256 = mine.patch_sha256
+               JOIN actions o ON o.action_id = other.action_id
+               WHERE mine.action_id = a.action_id AND o.incident_id = a.incident_id
+                 AND o.target_deployment <> a.target_deployment)
+$$;
+
 -- Approval requests.
 CREATE FUNCTION check_approval_request() RETURNS trigger
 LANGUAGE plpgsql AS $$
@@ -964,7 +979,7 @@ DECLARE
   a actions%ROWTYPE;
 BEGIN
   SELECT * INTO a FROM actions WHERE action_id = NEW.action_id;
-  IF a.high_impact AND NEW.approvers_needed <> 2 THEN
+  IF action_is_high_impact(a) AND NEW.approvers_needed <> 2 THEN
     RAISE EXCEPTION 'a high-impact action needs two approvers (ADR-49)' USING ERRCODE = 'check_violation';
   END IF;
   RETURN NEW;
@@ -1497,8 +1512,8 @@ GRANT UPDATE (cleared_by, cleared_at) ON fence_reasons TO aisre_app;
 GRANT UPDATE (content_removed_at, content_removed_reason) ON evidence TO aisre_app;
 GRANT DELETE ON investigation_queue TO aisre_app;
 GRANT UPDATE (accepted_by, accepted_at) ON verifications TO aisre_app;
-GRANT EXECUTE ON FUNCTION verify_timeline_chain(uuid), timeline_event_hash(timeline_events)
-  TO aisre_app;
+GRANT EXECUTE ON FUNCTION verify_timeline_chain(uuid), timeline_event_hash(timeline_events),
+  action_is_high_impact(actions) TO aisre_app;
 
 -- Trusted dispatcher (ADR-51): reads actions, patches, approvals and verification results;
 -- writes attempts, action status for `applying` and its outcomes, and its own timeline

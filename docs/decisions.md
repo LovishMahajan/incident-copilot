@@ -12,7 +12,7 @@ When two documents disagree, the higher one wins:
 2. The layer artifacts (`artifact-*.md`)
 3. The [System Design](reference/system-design.md) and [Technical specification](reference/technical-specification.md), as amended by the notes at their top
 4. `conversation.md`: the team's original answers, kept unchanged as the record of how each decision was reached
-5. `files/`: reference code, kept unchanged. Where it differs from this register, the fix is listed in [code-changes-required.md](code-changes-required.md)
+5. `files/`: reference code, which now implements these decisions. The Room 7 originals are in git commit 013bcf4
 
 Files marked "proposed" in a layer's `files/` folder, such as `schema.sql`, are new specifications written to close gaps. They are not part of the team's Room 7 tabs.
 
@@ -404,7 +404,7 @@ Prompts live at `prompts/<skill>/v<N>.md`, immutable once merged. A new version 
 | `model_attempts` | Adds checkpoint, adapter version, output schema fingerprint, provider request ID, stop reason, cache tokens, usage reported or estimated, prompt fingerprint. Task name `critique` |
 | Undo | `is_undo` is removed (ADR-48) |
 | Catalogue | `services` gains `critical` and `hold_seconds` (ADR-49, ADR-66) |
-| Table count | 33 tables, not 22, including `investigation_queue`, `fence_state` and `fence_reasons` for Layers 8 and 12. Technical specification section 4 is amended |
+| Table count | 34 tables, not 22, including `investigation_queue`, `fence_state` and `fence_reasons` for Layers 8 and 12, and `reservation_corrections` for ADR-61. Technical specification section 4 is amended |
 | Digests | `action_digest` and `test_bundle_digest` are write-once, set at `testing` → `awaiting_approval`, because the test bundle doesn't exist when the action is created |
 | Intake | `dead_letters` table (ADR-58) |
 | Retrieval | `documents`, `chunks`, `index_revisions` (ADR-62) |
@@ -480,3 +480,4 @@ Decisions can't supply these. Each stays open in its artifact, marked `**Needs t
 | Actual monthly budget and hourly cost | Engineering manager | Finance confirms (ADR-56) |
 | The frozen suite and its baseline run | SRE lead | Built from the specification in Artifact 12, then run once |
 | Whether the amended behaviour works in code | Platform owner | Changes in [code-changes-required.md](code-changes-required.md) made and tested |
+| Legal deletion of runbook text: `documents` and `chunks` are append-only, so `purge_document` can't remove body text from PostgreSQL | Security lead | A deletion path is decided |

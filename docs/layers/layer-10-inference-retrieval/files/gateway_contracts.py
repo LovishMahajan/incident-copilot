@@ -8,6 +8,7 @@ gateway sees a provider's request or response format. Also home to the one token
 from __future__ import annotations
 
 import math
+import re
 from enum import Enum
 from typing import Any, Literal, Optional, Union
 
@@ -22,6 +23,15 @@ def estimate_tokens(text: str) -> int:
     """The one pre-call estimate (ADR-61): about 3 characters per token (real text averages nearer 4).
     Used to reserve budget and to size context; the provider's reported usage settles it."""
     return math.ceil(len(text) / 3) + 16
+
+
+_DATA_TAG = re.compile(r"(?i)<(?=\s*/?\s*data\b)")
+
+
+def escape_data(text: str) -> str:
+    """Evidence can't open or close a data block (ST-33): only those tags change, so ordinary log
+    text stays as written. Context sizing estimates this form, since it is what the model reads."""
+    return _DATA_TAG.sub("&lt;", text)
 
 
 class Strict(BaseModel):

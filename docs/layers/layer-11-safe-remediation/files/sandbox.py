@@ -10,12 +10,15 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
 import subprocess
 import time
 from dataclasses import dataclass, field
 from datetime import datetime
 from enum import Enum
 from typing import Optional
+
+from validation import mask_secrets
 
 
 @dataclass(frozen=True)
@@ -34,10 +37,6 @@ class SandboxSpec:
     per_test_s: int = 120                  # Q11.47 (each test)
     user: str = "65534:65534"              # Q11.20 (nobody; never root)
     network: str = "none"                  # Q11.21, ADR-60 (no network; nothing else is accepted)
-
-
-FORBIDDEN_MOUNT_SOURCES = ("/var/run/docker.sock", "/run/docker.sock", "/run/containerd", "/proc", "/sys",
-                           "/dev", "/etc", "/root", "/home", "/var/lib/docker")
 
 
 STOP_GRACE_S = 10                          # Q11.28: stop, then kill after this
@@ -86,24 +85,33 @@ def volume_args(spec: SandboxSpec, run_id: str) -> list[str]:
             "--label=aisre.sandbox=1", f"--label=aisre.run={run_id}", workspace_volume(run_id)]
 
 
+# Every token launch_args may emit between `docker run` and the image. Anything else is refused,
+# so a new way to weaken the launch fails here without anyone having listed it (Q11.23, Q11.31).
+_ALLOWED_ARGS = re.compile(
+    r"--rm|--name|aisre-test-[\w-]+|--runtime=runsc|--network=none|--read-only"
+    r"|--tmpfs=/tmp:rw,noexec,nosuid,nodev,size=\d+m|--mount=type=volume,src=[\w-]+,dst=/workspace"
+    r"|--cpus=[\d.]+|--memory=\w+|--memory-swap=\w+|--pids-limit=\d+|--user=0*[1-9]\d*:0*[1-9]\d*"
+    r"|--cap-drop=ALL|--security-opt=no-new-privileges|--ipc=private|--stop-timeout=\d+"
+    r"|--label=aisre\.sandbox=1|--label=aisre\.run=[\w-]+|--env=AISRE_SANDBOX=1")
+_REQUIRED_ARGS = ("--runtime=runsc", "--network=none", "--read-only", "--cap-drop=ALL",
+                  "--security-opt=no-new-privileges", "--ipc=private")
+
+
 def validate_args(args: list[str]) -> None:
-    """Defence in depth: refuse any argument list that could weaken isolation (Q11.23, Q11.31)."""
-    joined = " ".join(args)
-    for bad in ("--privileged", "--cap-add", "--device", "--network=host", "--pid=host", "--ipc=host",
-                "--userns=host", "seccomp=unconfined", "apparmor=unconfined", "--security-opt=label=disable"):
-        if bad in joined:
-            raise SpecRejected(f"forbidden option {bad}")
-    for a in args:
-        if a.startswith(("-v", "--volume", "--mount")) and any(s in a for s in FORBIDDEN_MOUNT_SOURCES):
-            raise SpecRejected(f"forbidden mount {a}")
-        if a.startswith("--env=") and any(k in a.upper() for k in ("TOKEN", "SECRET", "PASSWORD", "KEY=", "AWS_", "DATABASE_URL")):
-            raise SpecRejected("credentials must never enter the sandbox")
-        if a.startswith("--user=") and a.split("=", 1)[1].split(":")[0] in ("0", "root"):
-            raise SpecRejected("sandbox must not run as root")
-    if [a for a in args if a.startswith("--net")] != ["--network=none"]:
-        raise SpecRejected("--network=none is required (ADR-60)")
-    if "--runtime=runsc" not in args:
-        raise SpecRejected("gVisor runtime required")
+    """Defence in depth: an allow-list, so only what launch_args builds can run, whatever the
+    spelling (Q11.23, Q11.31). The list ends with the pinned image and the trusted harness."""
+    if args[:2] != ["docker", "run"] or len(args) < 4:
+        raise SpecRejected("the launcher runs only `docker run`")
+    for a in args[2:-2]:
+        if not _ALLOWED_ARGS.fullmatch(a):
+            raise SpecRejected(f"option not on the allow-list: {a.split('=')[0]}")        # never the value
+    if "@sha256:" not in args[-2] or args[-2].startswith("-") or args[-1] != "/harness/run":
+        raise SpecRejected("a pinned image and the trusted harness are required")
+    missing = [a for a in _REQUIRED_ARGS if a not in args]
+    if missing:
+        raise SpecRejected(f"required: {', '.join(missing)} (ADR-60)")
+    if not any(a.startswith("--user=") for a in args):
+        raise SpecRejected("sandbox must not run as root")
 
 
 # ---------------------------------------------------------------------------
@@ -188,12 +196,14 @@ def classify(b: Optional[ResultBundle], expected_patch_sha256: str) -> TestOutco
 def read_bundle(stdout: str, exit_code: int) -> Optional[ResultBundle]:
     """The bundle is the last line of the harness's output, the only channel left: `--rm` removes
     the container and the tmpfs volume empties with it. The exit code is what Docker reported,
-    not what the bundle claims. Anything unreadable is no bundle, which classifies as crashed."""
+    not what the bundle claims. Anything unreadable is no bundle, which classifies as crashed.
+    Test output is free text, so a secret a test printed is masked before it leaves (ST-24)."""
     try:
         d = json.loads(stdout.strip().splitlines()[-1])
-        suites = tuple(SuiteResult(**s) for s in d.pop("suites"))
+        suites = tuple(SuiteResult(**{**s, "errors": [mask_secrets(e) for e in s.get("errors", [])]})
+                       for s in d.pop("suites"))
         return ResultBundle(**{**d, "suites": suites, "exit_code": exit_code,
-                               "new_error_signatures": tuple(d["new_error_signatures"])})
+                               "new_error_signatures": tuple(mask_secrets(e) for e in d["new_error_signatures"])})
     except (IndexError, KeyError, TypeError, ValueError, AttributeError):
         return None
 

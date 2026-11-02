@@ -2,7 +2,7 @@
 
 - **Layer:** 1, Problem Discovery
 - **Built from:** None. This layer begins the worksheet.
-- **Status:** Proposed: gaps resolved 2026-11-02 per [decisions.md](../../decisions.md); pending team sign-off
+- **Status:** Proposed: gaps resolved and reference code aligned 2026-11-02 per [decisions.md](../../decisions.md); pending team sign-off
 - **Sources:** [conversation.md](conversation.md), the team's written 1.1 text, [Layer 2 conversation](../layer-02-scope-and-constraints/conversation.md), [Layer 3 conversation](../layer-03-sre-fundamentals/conversation.md), [Layer 4 conversation](../layer-04-requirements/conversation.md), [system-design.md](../../reference/system-design.md), [decisions.md](../../decisions.md)
 
 ## Required sections

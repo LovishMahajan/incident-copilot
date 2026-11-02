@@ -2,7 +2,7 @@
 
 - **Layer:** 12, Reliability, Observability and Evaluation
 - **Built from:** Artifacts 3, 4, 10 and 11
-- **Status:** Proposed: gaps resolved 2026-11-02 per [decisions.md](../../decisions.md); pending team sign-off
+- **Status:** Proposed: gaps resolved and reference code aligned 2026-11-02 per [decisions.md](../../decisions.md); pending team sign-off
 - **Sources:** [conversation.md](conversation.md), [files/telemetry.py](files/telemetry.py), [files/alerts.yml](files/alerts.yml), [files/fence.py](files/fence.py), [files/eval_harness.py](files/eval_harness.py), [files/test_layer12.py](files/test_layer12.py), [System Design](../../reference/system-design.md), [Technical specification](../../reference/technical-specification.md), [Layer 4 conversation](../layer-04-requirements/conversation.md), [Layer 8 conversation](../layer-08-workflows-state-machines/conversation.md), [Layer 10 conversation](../layer-10-inference-retrieval/conversation.md), [Layer 11 conversation](../layer-11-safe-remediation/conversation.md), [reference incident](../layer-03-sre-fundamentals/files/reference-incident/), [decisions.md](../../decisions.md)
 
 ## Required sections
@@ -25,7 +25,7 @@
 
 *Answers Q12.1–Q12.4, Q12.6–Q12.11, Q12.16, Q12.17.*
 
-**How the platform watches itself** ([Q12.1](conversation.md)): every process is instrumented with OpenTelemetry (metrics, traces, structured logs, tagged with service, step and incident). Metrics go to Prometheus, with 31 alerts (12.3). Grafana dashboards show health. `/livez` and `/readyz` report process state (12.5). A status line in the CLI and API reads "platform healthy / degraded: \<what> / writes disabled: \<why>".
+**How the platform watches itself** ([Q12.1](conversation.md)): every process is instrumented with OpenTelemetry (metrics, traces, structured logs, tagged with service, step and incident). Metrics go to Prometheus, with 32 alerts (12.3). Grafana dashboards show health. `/livez` and `/readyz` report process state (12.5). A status line in the CLI and API reads "platform healthy / degraded: \<what> / writes disabled: \<why>".
 
 **Two observability responsibilities** ([Q12.2](conversation.md)):
 
@@ -90,7 +90,8 @@ The platform never writes to customer monitoring. Its own telemetry never become
 | Queue and workflow | `aisre_incident_outcomes_total` | Counter | outcome | Proposed. Incidents ended: established, inconclusive, handed over, cancelled |
 | Model | `aisre_budget_monthly_spent_micros` | Gauge | none | Proposed. Spend so far this month |
 | Model | `aisre_budget_monthly_limit_micros` | Gauge | none | Proposed. Monthly spend ceiling (ADR-56) |
-| Remediation | `aisre_approval_refused_total` | Counter | reason | Proposed. Failed approval attempts (ADR-49) |
+| Remediation | `aisre_approval_refused_total` | Counter | reason | Proposed. Failed approval attempts, labelled with the refusal code (ADR-49) |
+| Remediation | `aisre_audit_chain_faults` | Gauge | none | Proposed. Incidents whose timeline failed `verify_timeline_chain` at the last check (ST-32) |
 | Remediation | `aisre_clock_drift_seconds` | Gauge | none | Proposed. Absolute clock drift on the dispatcher host |
 
 **Rules** ([Q12.3](conversation.md), [Q12.16](conversation.md)):
@@ -176,7 +177,7 @@ Engineers search by incident ID and see the tree: intake → workflow → collec
 
 *Answers Q12.1, Q12.4–Q12.11, Q12.16, Q12.20.*
 
-This table is the specification: 31 alerts. [files/alerts.yml](files/alerts.yml) stays as the team's file with its 18 rules. Its differences are listed in the code changes, and the rule count test moves to 31 with them. "New" marks a rule not yet in the file. Thresholds are provisional and owned by the Platform owner. "Hold" is the rule's `for` clause; "none" means it fires on the first evaluation.
+This table is the specification: 32 alerts. [files/alerts.yml](files/alerts.yml) has the same 32 rules, and the rule count test holds it there. "New" marks a rule added to the team's 18. Thresholds are provisional and owned by the Platform owner. "Hold" is the rule's `for` clause; "none" means it fires on the first evaluation.
 
 | Group | Alert | Condition | Hold | Severity | Runbook |
 | --- | --- | --- | --- | --- | --- |
@@ -206,13 +207,14 @@ This table is the specification: 31 alerts. [files/alerts.yml](files/alerts.yml)
 | Model | `AisreUnreconciledUsage` | `aisre_budget_pending_reconcile` above 20 | 1h | ticket | RB-06 spend |
 | Remediation | `AisreActionOutcomeUnknown` | Any action with an unknown outcome | 1m | page | RB-07 unknown action outcome |
 | Remediation | `AisreApprovalBacklog` | Oldest approval request over 900 s | none | page | RB-08 approval backlog |
-| Remediation | `AisreApprovalRefused` (new) | Any failed approval attempt in 5 min (ADR-49) | none | page | RB-08 approval backlog |
+| Remediation | `AisreApprovalRefused` (new) | Any approval attempt refused on identity, rights or digest in 5 min, the `reason` values in `SECURITY_ALERT_CODES` (ADR-49, 11.6). Every refusal still writes its event | none | page | RB-08 approval backlog |
 | Remediation | `AisreVerificationFailureRate` | Over 30% failed in 7 days, with at least 10 attempts | none | ticket | RB-09 verification failures |
 | Remediation | `AisreSandboxLeak` | Any sandbox left beyond 60 minutes | none | ticket | RB-10 sandbox leak |
 | Remediation | `AisreWritesFenced` | Writes disabled | 15m | ticket | RB-11 writes fenced |
+| Remediation | `AisreAuditChainBroken` (new) | Any incident failed `verify_timeline_chain` at the last check (ST-32) | none | page | RB-13 audit chain broken |
 | Telemetry | `AisreTelemetryDropping` | Any telemetry dropped (15 min rate) | 15m | ticket | RB-12 telemetry degraded |
 
-**Routing.** Alerts page the Platform owner role ([Q12.2](conversation.md)), with three exceptions: `AisreQueueDepthHigh` goes to the incident lead (NFR-39), `AisreApprovalRefused` goes to the Security lead (ADR-49), and `AisreApprovalBacklog` also goes to the incident lead. Pages travel from Prometheus and must not pass through the Notifier or PostgreSQL, since either may be what failed.
+**Routing.** Alerts page the Platform owner role ([Q12.2](conversation.md)), with four exceptions: `AisreQueueDepthHigh` goes to the incident lead (NFR-39), `AisreApprovalRefused` and `AisreAuditChainBroken` go to the Security lead (ADR-49, ST-32), and `AisreApprovalBacklog` also goes to the incident lead. Pages travel from Prometheus and must not pass through the Notifier or PostgreSQL, since either may be what failed. `alerts.yml` carries `route` and `also_route` labels for the four exceptions. Receivers and the paging path need an Alertmanager configuration, which isn't in `files/` yet.
 
 **Timing rules.** Age gauges take no hold, because the age already is the wait: a hold on top would fire late. `AisrePostgresDown` meets the 2-minute limit (NFR-07): probe every 15 s, a 15 s evaluation, a 60 s hold, leaving 30 s for delivery (provisional, proven by the outage test).
 
@@ -227,7 +229,7 @@ Answers that shape these rules:
 
 *Answers Q12.5, Q12.10, Q12.11, Q12.20, Q12.25.*
 
-Twelve runbooks cover all 31 alerts. "Owner" keeps the runbook current; it's the role that owns the failing component in the System Design. Every step says what to check and where; commands depend on tooling the sources don't name.
+Thirteen runbooks cover all 32 alerts. "Owner" keeps the runbook current; it's the role that owns the failing component in the System Design. Every step says what to check and where; commands depend on tooling the sources don't name.
 
 | Runbook | Alerts | Owner | Applies from |
 | --- | --- | --- | --- |
@@ -243,6 +245,7 @@ Twelve runbooks cover all 31 alerts. "Owner" keeps the runbook current; it's the
 | RB-10 sandbox leak | `AisreSandboxLeak` | Security lead | Release A |
 | RB-11 writes fenced | `AisreWritesFenced` | Security lead | Release A for restore and backup fences, Release B for the rest |
 | RB-12 telemetry degraded | `AisreTelemetryDropping` | Platform owner | Release A |
+| RB-13 audit chain broken | `AisreAuditChainBroken` | Security lead | Release B |
 
 **Rules for every runbook**
 
@@ -500,11 +503,27 @@ Covers every dependency behind a circuit breaker: the model provider and each ev
 - **Exit condition:** no drops for 15 minutes.
 - **Owner role:** Platform owner.
 
+### RB-13 audit chain broken
+
+- **Trigger alert:** `AisreAuditChainBroken`.
+- **Impact:** a timeline row was changed, removed or written out of order, or the check itself is wrong. Until it's explained, that incident's record can't be relied on. Investigations and fixes on other incidents aren't affected.
+- **Diagnosis:**
+  1. `aisre_audit_chain_faults`, then `verify_timeline_chain` on the incidents it names, for the first bad `seq`.
+  2. Compare that row with the separate write-once copy (12.6), which is the independent record.
+  3. Database audit logs, for who held update rights at that time.
+- **Actions:**
+  1. Keep the evidence: don't repair the row or re-chain the incident.
+  2. Treat a real difference as a security incident, with the Security lead in charge.
+  3. If rights may be stolen, set a manual fence (RB-11) until they are revoked.
+- **Escalation:** Security lead at once: this alert pages them directly.
+- **Exit condition:** the cause is recorded, and `aisre_audit_chain_faults` is at 0 or the Security lead has accepted the remaining fault in writing.
+- **Owner role:** Security lead.
+
 ## 12.5 Failure matrix
 
 *Answers Q12.20–Q12.33.*
 
-Fence reasons are the values of `FenceReason` in [files/fence.py](files/fence.py), plus two marked proposed. The fence state lives in PostgreSQL, so when PostgreSQL is down the dispatcher fails closed.
+Fence reasons are the values of `FenceReason` in [files/fence.py](files/fence.py). Two are marked proposed, because this layer added them. The fence state lives in PostgreSQL, so when PostgreSQL is down the dispatcher fails closed.
 
 | Failure | Platform behaviour | Write fence | Source |
 | --- | --- | --- | --- |
@@ -519,7 +538,7 @@ Fence reasons are the values of `FenceReason` in [files/fence.py](files/fence.py
 | Evidence source slow or erroring | Per-call timeout, 2 retries with backoff, circuit breaker; evidence marked partial | None | Technical specification section 9 |
 | Requests faster than processing | Intake stays fast; beyond 10× the expected rate a per-caller limit returns `429` with `Retry-After`. At most 5 investigations run; the rest wait by severity; beyond 50 queued the incident lead is alerted. Gateway slots: 8 global, 2 per incident. Tools: per-tool limits and breakers. Every limit queues with a visible age or refuses with a clear status | None | [Q12.24](conversation.md) |
 | Queue saturated | RB-03 (12.4). Never drop incidents, and never skip safety steps | None | [Q12.25](conversation.md) |
-| Worker restart during deployment | On SIGTERM stop polling. Running activities get up to 60 s; long ones heartbeat and are cancelled cleanly; the sandbox destroys its environment. The dispatcher finishes its current write and records the outcome; a write it can't finish stays `intent_recorded` and is reconciled on restart. Unfinished work retries on another worker from its last checkpoint. Rolling, one worker at a time, with readiness gating, and new workflow code checked by replay first | None | [Q12.26](conversation.md) |
+| Worker restart during deployment | On SIGTERM stop polling. Running activities get up to 60 s; long ones heartbeat and are cancelled cleanly; the sandbox destroys its environment. The dispatcher finishes its current write and records the outcome; a write it can't finish stays `started` and is reconciled on restart. Unfinished work retries on another worker from its last checkpoint. Rolling, one worker at a time, with readiness gating, and new workflow code checked by replay first | None | [Q12.26](conversation.md) |
 | Worker crash | Heartbeat lost after 60 s; another worker resumes from the last checkpoint; unique keys stop repeated side effects | None | Technical specification section 9 |
 | Crash after a change, before confirmation | Intent recorded first; lookup by execution_key, then a service state check; if still unclear, stop and ask a person | That deployment if the outcome stays unknown | Technical specification section 9, [Q12.33](conversation.md) |
 | An action's outcome is unknown | A person must check the service | That deployment, `unknown_outcome_on_deployment` | [Q12.10](conversation.md), [Q12.33](conversation.md) |
@@ -528,7 +547,7 @@ Fence reasons are the values of `FenceReason` in [files/fence.py](files/fence.py
 | Backup quiesce in progress | See 12.6 | Global, `backup_quiesce` | [Q12.33](conversation.md), [Q12.37](conversation.md) |
 | Restored environment, not yet reconciled | See 12.6 | Global with a new epoch, `restored_pending_reconciliation` | [Q12.33](conversation.md), [Q12.43](conversation.md) |
 | Database corruption | Point-in-time restore; open incidents re-checked against monitoring and release history before any action resumes | Restore fence | Technical specification section 9 |
-| Manual: ordered by an incident lead or security lead, applied by the Platform admin (ADR-50) | Writes stop as set | As set, `manual` | [Q12.33](conversation.md) |
+| Manual: set directly by an Incident lead or the Platform admin, recording who and why (ADR-50) | Writes stop as set | As set, `manual` | [Q12.33](conversation.md) |
 
 **Lifting fences** ([Q12.33](conversation.md)): fences lift automatically when their cause clears, except two. The restore fence needs reconciliation and a person (tested). An unknown-outcome fence needs a person to record the actual state, and `lift()` refuses without that record. Only a restore bumps the fence epoch; other fences only set a reason, so writes resume with the same token once the cause clears.
 
@@ -624,7 +643,8 @@ Drill restores go into a separate environment, whose release-process credentials
 | Pending or intent | Applied | Expected after | Applied: record it, write the missing event (labelled "restored by reconciliation"), and go on to verification or close |
 | Pending or intent | Not found | Base | Not applied, or void: `not_applied` is final, so a further try is a new action with a fresh approval (ADR-47) |
 | Any | Applied | Base or other | Unresolved: a person decides |
-| Any | In progress | Any | Wait, then re-check |
+| Any | In progress | Any | Wait and re-check for up to 15 minutes, then unresolved: a person decides |
+| `not_applied` | Applied | Expected after | Unresolved: a person decides. `not_applied` is final (ADR-47), so reconciliation doesn't overwrite it |
 
 **Proving recovery** ([Q12.42](conversation.md), [Q12.49](conversation.md)). A backup that has never been restored doesn't count as a backup. A recovery claim is valid only if the last drill met it, within the last quarter.
 
@@ -906,7 +926,7 @@ Building them: `alert.json`, `release.json`, `config-diff.txt`, `logs.ndjson`, `
 
 *Answers Q12.71–Q12.78.*
 
-**`ExperimentConfig` fields** ([Q12.71](conversation.md), [files/eval_harness.py](files/eval_harness.py)): `config_id`, `provider`, `model_id`, `checkpoint`, `prompt_versions`, `retrieval`, `index_revision`, `context_budget_tokens`, `context_compression`, `critic_enabled`, `max_revisions`, `temperature`, `suite_version`, `code_version`.
+**`ExperimentConfig` fields** ([Q12.71](conversation.md), [files/eval_harness.py](files/eval_harness.py)): `config_id`, `provider`, `model_id`, `checkpoint`, `prompt_versions`, `retrieval`, `index_revision`, `context_budget_tokens`, `context_compression`, `critic_enabled`, `max_revisions`, `effort`, `suite_version`, `code_version`.
 
 **Baseline configuration.** The first baseline is the configuration the platform ships with, defined below. "Set at run" fields are recorded in the template, and never left blank.
 
@@ -923,7 +943,7 @@ Building them: `alert.json`, `release.json`, `config-diff.txt`, `logs.ndjson`, `
 | `context_compression` | `false`. Deterministic trimming still applies: it's a limit, not this experiment's variable | ADR-61 |
 | `critic_enabled` | `true` | [Q12.77](conversation.md) |
 | `max_revisions` | 2 | `Limits.max_revisions` |
-| `temperature` | 0.0 | Gateway default |
+| `effort` | Set at run: the configured `output_config.effort`. The first evaluation run chooses the value. Claude takes no temperature | Artifact 10 |
 | `suite_version` | `suite-1.0` | 12.8 |
 | `code_version` | Set at run: the release tag | [Q12.71](conversation.md) |
 
@@ -1105,7 +1125,7 @@ No question in this layer has an "Assumptions (provisional)" block. These rows a
 
 ## Decisions and conflicts
 
-Every item found while compiling, with its resolution. "Code" means the fix is in the code changes for this layer; `files/` stay unchanged.
+Every item found while compiling, with its resolution. "Code" means the fix is in this layer's `files/`, tested in `test_layer12.py`.
 
 | Item | Resolution | Decided by |
 | --- | --- | --- |
@@ -1142,7 +1162,8 @@ Every item found while compiling, with its resolution. "Code" means the fix is i
 | "Every alert expression divides by its denominator" | Holds for ratio alerts only. Rule restated in 12.1 | Layer decision (proposed) |
 | `SEC` buckets lack 45 s | 45 added (code) | Layer decision (proposed) |
 | 15-minute fence alert cites Q12.33 | Value stands, stated in 12.3. Q12.33 isn't its source | Layer decision (proposed) |
-| Failed approval attempts need a security alert | New `aisre_approval_refused_total` and `AisreApprovalRefused` | ADR-49 |
+| Failed approval attempts need a security alert | New `aisre_approval_refused_total` and `AisreApprovalRefused`, on identity, rights and digest refusals only (11.6) | ADR-49 |
+| A broken audit chain raised nothing | New `aisre_audit_chain_faults` and `AisreAuditChainBroken`, paging the Security lead, with RB-13. The weekly chain check must set the gauge | Layer decision (proposed) |
 | Telemetry drops: exporter failures and full queue not counted | Counted at both points (code) | Layer decision (proposed) |
 | `aisre.model.prompt_version` dropped by `NEVER_EXPORT` | Allowed by exact match (code) | Layer decision (proposed) |
 | Provider request ID and `request_id` not exportable | Allow-listed as `aisre.provider_request_id` and `aisre.request_id` (code) | Layer decision (proposed) |
@@ -1179,6 +1200,22 @@ Every item found while compiling, with its resolution. "Code" means the fix is i
 | Claude versus Tinker fine-tuning | Runs only under the ADR-07 revisit conditions and the ADR-56 threshold | ADR-56 |
 | Disagreements between Claude and ChatGPT | Stays open: the team fills in the conversation log. Check 4 stays open | Register: what no decision can settle |
 | Runbooks have no owner | Roles assigned in 12.4, from the System Design owner table | Layer decision (proposed) |
+| Mismatches found by the workflow reconciliation job | Counted in `aisre_workflows_stalled`, so no separate alert: `AisreWorkflowStalled`, RB-04 (Artifact 8, 8.9) | Layer decision (proposed) |
+| `AisreCrashResumeSlow` bucket label | `le="120.0"`, because `prometheus_client` exposes that form and `le="120"` never fires (code) | Layer decision (proposed) |
+| Ledger `not_applied`, target applied at the expected revision | No row in the first 12.6 table. Unresolved, for a person (code) | ADR-47 |
+| Security suite size at each milestone | `Gates.security_suite_cases` defaults to all 40 and can be set per milestone, because ADR-65 counts the cases due by that milestone (code) | ADR-65 |
+| Claim support on a 10% sample vs a gate over all citations | `citations_supported` is what the scorer records. Which denominator it uses stays to be set when the scorer is built | Layer decision (proposed) |
+
+**Reference code status.** [files/test_layer12.py](files/test_layer12.py) has 113 passing tests. What remains:
+
+| Item | What remains |
+| --- | --- |
+| Paging path | Alertmanager receivers and the route that avoids the Notifier and PostgreSQL |
+| Metric publishers | `aisre_process_ready` needs a `/readyz` handler, `aisre_dependency_up` the 15 s probe loop, `aisre_event_available_seconds` the relay, and `aisre_time_to_first_notification_seconds` the Notifier. The instruments exist. No module in `files/` imports `telemetry.py` yet, and callers of `aisre_verification_outcomes_total` must pass `action_kind` and `category` |
+| Suite freeze | `case.json` has no incident ID, so "no incident in both splits" is checked by shared fixture hash. Service and fault-source overlap aren't checked |
+| Canary | `canary_compare` is comparison logic only: it has no live data source |
+| Fence storage | `FenceState` is in memory. `fence_reasons.why` holds the manual reason in PostgreSQL |
+| Recorded state | `lift()` needs a `RecordedState`. Wiring it to `POST /v1/actions/{id}/outcome-resolutions` remains |
 
 ## Acceptance checks
 

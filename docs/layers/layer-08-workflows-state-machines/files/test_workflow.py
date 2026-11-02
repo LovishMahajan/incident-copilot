@@ -120,6 +120,7 @@ class Fakes:
                     activity.heartbeat()
                     await asyncio.sleep(0.05)
             except asyncio.CancelledError:
+                await asyncio.sleep(0.3)      # destroying the sandbox takes a moment
                 self.events.append(f"{name}:stopped")
                 raise
 
@@ -169,6 +170,8 @@ class Fakes:
             f.versions[inp.incident_id] += 1
             f.transitions.append((inp.from_state, inp.to_state, inp.action_to))
             f.records.append(inp)
+            if inp.to_state == "cancelled":
+                f.events.append("cancelled")
             return act.TransitionOut(1 + f.versions[inp.incident_id], len(f.transitions))
 
         @activity.defn(name="notify")
@@ -1010,7 +1013,7 @@ async def test_cancel_stops_a_running_sandbox_within_30_s(via_signal):
     started = asyncio.get_running_loop().time()
     assert await run_case(f, drive) == "cancelled"
     assert asyncio.get_running_loop().time() - started < 30
-    assert f.events == ["run_sandbox_test:stopped"]            # destroyed before the workflow moved on
+    assert f.events == ["run_sandbox_test:stopped", "cancelled"]   # destroyed before the workflow moved on
     assert ("testing", "cancelled", "withdrawn") in f.transitions
 
 
@@ -1025,7 +1028,7 @@ async def test_cancel_stops_the_running_investigation_activity(name):
         await cancel(h)
 
     assert await run_case(f, drive) == "cancelled"
-    assert f.events == [f"{name}:stopped"] and f.calls["hypothesise"] == 0
+    assert f.events == [f"{name}:stopped", "cancelled"] and f.calls["hypothesise"] == 0
 
 
 @pytest.mark.asyncio
@@ -1247,13 +1250,25 @@ async def test_limit_ends_the_wait_after_a_hand_over(monkeypatch):
 # ---------------------------------------------------------------------------
 def test_may_grant_takes_severity_then_oldest_up_to_five():
     t = datetime(2026, 11, 2, tzinfo=timezone.utc)
-    rows = [act.QueueRow("old", "sev2", t), act.QueueRow("new", "sev2", t + timedelta(seconds=1)),
-            act.QueueRow("worst", "sev1", t + timedelta(seconds=2))]
+    rows = [act.QueueRow("old", "a", "sev2", t), act.QueueRow("new", "b", "sev2", t + timedelta(seconds=1)),
+            act.QueueRow("worst", "c", "sev1", t + timedelta(seconds=2))]
     assert act.may_grant("worst", rows) and not act.may_grant("old", rows)
     rows[2] = dataclasses.replace(rows[2], granted=True)
     assert act.may_grant("old", rows) and not act.may_grant("new", rows)
-    full = [act.QueueRow(f"g{i}", "sev1", t, True) for i in range(5)]
+    full = [act.QueueRow(f"g{i}", f"s{i}", "sev1", t, True) for i in range(5)]
     assert not act.may_grant("old", full + rows[:1])
+
+
+def test_may_grant_holds_one_service_to_four_of_five_slots():
+    """NFR-44: the service at its limit waits, and the next eligible incident takes the slot."""
+    t = datetime(2026, 11, 2, tzinfo=timezone.utc)
+    noisy = [act.QueueRow(f"n{i}", "noisy", "sev2", t, True) for i in range(4)]
+    worse = act.QueueRow("noisy-sev1", "noisy", "sev1", t)
+    quiet = act.QueueRow("quiet-sev4", "quiet", "sev4", t + timedelta(hours=1))
+    assert not act.may_grant("noisy-sev1", noisy + [worse, quiet])
+    assert act.may_grant("quiet-sev4", noisy + [worse, quiet])
+    assert act.may_grant("noisy-sev1", noisy[:3] + [worse, quiet])          # at three, severity order holds
+    assert not act.may_grant("noisy-sev1", noisy + [worse])                 # nobody else waiting: the fifth stays free
 
 
 @pytest.mark.asyncio
@@ -1262,7 +1277,7 @@ async def test_six_concurrent_incidents_give_five_running_in_severity_order():
     ids = [str(uuid.uuid4()) for _ in range(6)]
     severities = ["sev3", "sev1", "sev4", "sev2", "sev2", "sev3"]
     t = datetime(2026, 11, 2, tzinfo=timezone.utc)
-    f.queue = [act.QueueRow(i, s, t + timedelta(seconds=n)) for n, (i, s) in enumerate(zip(ids, severities))]
+    f.queue = [act.QueueRow(i, f"svc{n}", s, t + timedelta(seconds=n)) for n, (i, s) in enumerate(zip(ids, severities))]
     order = [r.incident_id for r in sorted(f.queue, key=lambda r: (r.severity, r.queued_at))]
 
     async with await start_env() as env:

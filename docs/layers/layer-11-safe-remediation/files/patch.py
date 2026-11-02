@@ -125,10 +125,13 @@ class Patch(Strict):
                       for f in sorted(self.files, key=lambda f: f.path)],
         }
 
+    def canonical_bytes(self) -> bytes:
+        """What the artifact store holds, so the dispatcher can hash the bytes it reads (ST-13)."""
+        return json.dumps(self.canonical(), sort_keys=True, separators=(",", ":")).encode()
+
     @property
     def digest(self) -> str:
-        return hashlib.sha256(json.dumps(self.canonical(), sort_keys=True, separators=(",", ":"))
-                              .encode()).hexdigest()
+        return hashlib.sha256(self.canonical_bytes()).hexdigest()
 
     def unified_diff(self) -> str:
         """Q11.2: what reviewers see — standard unified diff, with the rationale above each hunk."""

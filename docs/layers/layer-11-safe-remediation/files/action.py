@@ -51,7 +51,7 @@ class ImmutableAction:
     policy_version: str                    # edit policy + approval policy in force at creation (Q11.57)
     test_bundle_digest: str                # the passing harness result for this exact patch
     recovery_predicates_digest: str        # what "recovered" means, fixed before execution
-    high_impact: bool
+    high_impact: bool                      # can only add to is_high_impact, never lower it (ADR-49)
     hold_seconds: int = 600                # the hold period, from the service catalogue (ADR-66)
     parent_action_id: Optional[str] = None # rollback -> the action it reverses (Q11.91)
     created_at: str = ""
@@ -67,6 +67,24 @@ class ImmutableAction:
     @property
     def digest(self) -> str:
         return hashlib.sha256(canonical(asdict(self))).hexdigest()
+
+
+@dataclass(frozen=True)
+class ImpactFacts:
+    """What the high-impact rule reads beyond the action, from the incident record and the service
+    catalogue. Loaded from trusted storage, never from a caller."""
+
+    severity: Optional[str]                # the confirmed severity; None until a person confirms one
+    critical: bool = False                 # the service is marked `critical` in the catalogue
+    deployments: int = 1                   # how many deployments this same change is proposed for
+    parent_kind: Optional[str] = None      # a rollback: the kind of the action it reverses
+
+
+def is_high_impact(action: ImmutableAction, impact: ImpactFacts) -> bool:
+    """ADR-49. Derived from the action, target and severity, so a False flag changes nothing. A True
+    flag stands: a rollback copies its parent's. Severity not yet confirmed counts as high-impact."""
+    return (action.high_impact or "release_rollback" in (action.kind, impact.parent_kind)
+            or impact.severity in (None, "sev1") or impact.critical or impact.deployments > 1)
 
 
 # ---------------------------------------------------------------------------
@@ -152,8 +170,8 @@ class ApprovalPolicy:
         """Both policies, in the form actions and decisions record them (C19)."""
         return f"{self.edit_version}|{self.version}"
 
-    def approvers_needed(self, action: ImmutableAction) -> int:
-        return self.approvers_high_impact if action.high_impact else self.approvers_normal
+    def approvers_needed(self, action: ImmutableAction, impact: ImpactFacts) -> int:
+        return self.approvers_high_impact if is_high_impact(action, impact) else self.approvers_normal
 
 
 @dataclass(frozen=True)
@@ -199,9 +217,9 @@ def verify_signature(d: Decision, keys: dict[str, Ed25519PublicKey]) -> bool:
     if not k or not d.signature:
         return False
     try:
-        k.verify(base64.b64decode(d.signature), d.payload())
+        k.verify(base64.b64decode(d.signature, validate=True), d.payload())
         return True
-    except InvalidSignature:
+    except (InvalidSignature, ValueError):             # bad base64 is binascii.Error, a ValueError
         return False
 
 
@@ -219,7 +237,7 @@ def record_decision(*, action: ImmutableAction, subject: str, decision: str, aut
                     now: datetime, directory: Directory, policy: ApprovalPolicy, signer: Signer,
                     approval_id: str, presented_digest: str, proposer_subjects: set[str],
                     action_status: str, request_open: bool, intent_recorded: bool, events: list[dict],
-                    change_author: Optional[str] = None, reason: Optional[str] = None,
+                    impact: ImpactFacts, change_author: Optional[str] = None, reason: Optional[str] = None,
                     revokes: Optional[str] = None, prior: list[Decision] = (),
                     rollback: Optional[ImmutableAction] = None, rollback_digest: Optional[str] = None,
                     rollback_approval_id: Optional[str] = None, rollback_prior: list[Decision] = ()) -> list[Decision]:
@@ -247,7 +265,7 @@ def record_decision(*, action: ImmutableAction, subject: str, decision: str, aut
         refuse("not_found", "no such action")                                          # ADR-58: existence not revealed
     if not directory.can(subject, service, perm):
         refuse("forbidden", f"{subject} may not record {decision} for {service}")      # Q11.51
-    if decision == "approved" and subject == change_author and policy.approvers_needed(action) < 2:
+    if decision == "approved" and subject == change_author and policy.approvers_needed(action, impact) < 2:
         refuse("self_approval", "you can't be the sole approver of a revert of your own change")   # ADR-49
     if decision == "revoked" and not any(p.approval_id == revokes and p.subject == subject
                                          and p.decision == "approved" for p in prior):
@@ -303,10 +321,11 @@ class Standing(str, Enum):
 
 
 def evaluate(action: ImmutableAction, decisions: list[Decision], *, now: datetime, keys: dict[str, Ed25519PublicKey],
-             directory: Directory, policy: ApprovalPolicy, requested_at: datetime,
+             directory: Directory, policy: ApprovalPolicy, requested_at: datetime, impact: ImpactFacts,
              parent_verdict: Optional[str] = None) -> tuple[Standing, list[str], Optional[str]]:
     """Q11.57–Q11.63. Re-run at execution time by the dispatcher, against the CURRENT directory and policy.
-    `parent_verdict` is the recorded verification verdict of the action a rollback reverses. Returns the
+    `impact` is the trusted input to the high-impact rule. `parent_verdict` is the recorded verification
+    verdict of the action a rollback reverses. Returns the
     standing, notes, and when approved the approval_id that completed the count, for the attempt row."""
     notes: list[str] = []
     valid = [d for d in decisions if verify_signature(d, keys) and d.action_digest == action.digest
@@ -336,7 +355,7 @@ def evaluate(action: ImmutableAction, decisions: list[Decision], *, now: datetim
     subjects: set[str] = set()
     for d in sorted(live, key=lambda d: d.decided_at):
         subjects.add(d.subject)
-        if len(subjects) >= policy.approvers_needed(action):
+        if len(subjects) >= policy.approvers_needed(action, impact):
             return Standing.APPROVED, notes, d.approval_id
     if now - requested_at > policy.request_expires:
         return Standing.EXPIRED, notes, None
