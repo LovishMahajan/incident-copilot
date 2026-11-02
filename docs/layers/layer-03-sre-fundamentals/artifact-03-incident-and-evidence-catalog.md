@@ -2,25 +2,27 @@
 
 - **Layer:** 3, SRE Fundamentals
 - **Built from:** Artifact 1, Artifact 2
-- **Status:** Draft compiled from the team's answers; pending team review
-- **Sources:** [conversation.md](conversation.md), [system-design.md](../../reference/system-design.md), [technical-specification.md](../../reference/technical-specification.md), and, for consistency with later citations of this artifact only, [Layer 4](../layer-04-requirements/conversation.md), [Layer 5](../layer-05-threat-modeling/conversation.md), [Layer 9](../layer-09-agent-architecture/conversation.md), [validation.py](../layer-09-agent-architecture/files/validation.py), [context.py](../layer-10-inference-retrieval/files/context.py)
+- **Status:** Proposed: gaps resolved 2026-11-02 per [decisions.md](../../decisions.md); pending team sign-off
+- **Sources:** [conversation.md](conversation.md), [decisions.md](../../decisions.md), [synthetic reference incident](files/reference-incident/README.md) (proposed), [system-design.md](../../reference/system-design.md), [technical-specification.md](../../reference/technical-specification.md), and, for consistency with later citations of this artifact only, [Layer 4](../layer-04-requirements/conversation.md), [Layer 5](../layer-05-threat-modeling/conversation.md), [Layer 9](../layer-09-agent-architecture/conversation.md), [validation.py](../layer-09-agent-architecture/files/validation.py), [context.py](../layer-10-inference-retrieval/files/context.py)
 
 ## Required sections
 
 | Required section | Questions this section answers | Done |
 | --- | --- | --- |
 | 3.1 Initial alert | Q3.9–Q3.11, Q3.22, Q3.28, Q3.33 | Partial |
-| 3.2 Service context | Q3.1–Q3.5, Q3.33 | Partial |
-| 3.3 Logs | Q3.17, Q3.20, Q3.31 | Partial |
-| 3.4 Metrics | Q3.18, Q3.20–Q3.25, Q3.28, Q3.29 | Partial |
-| 3.5 Traces | Q3.19, Q3.30 | Partial |
-| 3.6 Deployment changes | Q3.6–Q3.8, Q3.26 | Partial |
-| 3.7 Expected root cause | Q3.3, Q3.7, Q3.8, Q3.12–Q3.14 | Partial |
-| 3.8 Supporting evidence | Q3.27, Q3.32–Q3.34 | Partial |
+| 3.2 Service context | Q3.1–Q3.5, Q3.33 | Yes |
+| 3.3 Logs | Q3.17, Q3.20, Q3.31 | Yes |
+| 3.4 Metrics | Q3.18, Q3.20–Q3.25, Q3.28, Q3.29 | Yes |
+| 3.5 Traces | Q3.19, Q3.30 | Yes |
+| 3.6 Deployment changes | Q3.6–Q3.8, Q3.26 | Yes |
+| 3.7 Expected root cause | Q3.3, Q3.7, Q3.8, Q3.12–Q3.14 | Yes |
+| 3.8 Supporting evidence | Q3.27, Q3.32–Q3.34 | Yes |
 | 3.9 Contradicting evidence | Q3.27, Q3.35 | Yes |
 | 3.10 Expected escalation behavior | Q3.12, Q3.15, Q3.16, Q3.36, Q3.37 | Partial |
 
 **Reference scenario (S):** A Python web application is in production. An engineer deploys a new version that changes a configuration value. The application starts returning HTTP 500 errors. The monitoring system detects the incident.
+
+**Synthetic data:** the sources hold no incident data for S, so the parts of 3.1 to 3.7 labelled *Synthetic* come from an invented [reference incident](files/reference-incident/README.md) for the service `orders-api`. Nothing labelled that way was measured. The generic content around them is the team's.
 
 ## 3.1 Initial alert
 
@@ -55,7 +57,39 @@ Break the error rate down by instance, version, path, and region or customer gro
 
 **Establishing severity** ([Q3.22](conversation.md)): error rate and its trend; users affected; critical journeys affected; duration so far; breakdown; business signals; spread. Severity combines **breadth** (how many), **depth** (how critical) and **duration** (how long).
 
-**Gap:** the sources contain no example alert for S: no alert name, payload, threshold, firing time or severity. The organisation's severity levels and service-level objectives are listed as unknown ([Q3.9](conversation.md)).
+**Severity levels (provisional, layer decision).** These are the `sev1`..`sev4` values of the schema. An alert proposes a level, and the incident lead confirms it (ADR-50).
+
+| Level | Depth and breadth | Duration | Example |
+| --- | --- | --- | --- |
+| `sev1` | A critical journey fails for at least 80% of its requests, or there is data loss or a security breach | Any | Complete outage |
+| `sev2` | A critical journey fails for 5% to 80% of its requests | 3 minutes or more | One bad version on some instances |
+| `sev3` | A critical journey fails for 1% to 5% of its requests, or a non-critical path fails for 5% or more | 15 minutes or more | One slow report |
+| `sev4` | Limited effect with a workaround, or no user effect yet | Any | A rising internal error |
+
+The higher level applies if spreading is likely. `sev1` and `sev2` are high severity for early escalation (3.10). A confirmed `sev1` is high-impact for approval, and so is any incident whose severity isn't confirmed yet (ADR-49).
+
+**Service-level objectives (provisional, layer decision).** Both are over a rolling 30 days, for each critical journey:
+
+| Objective | Target | Error budget |
+| --- | --- | --- |
+| Availability | 99.9% of requests aren't HTTP 5xx | 0.1% of requests |
+| Latency | 95% of requests finish within 500 ms | 5% of requests |
+
+An alert condition of a 5% error rate is a burn rate of 50 times, which would use a 30-day budget in about 14 hours.
+
+**Synthetic reference alert** ([alert.json](files/reference-incident/alert.json)):
+
+| Field | Value |
+| --- | --- |
+| Alert | `OrdersApiHighErrorRate`, service `orders-api`, `production` |
+| Rule | HTTP 500 share of all responses over 1 minute above 5%, for 3 minutes |
+| Condition began | 14:07:00 UTC, when the rollout reached 25% |
+| Fired | 14:10:00 UTC, value 14.9%, threshold 5% |
+| Problem actually began | 14:02:04 UTC, about 8 minutes before the alert (Q3.33). At a 5% rollout, the rate of about 3% stayed under the threshold |
+| Proposed severity | `sev2`: at most half of order requests failed, for more than 3 minutes |
+| Pattern | Partial failure. Health checks pass, and only one version fails |
+
+**Needs measurement:** validate the synthetic fixture against real alert samples, Owner: SRE lead, settled when: real samples are inspected and the fixture's payload, fields and thresholds match them or are corrected.
 
 ## 3.2 Service context
 
@@ -100,7 +134,19 @@ The rule is **bounded work everywhere**: limited concurrency, limited queue size
 
 **Database** ([Q3.5](conversation.md)): customer data is owned by a database, separate from the application process. Connection failures, slow queries, exhausted connection pools and failed migrations all surface in the application as errors or slowness.
 
-**Gap:** the sources describe a generic service, not the reference application. Its owner, dependencies, normal behaviour, runbook, request path, network layout and data model are not given; the path and data model are recorded as assumptions below. The System Design names a service catalogue as the source of owner, dependencies and runbooks ([§5](../../reference/system-design.md)), without example content.
+**Synthetic reference service** ([service-catalog.json](files/reference-incident/service-catalog.json)). The service catalogue is the source of this context ([System Design §5](../../reference/system-design.md)):
+
+| Item | Value |
+| --- | --- |
+| Service | `orders-api`: a Python web service behind one load balancer, with six instances |
+| Owner, on-call | `orders-team`, `synthetic-oncall-c` |
+| Dependencies | `orders-db` (PostgreSQL), `payment-gateway` (third party) |
+| Critical journey | Place an order: `POST /v1/orders` |
+| Normal behaviour | About 1,200 requests a minute, 60% of them `POST /v1/orders`; HTTP 500 rate about 0.08%; one known signature, a payment gateway timeout |
+| Health check | `GET /healthz`, which doesn't read the changed setting |
+| Marked `critical` for approval | No, so a confirmed `sev2` configuration revert needs one approver (ADR-49) |
+| Hold period | 600 seconds, the ADR-66 default |
+| Runbook | `runbook-orders-api-5xx` (named only; no content) |
 
 ## 3.3 Logs
 
@@ -142,7 +188,20 @@ Logs explain *why* one event failed; metrics show *how often*.
 - Stay within rate limits, remove personal data before storing anything, and save a link to the original error with each piece of evidence.
 - If the tracker is unavailable, record the gap and continue ([Q3.36](conversation.md)).
 
-**Gap:** the sources contain no example log line, stack trace or error group for S. The current log format, retention and privacy rules are listed as unknown ([Q3.17](conversation.md)).
+**Synthetic reference logs** ([logs.ndjson](files/reference-incident/logs.ndjson)) carry the fields above and start in the normal period, when the only error is the known payment timeout. The first new error, condensed, at 14:02:04 UTC on version 2.14.1:
+
+```text
+level=ERROR instance=orders-api-e version=2.14.1 config_revision=cfg-42 POST /v1/orders status=500
+  File "/app/orders/service.py", line 142, in place_order
+    totals = pricing.compute_totals(cart, settings)
+  File "/app/orders/pricing.py", line 37, in compute_totals
+    tax_rate_bps = int(settings.order_tax_rate_bps)
+ValueError: invalid literal for int() with base 10: '8.25'
+```
+
+Successful `GET` requests on the same instance show that it is up, and that only the order path fails. One `orders-db` reconnect warning at 14:04:11 on an old-version instance is a planted distractor (3.7).
+
+Collected log evidence is kept for 30 days, or 1 year if a diagnosis cites it (ADR-57). The rules for personal data are those above: never logged, and removed before storing.
 
 ## 3.4 Metrics
 
@@ -172,7 +231,21 @@ Agree the definition of "failed" once, and use it everywhere ([Q3.18](conversati
 - Links from a graph to the related logs and traces.
 - Views for different audiences: a summary for management, detail for on-call engineers.
 
-**Gap:** the sources give no metric names, baseline, error rate, start time or series for S. What counts as "failed", and whether 4xx responses are included, is listed as unknown ([Q3.18](conversation.md)). The 40%, 30% and 100 ms to 8 seconds figures belong to their questions, not to S.
+**Definition of "failed" (provisional, layer decision):** an HTTP 5xx response. 4xx responses are counted separately and don't use the error budget.
+
+**Synthetic reference metrics** ([metrics.csv](files/reference-incident/metrics.csv)): requests and HTTP 500s per minute and per version, from `http_requests_total`, labelled by service, version, path and status. Approximate values:
+
+| Period (UTC) | Rollout | 2.14.0 HTTP 500 rate | 2.14.1 HTTP 500 rate | Overall rate | Requests a minute |
+| --- | --- | --- | --- | --- | --- |
+| 13:02–14:01, normal | 0% | 0.08% | — | 0.08% | 1,200 |
+| 14:02–14:06, canary | 5% | Baseline | 60% | 3% | 1,200 |
+| 14:07–14:11 | 25% | Baseline | 60% | 15% | 1,200 |
+| 14:12–14:31 | 50%, paused at 14:15 | Baseline | 60% | 30% | 1,200 |
+| 14:33–14:44, after the revert | 50% | Baseline | Baseline | 0.08% | 1,200 |
+
+The new version's 60% equals the share of requests that are `POST /v1/orders`: every order fails there, and every other request succeeds. From 14:02 to 14:32, 8,490 of 37,170 requests failed, about 16% of a 30-day error budget at this traffic. The ADR-66 recovery baseline is the median rate from 13:02 to 13:57: 0.082%.
+
+The 40%, 30% and 100 ms to 8 seconds figures belong to their questions, not to S.
 
 ## 3.5 Traces
 
@@ -193,7 +266,17 @@ Logs should carry the same trace ID, so a trace links to the detailed log events
 
 **Expected in S:** failing traces point to the changed code ([Q3.34](conversation.md), code match).
 
-**Gap:** the sources contain no example trace for S, and S doesn't say how many services the request crosses. Whether tracing exists, and its sampling rate, are listed as unknown ([Q3.19](conversation.md)).
+**Synthetic reference trace** ([trace.json](files/reference-incident/trace.json)): one failing `POST /v1/orders` at 14:08:12 UTC, found in the logs by the same trace ID. The request crosses the load balancer and `orders-api`.
+
+| Span | Service | Status | Detail |
+| --- | --- | --- | --- |
+| `POST /v1/orders` | `edge-load-balancer` | Error | HTTP 500 from `orders-api-e` |
+| `POST /v1/orders` | `orders-api` | Error | Version 2.14.1, `cfg-42` |
+| `orders.service.place_order` | `orders-api` | Error | — |
+| `SELECT cart` | `orders-api` | OK | The database answered |
+| `orders.pricing.compute_totals` | `orders-api` | Error | Reads `ORDER_TAX_RATE_BPS`; `ValueError` at `orders/pricing.py:37` |
+
+The payment gateway is never called. The fixture keeps all error traces. Traces are optional evidence: without them confidence falls, but nothing is blocked (ADR-54).
 
 ## 3.6 Deployment changes
 
@@ -232,7 +315,19 @@ All of these need the same clock as the monitoring data.
 
 **Isolating the responsible change** ([Q3.8](conversation.md)): pin the start time from metrics; list every change in that window; check the version split; match errors to changes; narrow it down, testing changes one at a time in a disposable environment, configuration first, or searching through the commits in halves; confirm by reproducing the failure with the suspect change and clearing it without. In S, listing the changes finds one configuration change, and narrowing it down confirms it.
 
-**Gap:** the sources contain no release record for S: no version, setting name, old or new value, author, approver, rollout method or rollout percentage. The rollout method is listed as unknown, and gradual rollout is an assumption ([Q3.6](conversation.md)).
+**Synthetic reference release** ([release.json](files/reference-incident/release.json), [config-diff.txt](files/reference-incident/config-diff.txt)). Gradual rollout stays an assumption ([Q3.6](conversation.md)), and the fixture is built on it so that version-split evidence exists.
+
+| Item | Value |
+| --- | --- |
+| Version | 2.14.1, replacing 2.14.0. One commit, `7d3e91a`, no code or image change |
+| Author, approver | `synthetic-engineer-a`, `synthetic-reviewer-b` |
+| Changed setting | `ORDER_TAX_RATE_BPS`: old `825`, new `8.25` |
+| Configuration revision | `cfg-41` to `cfg-42` |
+| Other changes | No migrations, feature flags or infrastructure changes |
+| Rollout | Gradual by traffic weight, planned 5%, 25%, 50%, 100% |
+| Times (UTC) | 5% at 14:02, 25% at 14:07, 50% at 14:12, paused at 14:15 by the on-call engineer |
+| Instances | New: `orders-api-e`, then also `-f`. Old: `orders-api-a` to `-d` |
+| Outcome | Paused. Health checks passed throughout, so the release process didn't stop itself |
 
 ## 3.7 Expected root cause
 
@@ -240,7 +335,7 @@ All of these need the same clock as the monitoring data.
 
 **Expected cause in S:** the configuration value changed by the deployment. The handler reads configuration, which is the step where S's changed value takes effect, an unhandled exception becomes a 500, and in S a 500 points to the handler or its calls to the database and other services ([Q3.3](conversation.md)).
 
-**This stays a hypothesis until proven.** The deployment is the likely cause, but this is not yet proven ([Q3.8](conversation.md)). Same code with a different value producing different behaviour is the controlled comparison that proves the configuration caused it ([Q3.7](conversation.md)). The System Design states the decisive evidence for the reference case: the changed value is read on the failing path, and only instances with the new value return HTTP 500 errors ([§6](../../reference/system-design.md)).
+**This stays a hypothesis until proven.** The deployment is the likely cause, but this is not yet proven ([Q3.8](conversation.md)). Same code with a different value producing different behaviour is the controlled comparison that proves the configuration caused it ([Q3.7](conversation.md)). The decisive evidence for the reference case is the changed value being read on the failing path (tier 3), and only instances with the new value returning HTTP 500 errors (tier 2). Either is mechanism evidence on its own (ADR-53).
 
 **Reaching the cause** ([Q3.12](conversation.md)):
 
@@ -272,7 +367,18 @@ Prefer the **smallest, most reversible action** that targets the confirmed cause
 
 **Returning to a working version** ([Q3.14](conversation.md)): choose the smallest reversal; if only configuration changed (S), revert that value without redeploying the code. Otherwise redeploy the previous version from its stored build. Check database changes first: this is the main way a rollback can make things worse. Roll out the reversal with health checks, verify recovery against the original symptom, record the rollback, and keep the failing version for investigation. Configuration and code should be revertable separately.
 
-**Gap:** the sources don't say which configuration value changed, how it was wrong, or what exception it raises, so the failure mechanism in S is not specified. Whether configuration is versioned with the release and can be reverted on its own is listed as unknown ([Q3.14](conversation.md)).
+**Synthetic reference result** ([answer-key.json](files/reference-incident/answer-key.json)):
+
+| Item | Expected |
+| --- | --- |
+| Root cause | Release 2.14.1 changed `ORDER_TAX_RATE_BPS` from `825` to `8.25`. `compute_totals` parses it with `int()` on every `POST /v1/orders`, which raises `ValueError`, and the unhandled exception becomes HTTP 500 |
+| Why it spread | `GET /healthz` doesn't read the setting, so new instances passed their health gate |
+| Result | Established, High confidence, from tier 2 and tier 3 evidence (ADR-53). Reproduction adds tier 1 during testing |
+| Alternatives ruled out | `orders-db`: one reconnect, on the old version, after the first failure, and the changed value isn't a database setting. Payment gateway: a known signature at its normal rate |
+| Fix | `config_revert` to `825` (`cfg-41`), without redeploying code. Reverting the commit is acceptable. Rolling back the release is acceptable, but it is high-impact (ADR-49) |
+| Who changes production | A person by hand in Release A; the dispatcher on a signed approval in Release B (ADR-44) |
+
+Configuration is versioned with the release and can be reverted on its own in the fixture. For a real service this stays an assumption, listed below.
 
 ## 3.8 Supporting evidence
 
@@ -289,11 +395,27 @@ Prefer the **smallest, most reversible action** that targets the confirmed cause
 7. **Dependencies:** database, third-party and platform health.
 8. **History:** similar past incidents and how they were resolved.
 
+This is the reading order. Adapters run in parallel, and change history is requested first ([Technical specification 5.1](../../reference/technical-specification.md)).
+
 Each item keeps its source, its time, and a link to the original record. Every adapter returns the same kinds of record (alert, metric series, log events, trace, change event, error group), and reports "unavailable" or "partial data", never empty results that look like "healthy" ([Q3.32](conversation.md)).
 
-**Observations that strengthen a deployment hypothesis, strongest first** ([Q3.34](conversation.md)):
+**Required evidence for change-caused failures** (ADR-54):
 
-| Rank | Evidence | Observation | Limit |
+| Source | Status | If missing |
+| --- | --- | --- |
+| The alert | Required | Record a gap and continue. The diagnosis can't be established, so it ends inconclusive |
+| Change history | Required | The same |
+| Logs or the error tracker, at least one | Required | The same |
+| Metrics, including error rate by version | Expected, layer decision | Record a gap and lower confidence |
+| Traces, dependency health, past incidents | Optional | Record a gap and lower confidence |
+
+Other incident categories are recognised and handed over, as they're out of scope (ADR-58). A sign of a security or data risk stops collection at once.
+
+**Enough evidence** means every required source collected, plus the Medium bar below (ADR-54).
+
+**Observations that strengthen a deployment hypothesis, strongest first** ([Q3.34](conversation.md)). Strength belongs to the observation, not the evidence kind, and code assigns the tier when it computes the facts (ADR-53):
+
+| Tier | Evidence | Observation | Limit |
 | --- | --- | --- | --- |
 | 1 | Reproduction | In a disposable environment, the failure appears with the new version or configuration, and disappears with the old one | Re-triggering is done only in that environment, never in production |
 | 2 | Version split | Errors come from instances on the new version, while old-version instances stay healthy | Only available if the rollout was gradual ([Q3.6](conversation.md)) |
@@ -304,9 +426,19 @@ Each item keeps its source, its time, and a link to the original record. Every a
 | 7 | Rollback clears it | Errors stop after an approved rollback | Recovery could still be coincidence, so confirm against the evidence above |
 | 8 | Timing | The failure starts once the rollout reaches traffic | On its own this is the weakest evidence |
 
-**Why timing alone is not proof** ([Q3.27](conversation.md)): timing shows correlation, not cause. Other changes coincide; the deployment itself is a disruption, since restarting instances can expose an unrelated, existing fault; a shared trigger may explain both; deployments are frequent, so overlaps happen by chance; and clock differences can create false alignment. Proof needs evidence that links the change to the failure mechanism, and the absence of contradicting evidence.
+Tiers 1 to 3 are mechanism evidence, 4 to 7 supporting, and 8 weak.
 
-**Gap:** Layer 3 doesn't define how much evidence is enough, which is listed as unknown ([Q3.33](conversation.md)), or a list of required evidence per incident category. Layer 9 attributes such a list to this artifact; see Decisions and conflicts.
+**Confidence** (ADR-53, provisional threshold):
+
+| Level | Requires | Result |
+| --- | --- | --- |
+| High | Tier 1–3, no unresolved contradicting evidence | Established |
+| Medium | Tier 4, or two independent tier 5–7 observations, no unresolved contradiction | Established |
+| Low | Anything else, or any `confidence_cap` from the critic | Inconclusive, no patch |
+
+The bar is Medium.
+
+**Why timing alone is not proof** ([Q3.27](conversation.md)): timing shows correlation, not cause. Other changes coincide; the deployment itself is a disruption, since restarting instances can expose an unrelated, existing fault; a shared trigger may explain both; deployments are frequent, so overlaps happen by chance; and clock differences can create false alignment. Proof needs evidence that links the change to the failure mechanism, and the absence of contradicting evidence.
 
 ## 3.9 Contradicting evidence
 
@@ -333,15 +465,15 @@ Each item keeps its source, its time, and a link to the original record. Every a
 **Stop and escalate when any of these is true** ([Q3.37](conversation.md)):
 
 - All available sources have been checked, and no new evidence is appearing.
-- No hypothesis meets the agreed confidence level.
+- No hypothesis meets the agreed confidence level: Medium (ADR-53).
 - Several hypotheses remain, and the available evidence can't separate them.
 - The time limit has been reached (15 minutes, A2-d).
 - User impact is growing while the investigation continues.
 - The next step needs human approval (A1-a), or access the platform doesn't have.
-- A required evidence source is unavailable ([Q3.36](conversation.md)).
+- A required evidence source is unavailable once collection is complete ([Q3.36](conversation.md)). Collection continues past the gap, then the investigation ends inconclusive and hands over (ADR-54).
 - There are signs of a security or data risk. Escalate immediately, without waiting for the evidence to run out.
 
-For high-severity incidents, escalate at the start and keep investigating alongside the engineer.
+For high-severity incidents (`sev1`, `sev2`), escalate at the start and keep investigating alongside the engineer.
 
 **The handover includes:** impact and a timeline; evidence checked; hypotheses tested and ruled out; missing evidence; the confidence level; suggested next steps. It must state "root cause not established". The platform must never present its best guess as a conclusion.
 
@@ -353,7 +485,7 @@ For high-severity incidents, escalate at the start and keep investigating alongs
 4. Lower confidence: say which conclusions are weaker and why, and keep open any hypotheses that needed the missing data.
 5. Hold risky actions: don't recommend actions that depended on the missing evidence.
 6. Tell a person: the team may be blind to other alerts too. Escalate if the remaining evidence can't support a diagnosis (A1-c).
-7. Resume when it returns: collect the missed period and recheck the conclusions.
+7. When it returns during the investigation, collect the missed period and recheck the conclusions. After hand-over nothing resumes automatically: a person may request re-investigation (ADR-46).
 
 Also consider whether the provider's outage is linked to the incident.
 
@@ -379,9 +511,41 @@ Also consider whether the provider's outage is linked to the incident.
 | Reviewed | A post-incident review is complete | — |
 | Closed | Follow-up actions are tracked | — |
 
-Each incident has one record, with a timestamped entry for every stage change, the owner, decisions and actions.
+Each incident has one record, with a timestamped entry for every stage change, the owner, decisions and actions. These nine stages describe how a team tracks an incident. They are not workflow states, which are defined by ADR-46.
 
-**Gap:** the agreed confidence level, escalation time limits, who receives the escalation for each service, the severity definitions, and whether the time limits vary by severity are all listed as unknown ([Q3.16](conversation.md), [Q3.37](conversation.md)).
+**Escalation values:**
+
+| Item | Value |
+| --- | --- |
+| Confidence level | Medium (ADR-53, provisional) |
+| Platform limits | First summary p95 ≤ 5 minutes, investigation 15 minutes, for every severity. They don't vary by severity (layer decision) |
+| Work limit | Non-terminal, non-waiting states hand over at 24 hours (ADR-46) |
+| Approval requests | Escalate at 15 minutes, expire at 60 minutes (ADR-49) |
+| Who is told at the start | The service owner, the on-call engineer and the author of the last change |
+| Who receives an escalation | The service's catalogue path: on-call, then a senior engineer, then the incident lead |
+| Severity definitions | 3.1 |
+
+**Times for people (provisional, layer decision).** If a limit passes, the next person on the path is called:
+
+| Level | Acknowledge within | No progress for |
+| --- | --- | --- |
+| `sev1` | 5 minutes | 30 minutes |
+| `sev2` | 15 minutes | 60 minutes |
+| `sev3` | 60 minutes | 4 hours |
+| `sev4` | Next working day | Not applicable |
+
+**Expected in the synthetic reference incident** ([answer-key.json](files/reference-incident/answer-key.json)):
+
+| Item | Run 1: full evidence | Run 2: change history withheld ([Q1.17](../layer-01-problem-discovery/conversation.md)) |
+| --- | --- | --- |
+| Files withheld | None | `release.json`, `config-diff.txt` |
+| Result | Established, High | "Root cause not established" (ADR-54) |
+| Workflow | `investigating` → `diagnosed` → `testing`, then `handed_over` with the tested recommendation in Release A, or `awaiting_approval` onward in Release B | `investigating` → `inconclusive` → `handed_over`, no patch |
+| Severity | `sev2` proposed; the incident lead confirms. Until then it counts as high-impact (ADR-49) | The same |
+| Approval | One approver with approve rights, who may not be `synthetic-engineer-a` acting alone (ADR-49) | None |
+| Recovery | The incident lead accepts it after a 10-minute hold (ADR-66) | Stays with people |
+
+**Needs the team:** the real on-call rotas and night coverage behind each escalation path, Owner: Engineering manager, settled when: rotas are confirmed.
 
 ## Assumptions
 
@@ -425,25 +589,36 @@ Each incident has one record, with a timestamped entry for every stage change, t
 | Log timestamps are accurate (Q3.35) | Provisional | Platform owner | Clocks are compared across sources. |
 | Other sources (logs, deployment records, the error tracker) remain reachable (Q3.36) | Provisional | Platform owner | Each source's availability is checked independently. |
 | An on-call owner can be reached, and severity levels are defined (Q3.37) | Provisional | Engineering manager | The on-call rota and severity definitions are documented. |
+| The `sev1`–`sev4` definitions in 3.1 suit the organisation | Provisional | SRE lead | Past incidents are classified with them, and the incident leads agree with the results. |
+| The objectives of 99.9% availability and 95% within 500 ms suit critical journeys | Provisional | SRE lead | 30 days of measurements show each is reachable and meaningful. |
+| "Failed" means HTTP 5xx, with 4xx counted separately | Provisional | SRE lead | Each service's metrics are checked against the definition. |
+| The acknowledgement and no-progress times in 3.10 are workable | Provisional | Engineering manager | The rotas are confirmed and an escalation drill meets them. |
+| Metrics are expected evidence, but not required by ADR-54 | Provisional | SRE lead | The frozen suite shows whether diagnoses without metrics stay within the false-established limit. |
+| A recovery predicate of at most 0.2% HTTP 500s per minute suits the reference incident | Provisional | SRE lead | The predicate is run against the baseline period without a false alarm in a recovery drill. |
+| Configuration can be reverted on its own, without redeploying code (Q3.14) | Provisional | Platform owner | The release process is documented, and a value is reverted through it. |
 
 ## Decisions and conflicts
 
-No decisions were found beyond those in the sections above. Conflicts and mismatches found while compiling are below; none was resolved here.
-
-| Item | What differs | Handling here |
+| Item | Resolution | Decided by |
 | --- | --- | --- |
-| Evidence strength scale | [Q3.34](conversation.md) ranks eight observations. `STRENGTH` in [validation.py](../layer-09-agent-architecture/files/validation.py), labelled "Artifact 3", ranks evidence kinds instead. There, trace and error group (4) outrank metric (3), so code match can outrank a version split recorded as a metric, the reverse of Q3.34. Change records score 1, while Q3.34 calls the config match decisive for S | Q3.34's order kept. Team to decide how observations map to evidence kinds |
-| Priority vs strength | `EVIDENCE_PRIORITY` in [context.py](../layer-10-inference-retrieval/files/context.py), citing "Artifact 3 / validation.STRENGTH", places change (13) ahead of log (14). `STRENGTH` places log (3) above change (1). Neither order is in Layer 3 | Recorded only |
-| System Design list | [System Design §6](../../reference/system-design.md) lists six evidence levels, omitting scale match and rollback clears it. Its order matches Q3.34 for the six it lists. It adds an upper limit of five hypotheses to Q3.12's "at least two" | Q3.34's full list kept; the System Design doesn't say the two were dropped |
-| Decisive evidence in S | Q3.34 calls the config match decisive for S. System Design §6 pairs it with "only instances with the new value" failing, which Q3.34 says is only available if the rollout was gradual, an assumption from Q3.6 | Both stated. Unvalidated until the release process is documented |
-| Unavailable source | Q3.37 lists "a required evidence source is unavailable" as a stop-and-escalate condition. Q3.36 continues with other sources and escalates only if the remaining evidence can't support a diagnosis. System Design §7 failure table: "Records a gap, lowers confidence, continues with other sources". "Required" is not defined | Both kept as written in 3.10. Team to define which sources are required |
-| Required evidence per category | [Q9.49](../layer-09-agent-architecture/conversation.md) cites Artifact 3 for "required evidence per incident category" and lists six kinds for change-caused failures. Layer 3 has only the general order in Q3.33 | Not added here, since Layer 3 doesn't state it. Recorded as a Gap in 3.8 |
-| First evidence | [Q4.3](../layer-04-requirements/conversation.md) says Artifact 3 lists "the alert, the service and the time window" as the first evidence. Q3.33's order is alert, impact, service context, timeline | Q3.33's order kept |
-| Personal data in logs | [Q4.23](../layer-04-requirements/conversation.md) cites Artifact 3 for logs possibly containing passwords, tokens or personal data "in practice". Q3.17 says only that they must never be logged; Q3.31 removes personal data before storing | Layer 3's wording kept |
-| Sending evidence to the model | [Q5.1](../layer-05-threat-modeling/conversation.md) cites Artifact 3 for parts of logs and alert text being sent to the model. Layer 3 doesn't say this | Not added here |
-| Lifecycle vs workflow states | Q3.15's nine stages differ from the [Technical Specification](../../reference/technical-specification.md) workflow states. The spec has no Reviewed state, and closure there is the incident lead's acceptance, where Q3.15 closes once follow-up actions are tracked. The sources don't say whether these are meant to align | Q3.15 kept as the description of how incidents are tracked |
-| Example content | Later test files hold concrete values, such as a checkout runbook with a timeout setting in [test_layer10.py](../layer-10-inference-retrieval/files/test_layer10.py). They are test data, not stated to be the reference scenario | Not used. Sections 3.1 to 3.7 carry Gaps instead |
-| Shared-known labels | Layer 3 cites A1-a to A1-c and A2-a to A2-d, with references such as "Artifact 1, UC4". Those labels don't appear in the Layer 1 and 2 conversations, and those artifacts aren't in the repo yet, so the citations couldn't be checked directly. The 5 and 15 minute limits do match Layer 2 | Labels kept as written |
+| Evidence strength scale | Q3.34's order is authoritative, and strength attaches to the observation. `validation.STRENGTH` is replaced. | ADR-53 |
+| Priority vs strength | Different jobs. `EVIDENCE_PRIORITY` only orders context for reading, and is renamed. | ADR-53 |
+| System Design list | All eight tiers stand. Hypotheses: at least two (Q3.12), at most five (System Design). | ADR-53 |
+| Decisive evidence in S | Tier 2 and tier 3 are each mechanism evidence. If the rollout isn't gradual, tier 3 still stands alone. | ADR-53 |
+| Unavailable source | A missing source never stops collection. A diagnosis can't be established while a required source is missing, which reconciles Q3.36 and Q3.37. | ADR-54 |
+| Required evidence per category | Three required sources, in 3.8. Q9.49's longer list becomes required plus optional. | ADR-54 |
+| Metrics in the required list | ADR-54 names metrics as neither required nor optional. Treated as expected: a gap lowers confidence, but doesn't block. | Layer decision (proposed) |
+| First evidence | Q4.3's alert, service and time window are the intake inputs. Q3.33's order is the reading order, and adapters run in parallel. | Layer decision (proposed) |
+| Personal data in logs | Q3.17's rule stands, and the platform removes any it finds (Q3.31). What real logs contain stays with the Security lead in the register. | Layer decision (proposed) |
+| Sending evidence to the model | Layer 3 sets no rule on this. Redacted extracts follow Technical specification 5.2 and Layer 5. | Layer decision (proposed) |
+| Lifecycle vs workflow states | Q3.15's nine stages describe how a team tracks an incident. Workflow states are those of `states.py`. | ADR-46 |
+| Example content | Test values such as the checkout runbook stay test data. 3.1 to 3.7 use the labelled synthetic incident instead. | Layer decision (proposed) |
+| Shared-known labels | Checked: A1-a to A1-c and A2-a to A2-d are defined in Artifacts 1 and 2. Labels kept. | Layer decision (proposed) |
+| Severity levels and objectives | `sev1`–`sev4` and two provisional objectives, in 3.1. "Failed" means HTTP 5xx, in 3.4. | Layer decision (proposed) |
+| Escalation values | Values in 3.10. Platform limits don't vary by severity. Times for people do, and they are provisional. | Layer decision (proposed) |
+| Reference incident design | Synthetic `orders-api`, `sev2`, gradual rollout, one changed value read on the failing path. | Layer decision (proposed) |
+| Resuming after a source returns | Q3.36's resume applies during the investigation. After hand-over, a person requests re-investigation. | ADR-46, Layer decision (proposed) |
+| Who approves and accepts in the demo | Q1.17's "the engineer" can't be the releasing author acting alone, and the incident lead accepts recovery. | ADR-49, ADR-66 |
 
 ## Acceptance checks
 

@@ -2,6 +2,22 @@
 
 The engineering detail behind the System Design tab: invariants, lifecycle, security, data model, pipeline and model contracts, validation, limits, interfaces, reliability, privacy, testing and milestones. Stack: Python, FastAPI and Pydantic, PostgreSQL with SQLAlchemy and Alembic, Temporal, Claude through an internal gateway, gVisor containers, OpenTelemetry, Prometheus and Grafana, Docker Compose and uv.
 
+> **Amended 2026-11-02 (proposed).** The text below is the original document, unchanged. Where it differs from the [decision register](../decisions.md), the register wins.
+>
+> | Section | Amended by |
+> | --- | --- |
+> | 2 Lifecycle | ADR-46: `states.py` plus three additions is canonical, 30 incident and 20 action transitions |
+> | 3 Permissions | ADR-50: one matrix; responders may reject |
+> | 4 Data model | ADR-64: 33 tables; `org_id` on top-level records only; [schema.sql](../layers/layer-07-data-apis-events/files/schema.sql) is canonical |
+> | 5 Pipeline | ADR-52: coordinator loop; model called in hypothesise, diagnose, critique and patch proposal; `DiagnosisDraft` replaces `ModelDiagnosisOutput` |
+> | 5.5 Undo | ADR-48: the workflow triggers a separate rollback action, not the Verifier |
+> | 6 Validation | ADR-49, ADR-59: refused approvals are logged as events; secrets in output fail and are masked |
+> | 7 Idempotency | ADR-47: the key is the action ID; ADR-61: unknown usage is charged in full |
+> | 8 APIs | ADR-49, ADR-58: revocation, outcome resolution, dead letters |
+> | 9 Recovery | ADR-55: ≤ 1 h to read-only mode, ≤ 4 h to full operation |
+> | 10 Retention | ADR-57: new periods and owners |
+> | 11 Testing | ADR-65: gates; ST-01 to ST-40 are in Artifact 5 |
+
 ## 1. Scope and invariants
 
 **In scope:** change-caused failures in Python web applications; one organisation and one environment; alerts from existing monitoring; read-only evidence; diagnosis with citations; fixes from the allowed list, tested in an isolated environment; signed human approval; one-time execution through the release process; independent verification; CLI and HTTP API.

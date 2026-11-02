@@ -2,8 +2,8 @@
 
 - **Layer:** 10, Inference Engineering and Knowledge Retrieval
 - **Built from:** Artifacts 2 and 9
-- **Status:** Draft compiled from the team's answers; pending team review
-- **Sources:** [conversation.md](conversation.md), [files/gateway_contracts.py](files/gateway_contracts.py), [files/adapters.py](files/adapters.py), [files/gateway.py](files/gateway.py), [files/retrieval.py](files/retrieval.py), [files/context.py](files/context.py), [files/test_layer10.py](files/test_layer10.py), [System Design](../../reference/system-design.md), [Technical Specification](../../reference/technical-specification.md), Layer [4](../layer-04-requirements/conversation.md), [6](../layer-06-system-architecture/conversation.md), [7](../layer-07-data-apis-events/conversation.md) (and [schema-tables.sql](../layer-07-data-apis-events/files/schema-tables.sql)), [8](../layer-08-workflows-state-machines/conversation.md) and [12](../layer-12-reliability-evaluation/conversation.md) conversations
+- **Status:** Proposed: gaps resolved 2026-11-02 per [decisions.md](../../decisions.md); pending team sign-off
+- **Sources:** [conversation.md](conversation.md), [files/gateway_contracts.py](files/gateway_contracts.py), [files/adapters.py](files/adapters.py), [files/gateway.py](files/gateway.py), [files/retrieval.py](files/retrieval.py), [files/context.py](files/context.py), [files/test_layer10.py](files/test_layer10.py), [System Design](../../reference/system-design.md), [Technical Specification](../../reference/technical-specification.md), Layer [4](../layer-04-requirements/conversation.md), [6](../layer-06-system-architecture/conversation.md), [7](../layer-07-data-apis-events/conversation.md) (and [schema-tables.sql](../layer-07-data-apis-events/files/schema-tables.sql)), [8](../layer-08-workflows-state-machines/conversation.md) and [12](../layer-12-reliability-evaluation/conversation.md) conversations, [decisions.md](../../decisions.md), Anthropic public documentation (listed in 10.1)
 
 ## Required sections
 
@@ -14,13 +14,13 @@
 | 10.3 Claude adapter | Q10.11, Q10.12, Q10.15, Q10.17–Q10.21, Q10.38 | Yes |
 | 10.4 Tinker adapter | Q10.2, Q10.5, Q10.22 | Yes |
 | 10.5 Budget policy | Q10.27–Q10.29, Q10.36 | Partial |
-| 10.6 Concurrency policy | Q10.30, Q10.31 | Yes |
+| 10.6 Concurrency policy | Q10.30, Q10.31 | Partial |
 | 10.7 Retry and timeout policy | Q10.17–Q10.20, Q10.32, Q10.33, Q10.37–Q10.39 | Yes |
 | 10.8 Token accounting | Q10.25, Q10.26, Q10.34–Q10.36 | Yes |
-| 10.9 BM25 ingestion and search | Q10.40–Q10.42, Q10.45–Q10.50, Q10.52–Q10.56 | Partial |
+| 10.9 BM25 ingestion and search | Q10.40–Q10.42, Q10.45–Q10.50, Q10.52–Q10.56 | Yes |
 | 10.10 Chunking strategy | Q10.43, Q10.44 | Yes |
 | 10.11 Context assembly | Q10.57–Q10.63 | Yes |
-| 10.12 Prompt versioning | Q10.23, Q10.64 | Partial |
+| 10.12 Prompt versioning | Q10.23, Q10.64 | Yes |
 | 10.13 Retrieval evaluation | Q10.42, Q10.51 | Partial |
 
 Sections 10.1–10.8 cover running models reliably. Sections 10.9–10.13 cover supplying them with the right information. The two designs are separate: `retrieval.py` calls no model, and retrieved passages reach a model only as context items.
@@ -31,31 +31,63 @@ Sections 10.1–10.8 cover running models reliably. Sections 10.9–10.13 cover 
 
 **The thing being provided** is a large language model: a transformer that predicts the next token from all the tokens before it, repeated until a stop condition ([Q10.1](conversation.md)). The same model can be delivered by different providers, so the platform names the model and the provider separately ([Q10.2](conversation.md)).
 
-**Matrix.** The attributes are those Q10.24 requires. Values come from [Q10.5](conversation.md) and the capabilities each adapter declares in [adapters.py](files/adapters.py). "Not stated" means no source gives the value.
+**Matrix.** The attributes are those Q10.24 requires. Claude values are public facts, **as of 2026-11-02, verify at build**, with the source in brackets (listed below the tables). Tinker is deferred (ADR-07), so a value no source gives reads "Verify at adoption". None is invented.
 
-| Attribute | Claude | Tinker |
+| Attribute | Claude | Tinker (deferred: verify at adoption) |
 | --- | --- | --- |
 | What it is | Hosted frontier models, used as-is | Fine-tuning service for open-weight models, plus sampling from your checkpoints |
 | Our job | Prompts, context, validation | Training data, a training loop, choosing checkpoints, then everything Claude needs too |
-| Identity | Pinned model ID | Base model + checkpoint path |
-| Structured output | Supported | Unverified for us until our conformance suite passes |
-| Strict tool use | Supported | Unverified for us until our conformance suite passes |
+| Identity | Pinned model ID. Dateless IDs are pinned snapshots [S1] | Base model + checkpoint path |
+| Structured output | Supported | Verify at adoption, through our conformance suite |
+| Strict tool use | Supported | Verify at adoption, through our conformance suite |
 | Tool use | Declared by adapter | Not declared |
 | Streaming | Declared by adapter | Not declared |
-| Usage reporting | Declared by adapter | Declared by adapter (conflict C13) |
-| Pinned versions | Declared by adapter | Declared by adapter (conflict C13) |
-| Deprecation notice | Not stated | Not stated |
-| Context window | Not stated | Not stated |
-| Maximum output | Not stated | Not stated |
-| Rate limits | Not stated; 429 is handled (10.7) | Not stated |
-| Data retention and training terms | Not confirmed (below) | Not stated |
-| Region | Not stated | Not stated |
-| Price per input and output token | Not stated; set in configuration | Not stated |
-| Caching | Cache read and write usage are counted (10.8) | Not stated |
-| Availability record | Not stated | Not stated |
-| Maturity for serving | Generally available | Beta (as of October 2026) |
+| Usage reporting | Declared by adapter | Not declared until conformance passes (C13) |
+| Pinned versions | Declared by adapter | Not declared until conformance passes (C13) |
+| Deprecation notice | At least 60 days' notice before retirement [S2]. Earliest retirement per model is below | Verify at adoption |
+| Context window | 1M tokens [S1]. Not binding for us: per-call input is capped at 16,000 (ADR-61) | Verify at adoption |
+| Maximum output | 128K tokens on the synchronous API [S1]. Our per-call limit is 16,000 | Verify at adoption |
+| Rate limits | RPM, ITPM and OTPM per model, set by the organisation's usage tier, and each standard tier has a monthly spend cap [S3]. Our account's tier is not known here and is read from the Console at build. 429 is handled (10.7) | Verify at adoption |
+| Data retention and training terms | Not confirmed (below) | Verify at adoption |
+| Region | Global by default. `inference_geo: "us"` keeps inference in the US at 1.1× all token prices [S4] | Verify at adoption |
+| Price per input and output token | Per model, below; set in configuration | Verify at adoption |
+| Caching | Cache writes 1.25× base input (5-minute) or 2× (1-hour). Cache reads 0.05× on Opus 5.5 and Sonnet 5.5, 0.1× on Haiku 5.5 [S4]. Read and write usage are counted (10.8) | Verify at adoption |
+| Availability record | Public status page exists [S5]; no figure taken (below) | Verify at adoption |
+| Maturity for serving | Generally available; all three models Active [S2] | Beta (as of October 2026) |
 
-**Gap:** the sources name these matrix attributes but give no values for deprecation notice, context window, maximum output, rate limits, region, price or availability record. Data retention is an open unknown: "What does the provider agreement say about data retention?", owner Security lead, settled when terms are confirmed ([System Design](../../reference/system-design.md), section 10). The `PRICE` values in `test_layer10.py` are test fixtures, not source prices.
+**Models, Claude API list prices in USD per million tokens, as of 2026-11-02, verify at build** [S1, S2, S4]:
+
+| Model | API ID | Context | Max output | Input | Output | 5-minute cache write | Cache read | Retires not sooner than |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| Claude Opus 5.5 | `claude-opus-5-5` | 1M | 128K | $4 | $20 | $5 | $0.20 | 2027-09-22 |
+| Claude Sonnet 5.5 | `claude-sonnet-5-5` | 1M | 128K | $2 | $10 | $2.50 | $0.10 | 2027-09-28 |
+| Claude Haiku 5.5, prompt up to 100,000 tokens | `claude-haiku-5-5` | 1M | 128K | $0.10 | $0.50 | $0.125 | $0.01 | 2027-10-07 |
+| Claude Haiku 5.5, prompt over 100,000 tokens | `claude-haiku-5-5` | 1M | 128K | $0.50 | $2.50 | $0.625 | $0.05 | 2027-10-07 |
+
+These are first-party API prices; other platforms may price separately. The `PRICE` values in `test_layer10.py` are test fixtures, not these prices.
+
+**Proposed model per task (provisional).** Owner: SRE lead. Validated when the first frozen-suite run meets the ADR-65 gates at these settings.
+
+| Task | Alias | Model | Why |
+| --- | --- | --- | --- |
+| `hypothesise` | `standard` | `claude-sonnet-5-5` | Produces candidates that evidence and the critic check afterwards |
+| `diagnose` | `default` | `claude-opus-5-5` | The result everything after it rests on |
+| `critique` | `default` | `claude-opus-5-5` | A critic should not be weaker than the model it checks |
+| `draft_patch` | `standard` | `claude-sonnet-5-5` | Configuration and revert patches only; the sandbox test and approval check it |
+
+Haiku 5.5 is assigned no task: all four are reasoning tasks. It stays a candidate for evaluation only. Skills still name only an alias (10.2).
+
+**Request rules on these models, as of 2026-11-02, verify at build** [S2, S6]:
+
+- `temperature`, `top_p` and `top_k` are removed: API version `2026-10-21` returns 400 for any value, and earlier versions return 400 for a non-default value on Claude 4.7 and later. The Claude adapter sends none of them (Layer decision).
+- Thinking can't be turned off on Opus 5.5, and is billed as output. Default effort differs (Opus 5.5 `medium`, Sonnet 5.5 `high`), so configuration sets effort per alias; the value is chosen in the first evaluation run.
+- Server-side refusal fallback stays off: it would change the model inside a pinned call (ADR-38).
+
+**Sources:** [S1 Models overview](https://platform.claude.com/docs/en/about-claude/models/overview), [S2 Model deprecations](https://platform.claude.com/docs/en/about-claude/model-deprecations), [S3 Rate limits](https://platform.claude.com/docs/en/api/rate-limits), [S4 Pricing](https://platform.claude.com/docs/en/about-claude/pricing), [S5 Status page](https://status.claude.com), [S6 API version 2026-10-21 migration](https://platform.claude.com/docs/en/api/migration-2026-10-21). All read 2026-11-02.
+
+**Needs the team:** data retention and training terms in the provider agreement, Owner: Security lead, settled when: terms confirmed.
+
+**Needs the team:** availability record. The status page's main view shows no uptime figure, and its history page was not read, Owner: SRE lead, settled when: the historical uptime is read at build and entered here.
 
 **Comparing providers.** Fill in the matrix, then run the same evaluation suite through the same gateway: accuracy, false-established rate, schema validity, refusal rate on incident data, latency at p95, and cost per correct diagnosis ([Q10.24](conversation.md)).
 
@@ -125,12 +157,12 @@ Code: [files/gateway_contracts.py](files/gateway_contracts.py).
 | `output_schema`, `output_schema_name` | Required answer shape, and the Pydantic contract to validate against |
 | `tools` | Tool specs the skill may propose |
 | `required_capabilities` | For example, structured output; refused if the provider lacks it |
-| `max_output_tokens`, `temperature` | Generation limits (temperature 0 for repeatability) |
+| `max_output_tokens`, `temperature` | Generation limits. `temperature` is sent only to a provider that accepts it; Claude doesn't (10.1) |
 | `deadline_epoch_s` | The investigation's absolute deadline |
 | `call_timeout_s` | Per-call limit (≤ 60 s) |
 | `model_alias` | Resolved to a pinned model by configuration |
 
-**ModelResult** ([Q10.14](conversation.md)): `request_id`, `attempt`; `status`, `stop_reason`; `content` blocks and `parsed`; `validation_errors`, `refusal_detail`, `error`; `usage`; `cost_micros`, `latency_ms`; `identity`; `provider_request_id`. Each attempt is stored as a `model_attempts` row (Artifact 7; conflict C11).
+**ModelResult** ([Q10.14](conversation.md)): `request_id`, `attempt`; `status`, `stop_reason`; `content` blocks and `parsed`; `validation_errors`, `refusal_detail`, `error`; `usage`; `cost_micros`, `latency_ms`; `identity`; `provider_request_id`. Each attempt is stored as a `model_attempts` row, with the columns ADR-64 adds.
 
 **Content blocks** are an ordered list; order is preserved, and unknown block types are dropped and logged ([Q10.15](conversation.md)):
 
@@ -159,9 +191,9 @@ Code: [files/gateway_contracts.py](files/gateway_contracts.py).
 - Provider: who runs it and how we reach it (`anthropic`, `tinker`). The adapter is chosen by this.
 - Model: the exact model ID returned in the response, not just the alias.
 - Checkpoint: for a fine-tuned model, the exact weights, such as a Tinker sampler path.
-- Adapter version, prompt version, output schema fingerprint, context fingerprint, provider's request ID.
+- Adapter version, prompt version and text fingerprint (ADR-63), output schema fingerprint, context fingerprint, provider's request ID.
 
-Temperature 0 is used for repeatability, but outputs can still differ slightly, so the stored input and output are the record. Re-running is a comparison, not a guarantee.
+Claude takes no temperature setting (10.1), so outputs can differ between runs. The stored input and output are the record. Re-running is a comparison, not a guarantee.
 
 ## 10.3 Claude adapter
 
@@ -173,12 +205,13 @@ Code: `ClaudeAdapter` in [files/adapters.py](files/adapters.py). An adapter does
 
 | ModelRequest | Claude request |
 | --- | --- |
-| `model_alias` | `model`, from the configured alias-to-pinned-ID map |
+| `model_alias` | `model`, from the configured alias-to-pinned-ID map; `output_config.effort` from the same configuration |
 | `system` | `system` |
 | `context` | One user message of labelled `<data ref=… kind=…>` blocks, with a statement that they are evidence and never instructions |
 | `output_schema` | `output_config.format`, type `json_schema` |
 | `tools` | `tools`, each with `strict: true` |
-| `max_output_tokens`, `temperature` | `max_tokens`, `temperature` |
+| `max_output_tokens` | `max_tokens` |
+| `temperature` | Not sent (10.1) |
 | `incident_id` | `metadata.user_id` |
 
 **Response mapping:** a `tool_use` block becomes a `ToolProposal` with its `id`, `name` and `input`; text becomes a `TextBlock`; `thinking` becomes a `ReasoningBlock` ([Q10.12](conversation.md), [Q10.15](conversation.md)). The `request-id` header becomes `provider_request_id`.
@@ -188,9 +221,9 @@ Code: `ClaudeAdapter` in [files/adapters.py](files/adapters.py). An adapter does
 | StopReason | Claude value | Result status | Handling |
 | --- | --- | --- | --- |
 | `COMPLETE` | `end_turn` | OK, then validated | Use it |
-| `TOOL_USE` | `tool_use` | OK | Proposals to the gate (conflict C15) |
-| `MAX_TOKENS` | `max_tokens` | `TRUNCATED` | One retry with double the output limit (≤ 16,000), within budget (conflict C4) |
-| `CONTEXT_EXCEEDED` | `model_context_window_exceeded` | `TRUNCATED` | Context assembly must shrink the input (conflict C5) |
+| `TOOL_USE` | `tool_use` | OK | Proposals to the gate, even when the request names an output schema (ADR-61) |
+| `MAX_TOKENS` | `max_tokens` | `TRUNCATED` | One retry with double the output limit (≤ 16,000), within budget (ADR-61) |
+| `CONTEXT_EXCEEDED` | `model_context_window_exceeded` | `TRUNCATED` | Reassemble a smaller input; the output limit is never raised (ADR-61) |
 | `REFUSAL` | `refusal` | `REFUSED` | Not retried |
 | `PAUSED` | `pause_turn` | — | Provider-side tool loops; not used by our skills |
 | `INCOMPLETE` | stream ended without a stop event | `INCOMPLETE` | Retried |
@@ -199,7 +232,7 @@ Code: `ClaudeAdapter` in [files/adapters.py](files/adapters.py). An adapter does
 
 **Refusal** ([Q10.17](conversation.md)): the Claude API returns a refusal as a normal response with `stop_reason: "refusal"`, not as an error. It is status `REFUSED`, with the provider's details in `refusal_detail`. It is logged and counted: a pattern of refusals on incident data usually means a prompt or redaction problem, which is reviewed.
 
-**Broken stream** ([Q10.19](conversation.md)): a stream is complete only when the final stop event arrives (`message_stop`, after a `message_delta` carrying the stop reason). The transport reports `stream_completed`. If it's false, the adapter sets `INCOMPLETE`, whatever text arrived.
+**Broken stream** ([Q10.19](conversation.md)): a stream is complete only when the final stop event arrives (`message_stop`, after a `message_delta` carrying the stop reason). The transport reports `stream_completed`. If it's false, the adapter sets `INCOMPLETE`, whatever text arrived. Usage is then unknown, even if the body carries some: the attempt is charged in full and reconciled later (ADR-61).
 
 **Structured output** ([Q10.20](conversation.md), [Q10.21](conversation.md)): `output_config.format` makes invalid JSON rare on Claude, but validation stays (10.7).
 
@@ -210,6 +243,7 @@ Code: `ClaudeAdapter` in [files/adapters.py](files/adapters.py). An adapter does
 | 401, 403 | `AUTH_ERROR` | No |
 | 400, 404, 413, 422 | `BAD_REQUEST` | No |
 | 429 | `RATE_LIMITED` | Yes |
+| 429 with `enforced_spend_limit_reached` (provider monthly spend cap, no `retry-after`) | `AUTH_ERROR` | No: access stays paused, so it alerts and degrades as 10.7 describes |
 | 408 | `TIMEOUT` | Yes |
 | 5xx, including 529 overloaded, and anything else | `PROVIDER_ERROR` | Yes |
 
@@ -225,11 +259,12 @@ Code: `ClaudeAdapter` in [files/adapters.py](files/adapters.py). An adapter does
 
 **Adapter** (`TinkerAdapter` in [files/adapters.py](files/adapters.py)):
 
-- Disabled by default: `enabled=False`, and `build` raises while disabled (conflict C13).
+- Disabled by default: `enabled=False`. While disabled, the gateway returns `CAPABILITY_UNSUPPORTED` and spends no tokens (C13).
 - Reuses the Claude request shape, against a different base URL and a checkpoint model.
 - Maps each alias to a checkpoint, `tinker://<run>/sampler_weights/<step>`.
 - Identity records provider `tinker`, adapter `tinker-adapter@0`, and the checkpoint ([Q10.2](conversation.md)).
-- Capabilities stay unverified until our conformance suite passes against it, so a skill that requires structured output gets `CAPABILITY_UNSUPPORTED` and no tokens are spent ([Q10.22](conversation.md), tested).
+- It declares no capabilities until our conformance suite passes against it, so a skill that requires structured output gets `CAPABILITY_UNSUPPORTED` and no tokens are spent ([Q10.22](conversation.md), tested).
+- A request carrying a schema or tools needs those capabilities whether or not it lists them. It is refused, never sent without them (C13).
 
 **Evaluation plan** ([Q10.5](conversation.md)):
 
@@ -238,7 +273,7 @@ Code: `ClaudeAdapter` in [files/adapters.py](files/adapters.py). An adapter does
 3. Run the same evaluation suite through the same gateway (same prompts, contexts and schemas), on both.
 4. Compare accuracy, false-established rate, schema validity, latency and cost per correct diagnosis.
 
-**Reaching production** takes a recorded decision, through the ADR-07 revisit conditions ([Layer 6](../layer-06-system-architecture/conversation.md)): accuracy stalls below target with a hosted model; there are enough labelled incidents to train on; cost per incident is too high; or the organisation requires that data stays on a self-managed model.
+**Reaching production** takes a recorded decision, through the ADR-07 revisit conditions ([Layer 6](../layer-06-system-architecture/conversation.md)): accuracy stalls below target with a hosted model; there are enough labelled incidents to train on; cost per incident is too high; or the organisation requires that data stays on a self-managed model. Model spend above 80% of the monthly ceiling for 3 straight months reopens the cost condition (ADR-56).
 
 ## 10.5 Budget policy
 
@@ -249,13 +284,30 @@ Code: `IncidentBudget`, `BudgetLedger` in [files/gateway.py](files/gateway.py).
 **Setting the budget** ([Q10.28](conversation.md)):
 
 - **Budget = 10% × engineer time saved × loaded hourly cost**, then capped by the token and call caps in Artifact 4.
-- Set in configuration per incident category.
+- Set in configuration per incident category. Until the pilot, every category uses the same cap.
 - Recorded on each incident's `incident_budgets` row at creation.
 - Reviewed after the pilot against real cost per incident.
 
-**Gap:** no source gives the loaded hourly cost, the per-category values or the monthly budget ceiling, so no per-incident money figure can be derived. The code's default `max_cost_micros = 2_000_000` has no source (see Limits check).
+**Values (ADR-56).** Placeholders in USD, so that limits can be built and tested:
 
-**Caps** (Artifact 4; [System Design](../../reference/system-design.md), section 9): 30 calls, 200,000 input and 20,000 output tokens, a cost cap per incident; daily and monthly ceilings with alerts. When a limit is reached, the platform stops and hands over.
+| Value | Provisional | Derivation |
+| --- | --- | --- |
+| Per-incident cap | $2.00 | The existing `max_cost_micros = 2_000_000`, kept |
+| Monthly model spend ceiling | $500 | 250 incidents × $2.00. Infrastructure cost is separate |
+| Daily limit | $16.67 | $500 ÷ 30 (System Design section 9), which is 8 incidents at the cap |
+
+**What the formula says about $2.00.** With the 30 minutes saved in Assumptions, $2.00 = 10% × 0.5 h × $40 per hour. That $40 is only what the placeholder implies, not a measured cost, and the time saved is measured in the pilot.
+
+**What the caps allow.** At the 10.1 prices, an incident at both token caps costs at most $1.20 on Opus 5.5 (200,000 × $4 + 20,000 × $20, per million) or $0.60 on Sonnet 5.5. So the token caps stop an investigation first on the proposed models, and $2.00 is the backstop for a price change or a dearer model.
+
+**Needs the team:** actual monthly budget and loaded hourly cost, Owner: Engineering manager, settled when: finance confirms (ADR-56).
+
+**Caps** (Artifact 4; [System Design](../../reference/system-design.md), section 9): 30 calls, 200,000 input and 20,000 output tokens, $2.00 per incident. When an incident limit is reached, the platform stops and hands over.
+
+| Fleet limit | Value | Alert | At 100% |
+| --- | --- | --- | --- |
+| Daily spend, all incidents | $16.67 | 80% | New investigations are evidence-only; running ones finish their current step, then stop and hand over (ADR-55) |
+| Monthly spend, all incidents | $500 | 50%, 80%, 100% | The same (Layer decision) |
 
 **Lifecycle of a call** ([Q10.27](conversation.md), [Q10.29](conversation.md)):
 
@@ -265,9 +317,10 @@ Code: `IncidentBudget`, `BudgetLedger` in [files/gateway.py](files/gateway.py).
 | Reserve | Take that maximum cost out of the budget under a lock; in the database, a row lock |
 | Refuse | If it doesn't fit, the call is refused before it is sent. Parallel calls each reserve, so together they can never exceed the budget |
 | Settle | The reservation is replaced by actual cost |
-| Release | Only if the call provably never left the process, for example when no concurrency slot came free before the deadline |
+| Unknown usage | A call that was sent and has unknown usage is charged at the reserved maximum (ADR-61) |
+| Release | Only if the call provably never left the process, for example when no concurrency slot came free before the deadline. A never-sent reservation also releases on expiry (`expires_at`) |
 
-**Why unknown usage is not released** ([Q10.36](conversation.md)): the tokens were probably spent. Releasing the reservation would make the budget look larger than it is, so further calls could overspend the cap; under-report cost; and let a stream of timeouts drain money while the budget appears untouched. This differs from the Technical Specification (conflict C1).
+**Why unknown usage is not released** ([Q10.36](conversation.md)): the tokens were probably spent. Releasing the reservation would make the budget look larger than it is, so further calls could overspend the cap; under-report cost; and let a stream of timeouts drain money while the budget appears untouched. Expiry therefore never releases a sent call (ADR-61).
 
 Reporting: cost per incident and per correct diagnosis (Artifact 9). "20 calls can't produce a surprise, because each was reserved within a cap before it was made" ([Q10.27](conversation.md)).
 
@@ -292,7 +345,7 @@ Hundreds of incidents therefore produce a queue, not hundreds of simultaneous ca
 
 If no slot comes free before the deadline, the result is `DEADLINE_PASSED`, and the reservation is released because the call was never sent.
 
-Historical peak concurrency is an open unknown (owner SRE lead; [System Design](../../reference/system-design.md), section 10).
+**Needs measurement:** historical peak concurrency, Owner: SRE lead, settled when: past incident records are checked ([System Design](../../reference/system-design.md), section 10).
 
 ## 10.7 Retry and timeout policy
 
@@ -300,29 +353,33 @@ Historical peak concurrency is an open unknown (owner SRE lead; [System Design](
 
 Code: `ModelGateway.call` and `_attempt` in [files/gateway.py](files/gateway.py).
 
-**Only the gateway retries model calls** ([Q10.37](conversation.md)):
+**Only the gateway retries model calls** ([Q10.37](conversation.md), ADR-27):
 
 - The provider SDK's own retries are turned off.
-- The Temporal activity for each model skill has 1 attempt.
+- Temporal never retries a model failure. It re-runs a model activity once only when its worker is lost, on another worker, and a completed model result is reused, so nothing is billed twice (ADR-27, ADR-52).
 - The gateway allows 3 attempts per step, with backoff (2 s, then 4 s), within the deadline.
 - Every attempt reserves budget, so retries are visible in cost.
-- The coordinator's revision loop is separate, and bounded (Artifact 9).
+- The coordinator's revision loop is separate, and bounded (Artifact 9). A critic failing twice ends the investigation as inconclusive, so a critic can't exceed 6 attempts (ADR-52).
 
 At most 3 provider calls per step, never 27.
 
 | Result | Retried | Handling |
 | --- | --- | --- |
 | `INVALID_OUTPUT` | Yes | Never repaired by guessing. Retried with the error added to the context: "Your previous answer failed validation: …" |
-| `TRUNCATED` from `max_tokens` | One retry | Double the output limit (≤ 16,000), within budget |
-| `TRUNCATED` from context | See 10.3 | Context assembly must shrink the input |
+| `TRUNCATED` from `max_tokens` | One retry, once only (ADR-61) | Double the output limit (≤ 16,000), within budget |
+| `TRUNCATED` from context | Not by the gateway | The result returns to the skill, which reassembles a smaller input within the step's 3 attempts. The output limit is never raised (ADR-61). A 1M window and our 16,000 input cap make this unlikely on Claude |
 | `INCOMPLETE` | Yes | New attempt; the partial text is discarded |
 | `TIMEOUT`, `RATE_LIMITED`, `PROVIDER_ERROR` | Yes | Backoff, within the deadline |
 | `REFUSED` | No | The same request would be refused again, and it costs budget. The step fails; the coordinator treats it as inconclusive, and hands over |
-| `AUTH_ERROR` | No | The platform alerts immediately; investigations degrade to evidence only until it's fixed |
+| `AUTH_ERROR`, including the provider spend cap (10.3) | No | The platform alerts immediately; investigations degrade to evidence only until it's fixed |
 | `BAD_REQUEST` | No | Retrying changes nothing |
-| `CAPABILITY_UNSUPPORTED`, `BUDGET_REFUSED`, `DEADLINE_PASSED` | No | No call is made |
+| `CAPABILITY_UNSUPPORTED`, `BUDGET_REFUSED`, `DEADLINE_PASSED` | No | No call is made. A request over the 16,000 per-call input limit gets `BUDGET_REFUSED` before any reservation (ADR-61) |
 
 After 3 attempts, the step fails, and the coordinator records it as inconclusive ([Q10.20](conversation.md)).
+
+**Circuit breaker** (ADR-61, provisional): in the gateway, per provider. It opens at 50% failures of at least 10 calls in 60 s, for 30 s. While open, calls return `PROVIDER_ERROR` without being sent or reserved, and the provider-outage behaviour below applies.
+
+**Result reuse** (ADR-61): the same `input_sha256` within an incident reuses the recorded completed result, with no new reservation.
 
 **Why permanent errors aren't retried** ([Q10.38](conversation.md)): the key is wrong, expired or revoked, or the permission is missing. Retrying wastes time inside the deadline, adds load, may trip the provider's abuse protection, and hides an outage that needs a person.
 
@@ -341,7 +398,7 @@ The effective timeout of each call is the smaller of the two: `min(call_timeout,
 - A retry is only scheduled if its backoff ends before the deadline.
 - The coordinator also stops at the limit (Artifact 9), and the workflow's activity timeouts bound everything (Artifact 8).
 
-**No automatic cross-provider fallback** ([Q10.39](conversation.md)): `allow_cross_provider_fallback = false` (ADR-38). The risks:
+**No automatic cross-provider fallback** ([Q10.39](conversation.md)): `allow_cross_provider_fallback = false` (ADR-38). A provider outage gives evidence and a timeline only. The risks of fallback:
 
 - Different behaviour, unmeasured: prompts, schemas and refusal patterns were evaluated on one model.
 - Different capabilities: the fallback may lack structured output, so validation failures spike.
@@ -350,7 +407,7 @@ The effective timeout of each call is the smaller of the two: `min(call_timeout,
 - Reproducibility: one investigation would mix models.
 - It can amplify an outage: a burst of traffic to the second provider hits its rate limits too.
 
-The agreed outage behaviour is Artifact 2's: evidence and timeline only, no fix proposals. A second provider is added only after it passes the same evaluation, as a recorded decision, and with fallback per skill, not global.
+The agreed outage behaviour is Artifact 2's: evidence and timeline only, no fix proposals. A second provider is considered when provider-caused hand-overs exceed 5% of incidents in 90 days, or there are 2 outages over 60 minutes in a quarter (ADR-56). It is added only after it passes the same evaluation, as a recorded decision, and with fallback per skill, not global.
 
 ## 10.8 Token accounting
 
@@ -358,7 +415,7 @@ The agreed outage behaviour is Artifact 2's: evidence and timeline only, no fix 
 
 Code: `Usage` in [files/gateway_contracts.py](files/gateway_contracts.py); `estimate_tokens`, `cost_micros`, `BudgetLedger.settle` in [files/gateway.py](files/gateway.py).
 
-**Unit:** tokens, as reported by the provider, converted to money with the configured price per million tokens. Money is stored as whole millionths of the currency unit (Artifact 7), so there are no rounding errors ([Q10.25](conversation.md)).
+**Unit:** tokens, as reported by the provider, converted to money with the configured price per million tokens for the model that ran the call. All estimates use one shared function (ADR-61). Money is stored as whole millionths of the currency unit (Artifact 7), so there are no rounding errors ([Q10.25](conversation.md)).
 
 **Four counters, priced separately** ([Q10.26](conversation.md)): input, output (usually several times the input price), cache read and cache write. Both the per-incident token caps and the cost cap use the split.
 
@@ -375,11 +432,12 @@ The coordinator's model-call count and the ledger agree, because both count atte
 | Step | Rule |
 | --- | --- |
 | Mark | `Usage.reported = false` |
-| Charge | The full reservation, the pessimistic maximum, to the incident (tested) |
+| Charge | The full reservation, the pessimistic maximum, to the incident (tested). A timeout or broken stream is included (ADR-61) |
+| Record | The `model_attempts` row is reported as estimated, at the charged amount (ADR-61) |
 | Reconcile | Add to `pending_reconcile`: a daily job compares these with the provider's usage records or billing export, and corrects the ledger |
 | Count | Frequent missing usage from a provider is an alert |
 
-The code treats a timeout and any non-200 response as missing usage, so a 401 is also charged in full and queued for reconciliation. That matches "only a call that provably never left the process is released" ([Q10.36](conversation.md)). The daily job and the alert are not in `files/`.
+The code treats a timeout and any non-200 response as missing usage, so a 401 is also charged in full and queued for reconciliation. That matches "only a call that provably never left the process is released" ([Q10.36](conversation.md)). The daily job and the alert are listed code changes.
 
 ## 10.9 BM25 ingestion and search
 
@@ -394,22 +452,20 @@ Code: [files/retrieval.py](files/retrieval.py). Nothing here calls a model.
 1. **Source:** runbooks from the repository or wiki, and past incident reviews, each read with its version (commit or revision ID), owner, services, permitted groups and last-reviewed date.
 2. **Redact** secrets and personal data (Artifact 5).
 3. **Chunk** with headings kept (10.10).
-4. **Store** documents and chunks in PostgreSQL, keyed by `doc_id@version#ordinal`, each with its text span and fingerprint.
+4. **Store** documents and chunks in PostgreSQL (`documents`, `chunks` and `index_revisions` in `schema.sql`; ADR-62, ADR-64), keyed by `doc_id@version#ordinal`, each with its text span and fingerprint.
 5. **Build a new immutable index revision** on any change, nightly at most, and on demand after an edit.
 6. **Evaluate** the new revision against the retrieval test set (10.13) before activating it.
 7. **Activate:** new investigations use it; old ones keep the revision they recorded.
-
-**Gap:** Artifact 7's schema has no tables for documents, chunks or index revisions, so where step 4 stores them is not defined. `retrieval.py` holds them in memory.
 
 **Why BM25 first** ([Q10.50](conversation.md)):
 
 - Our queries are mostly exact terms: alert names, error codes, configuration keys and service names copied from evidence.
 - No new system: there is no embedding model, vector store or extra provider.
 - Explainable and debuggable: a hit can be traced to the matched terms.
-- Deterministic and reproducible: the same revision and query always give the same results (but see conflict C14).
-- Measured before replaced: if recall falls short on paraphrased queries, add embeddings with hybrid fusion as a recorded decision.
+- Deterministic and reproducible: the same revision and query always give the same results (ADR-62).
+- Measured before replaced: vector or hybrid is adopted only if it improves end-to-end results without losing exact-identifier recall, and is worth the extra system (ADR-37).
 
-Conflict C9 records where BM25 runs.
+**Where it runs** (ADR-62, amending ADR-09): PostgreSQL stores the corpus, and BM25 ranking runs in the worker. No extra system is added.
 
 **Search** ([Q10.45](conversation.md), [Q10.46](conversation.md)):
 
@@ -426,15 +482,15 @@ Conflict C9 records where BM25 runs.
 
 - Embeddings let "Checkout is throwing server errors after release" match "HTTP 500 after deploy", although they share few words.
 - Dense vector search is nearest-neighbour search over chunk embeddings (cosine similarity). The simplest option for us would be the `pgvector` extension in PostgreSQL.
-- Hybrid retrieval would run both and merge with reciprocal rank fusion, scoring `Σ 1 / (60 + rank)`, optionally with a re-ranker over the top 20. Adopted only if evaluation shows BM25 alone misses relevant passages.
+- Hybrid retrieval would run both and merge with reciprocal rank fusion, scoring `Σ 1 / (60 + rank)`, optionally with a re-ranker over the top 20. Adopted only on the ADR-37 condition.
 
 **Immutable index revisions** ([Q10.52](conversation.md)):
 
-- A revision is built from a fixed set of document versions. Its ID is a hash of `doc_id@version` for every live document.
-- Revisions are never modified. Any edit, addition or deletion builds a new one (tested).
+- A revision is built from a fixed set of document versions. Its ID hashes document versions, permitted groups and the full build timestamp, so identical IDs mean identical results (ADR-62). A permissions re-sync (Q10.56) therefore gives a new ID.
+- Revisions are never modified, with one exception: the legal or safety purge below. Any edit, addition or deletion builds a new one (tested).
 - Chunks are stored by version, so old chunks remain.
 - Each investigation records the revision ID it searched, in the context manifest.
-- Keep every revision referenced by an incident for the incident retention period (1 year; conflict C10).
+- Keep every revision referenced by an incident for the incident retention period (1 year, ADR-57).
 
 **Pinned citations** ([Q10.53](conversation.md)): each runbook hit becomes an evidence record carrying document ID and version, chunk ID, character start and end in that version, the chunk's fingerprint, and the heading path. The text is stored with the evidence. The display shows "version v3; the current version differs" when it has changed.
 
@@ -442,16 +498,16 @@ Conflict C9 records where BM25 runs.
 
 - Review age: a document not reviewed by its owner within 180 days is marked stale.
 - Deprecated flag: set by owners.
-- Changed since review: the service it describes was deployed with relevant changes after the last review.
+- Changed since review: the service it describes was deployed with relevant changes after the last review. This sets the chunk's stale flag at index build, as the other two do (C18).
 - Stale chunks are excluded from search by default (tested). They can be included explicitly, and are then labelled stale in the context.
 - A weekly report (`stale_report`) goes to owners (tested).
 - Feedback: a runbook passage cited in a diagnosis that was later rejected is flagged for review.
 
 **Deleted documents** ([Q10.55](conversation.md)):
 
-- Deletion builds a new index revision without the document, activated straight away. New searches no longer return it (tested).
+- Deletion builds a new index revision without the document, activated straight away: it does not wait for the 10.13 gate, which runs afterwards. New searches no longer return it (tested).
 - Old revisions keep it, only for reproducing past investigations, readable by incident reviewers, never searched by new investigations.
-- If the deletion was for legal or safety reasons, the document's chunks are purged from every revision, and the affected evidence records are marked "content removed".
+- If the deletion was for legal or safety reasons, the document's chunks are purged from every revision, and the affected evidence records are marked "content removed". This is the only change to an existing revision, and it is recorded on the timeline of each affected incident.
 
 **Permissions** ([Q10.56](conversation.md)):
 
@@ -499,12 +555,12 @@ Code: `assemble`, `merge_repeated_logs` in [files/context.py](files/context.py).
 | 2 | Gaps (missing sources) | Always kept |
 | 3 | Evidence cited by the current draft (on revision) | Always kept; may be truncated |
 | 10–15 | Other evidence, most decisive kind first: test result (10), trace and error group (11), metric (12), change and dependency (13), log (14), alert (15) | Truncated, then dropped |
-| 30 | Past incidents (code; other kinds default to 20) | Truncated, then dropped |
+| 30 | Past incidents (other kinds default to 20) | Truncated, then dropped |
 | 40+ | Up to 3 runbook passages | Truncated, then dropped |
 
 Tested: under an 800-token budget, low-priority items are dropped, and the drops are recorded in the manifest.
 
-**Target size** ([Q10.61](conversation.md)): the per-call input cap is 16,000 tokens (Artifact 4); assembly targets about 12,000, leaving room for instructions and schema.
+**Target size** ([Q10.61](conversation.md)): the per-call input cap is 16,000 tokens, enforced in the gateway (ADR-61); assembly targets about 12,000 by default, leaving room for instructions and schema.
 
 **Decisiveness for the question being asked, then recency** ([Q10.61](conversation.md)):
 
@@ -531,7 +587,7 @@ Live evidence shows what is happening; runbooks show what usually helps. A claim
 4. Drop by priority from the bottom, recording each drop in the manifest.
 5. Never drop facts, contradictions, gaps or cited evidence. If those alone exceed the budget, assembly raises an error, and the coordinator narrows the scope rather than silently cutting.
 
-There is no model-written summarisation of evidence in the first version: compression is deterministic code (conflict C3).
+There is no model-written summarisation of evidence in the first version: compression is deterministic code, and "trim or summarise" in System Design section 9 reads as trim (ADR-61).
 
 **Provenance** ([Q10.62](conversation.md)):
 
@@ -550,25 +606,27 @@ Code: `PromptVersion`, `PromptRegistry` in [files/context.py](files/context.py).
 
 | Rule | Source |
 | --- | --- |
-| A prompt version is `prompt_id@version`, such as `diagnose@7` | `PromptVersion.ref` |
+| A prompt version is `prompt_id@version`, such as `diagnose@7`, stored at `prompts/diagnose/v7.md` | `PromptVersion.ref`; ADR-63 |
 | A version carries its text, output schema name, model alias and the evaluation run that approved it | `PromptVersion` |
 | Its fingerprint is the SHA-256 of its text | `PromptVersion.sha256` |
-| Prompts live in the repository, one file per version | `PromptRegistry` |
+| Prompts live in the repository at `prompts/<skill>/v<N>.md`, one file per version, immutable once merged | `PromptRegistry`; ADR-63 |
 | A version is never edited after use; re-adding one with different text is an error (tested) | `PromptRegistry.add` |
-| A new version goes live only after it passes the evaluation suite (Artifact 9, 9.11) | `PromptRegistry` |
+| A new version needs a pull request approved by the SRE lead and a passing evaluation run on the development split | ADR-63 |
+| Reaching production also takes the ADR-65 gates on the held-out split, as any candidate does | Layer decision |
+| Activation is a recorded configuration change | ADR-63 |
+| Rollback activates the previous version | ADR-63 |
+| Each attempt records the version and the text fingerprint | ADR-63, ADR-64 |
 | Old versions stay readable for replay (tested) | `PromptRegistry.get` |
 | Changing the model is a configuration change with its own evaluation run | [Q10.2](conversation.md) |
-
-**Gap:** no question covers the prompt release process directly. The sources don't say who approves a version, how an active version is rolled back, or how the repository files are laid out.
 
 **What must be kept to reproduce a diagnosis** ([Q10.64](conversation.md)):
 
 | What | Where |
 | --- | --- |
-| Prompt ID, version and text fingerprint | `model_attempts.prompt_template_version`; prompt files in the repository (immutable per version) |
+| Prompt ID, version and text fingerprint | `model_attempts` version and fingerprint (ADR-64); `ModelIdentity` and `Manifest` (ADR-63); prompt files in the repository (immutable per version) |
 | Output schema and its fingerprint | Contracts in the repository; `ModelIdentity.output_schema_sha256` |
-| Provider, exact model ID, checkpoint, adapter version | `ModelIdentity` |
-| Temperature and output limit | Stored request (artifact store) |
+| Provider, exact model ID, checkpoint, adapter version | `ModelIdentity`; `model_attempts` (ADR-64) |
+| Effort and output limit | Stored request (artifact store) |
 | The exact context sent | Model input artifact, plus the context manifest (items, refs, fingerprints, exclusions) |
 | Evidence records and snapshots | `evidence` + artifact store (fingerprinted) |
 | Retrieval index revision, and the chunks returned | Manifest `index_revision`; chunks stored by version |
@@ -576,7 +634,7 @@ Code: `PromptVersion`, `PromptRegistry` in [files/context.py](files/context.py).
 | The model's raw output and its validation result | Model output artifact; `model_attempts` |
 | Code version | Release tag on the timeline |
 
-Replay = same prompt version + same context + same model, then compare outputs. If the model ID has been retired, the stored output is the record, and a re-run on a current model is a labelled comparison. Conflicts C10–C12 affect this table.
+Replay = same prompt version + same context + same model, then compare outputs. If the model ID has been retired, the stored output is the record, and a re-run on a current model is a labelled comparison. Redacted model input and output and cited evidence are kept 1 year, so a six-month replay holds (ADR-57).
 
 ## 10.13 Retrieval evaluation
 
@@ -586,24 +644,65 @@ Code: `recall_at_k`, `mrr`, `ndcg_at_k` in [files/retrieval.py](files/retrieval.
 
 Measured against a labelled query set: queries taken from real alerts and evidence, each with the chunks an SRE marks relevant ([Q10.51](conversation.md)).
 
-| Metric | Meaning | Target |
+**Labelled query set** (provisional). Owner: SRE lead. Size: 50 queries, built from the runbook corpus, and stored as a versioned file in the repository. Any label change makes a new set version.
+
+| Part | Rule |
+| --- | --- |
+| Mix | 30 exact-identifier queries and 20 paraphrased, so the two are scored separately (ADR-37) |
+| Scope traps | At least 10 of the 50 have a matching chunk that belongs to another service or a group the caller lacks, so a filter failure shows up |
+
+Each query record holds:
+
+| Field | Meaning |
+| --- | --- |
+| `query_id`, `query` | Stable ID and the query text, taken from real alerts and evidence |
+| `kind` | `exact_identifier` or `paraphrase` |
+| `service`, `groups` | The incident's service and the caller's groups, passed to search as given |
+| `relevant` | Relevant passages as `doc_id` plus heading path, because chunk IDs change with each document version. Resolved to chunks at evaluation |
+| `labelled_by`, `labelled_at` | Who marked it and when |
+
+A label that no longer resolves fails the run until the owner relabels it.
+
+**Metrics.** Scored over all 50 queries, then again for each `kind`:
+
+| Metric | Meaning | Target (provisional) |
 | --- | --- | --- |
 | Recall@5 | Share of relevant chunks in the top 5 | ≥ 0.9 |
 | MRR | How high the first relevant chunk ranks | ≥ 0.7 |
 | nDCG@5 | Ranking quality | ≥ 0.8 |
-| Wrong-service and wrong-permission hits | Results outside the incident's service or the caller's groups | 0 |
+| Wrong-service hits | Results whose `services` has neither the query's service nor `*` | 0 |
+| Wrong-permission hits | Results whose `allowed_groups` shares nothing with the query's groups | 0 |
+| Exact-identifier Recall@5 | The same measure for `exact_identifier` queries only | Not below the active revision |
 
-**When it runs:** on every new index revision before activation ([Q10.42](conversation.md)), and on tokenizer or chunking changes. In production, also track how often cited runbook passages appear in accepted diagnoses.
+**When it runs:** on every new index revision before activation ([Q10.42](conversation.md)), and on tokenizer or chunking changes. In production, also track how often cited runbook passages appear in accepted diagnoses. Results are kept 2 years (ADR-57).
 
-**Result:** if recall falls short on paraphrased queries, add embeddings with hybrid fusion, as a recorded decision ([Q10.50](conversation.md)).
+**Activation gate** (provisional). Owner: SRE lead.
 
-**Gap:** the labelled query set does not exist yet, and no source sets its size or owner. `files/` has no function for wrong-service and wrong-permission hits, and no activation gate.
+1. A new revision is built and stays inactive.
+2. The current set version runs against it, and the result is stored with the revision ID.
+3. If every target holds, the revision is activated, as a recorded configuration change.
+4. If any target misses, the active revision stays, and the SRE lead is alerted. There is no override without a recorded decision.
+5. A deletion is the one exception (10.9): it activates straight away, and the gate runs afterwards. A miss alerts the SRE lead, and the deletion stays.
+6. Until the set exists, no revision is activated. `RETRIEVE_KNOWLEDGE` records a gap, and the investigation continues, because runbooks are optional evidence (ADR-54).
+
+**Result:** a miss on the retrieval targets reopens ADR-37. Vector or hybrid is then compared on this set and end to end ([Artifact 12](../layer-12-reliability-evaluation/artifact-12-reliability-and-evaluation-specification.md)), and adopted only on its condition.
+
+**Needs the team:** the labelled query set itself, Owner: SRE lead, settled when: the set is built.
 
 ## Assumptions
 
 | Assumption | Status | Owner | Validated when |
 | --- | --- | --- | --- |
 | A change-caused investigation saves about 30 minutes of engineer time ([Q10.28](conversation.md)) | Provisional | SRE lead | Pilot incidents are timed |
+| Spend values: $2.00 per incident, $500 monthly, $16.67 daily, USD (ADR-56) | Provisional | Engineering manager | Finance confirms |
+| Every incident category uses the same cap until the pilot | Provisional | Engineering manager | Pilot gives real cost per category |
+| Model per task (10.1) | Provisional | SRE lead | First frozen-suite run meets the ADR-65 gates |
+| 20,000 output tokens per incident fit with thinking always on for Opus 5.5 | Provisional | SRE lead | The baseline run shows typical investigations under the cap |
+| Public Claude values in 10.1 still hold at build | Provisional, as of 2026-11-02 | SRE lead | Re-checked against S1–S6 at build |
+| Circuit breaker values (ADR-61) | Provisional | SRE lead | Reviewed against pilot failure data |
+| Retention periods used for replay (ADR-57) | Provisional | Security lead | Provider terms confirmed |
+| Query set of 50: 30 exact, 20 paraphrased, at least 10 scope traps | Provisional | SRE lead | Set built and first run reviewed |
+| Retrieval targets and activation gate (10.13) | Provisional | SRE lead | First run on the real corpus reviewed |
 
 ## Decisions and conflicts
 
@@ -611,7 +710,7 @@ Measured against a labelled query set: queries taken from real alerts and eviden
 
 **Verification.** The 28 tests in `test_layer10.py` pass on a scratch copy of `files/`. The code behaviours below were confirmed by running that copy. `files/` was not changed.
 
-**Disagreements.** `conversation.md` records none between Claude and ChatGPT; the team fills that in.
+**Needs the team:** disagreements between Claude and ChatGPT. `conversation.md` records none, Owner: Team, settled when: conversation logs are filled in.
 
 ### Limits check against System Design section 9
 
@@ -619,15 +718,15 @@ Measured against a labelled query set: queries taken from real alerts and eviden
 | --- | --- | --- | --- |
 | Model calls per incident | 30 | `IncidentBudget.max_calls = 30` | Matches |
 | Tokens per incident | 200,000 input, 20,000 output | `max_input_tokens = 200_000`, `max_output_tokens = 20_000` | Matches |
-| Tokens per call | 16,000 input | Not enforced: a request of about 30,000 estimated input tokens went through. `assemble` takes `budget_tokens` with no default | **Differs** (C2) |
+| Tokens per call | 16,000 input | Not enforced: a request of about 30,000 estimated input tokens went through. `assemble` takes `budget_tokens` with no default | Code change (C2, ADR-61) |
 | Attempts per step | 3 (original + 2 retries) | `GatewayConfig.max_attempts = 3` | Matches |
 | Time per model call | 60 s | `call_timeout_s` default 60, maximum 60 | Matches |
 | Investigation time | 15 min | No constant: the gateway enforces the `deadline_epoch_s` the caller passes | Matches in the answers; not in code |
 | Whole workflow | 24 h | Not in Layer 10 code | Outside the gateway |
 | Concurrent investigations | 5; queue up to 50 by severity | Not in Layer 10 code; Q10.30 states the 5 but not the 50 | Outside the gateway |
-| Daily spend, all incidents | Monthly budget ÷ 30; alert at 80%, evidence-only at 100% | Not in code | **Differs** (C2) |
-| Monthly spend | Budget ceiling; alerts at 50%, 80%, 100% | Not in code | **Differs** (C2) |
-| Spend per incident | No figure; "about 10%" of engineer time saved | `max_cost_micros = 2_000_000`, no source | **Differs** (C2) |
+| Daily spend, all incidents | $16.67 (ADR-56); alert at 80%, evidence-only at 100% | Not in code | Code change (C2) |
+| Monthly spend | $500 (ADR-56); alerts at 50%, 80%, 100% | Not in code | Code change (C2) |
+| Spend per incident | $2.00 (ADR-56) | `max_cost_micros = 2_000_000` | Matches |
 | Reservation before each call | Reserved, then actual replaces it | `BudgetLedger.reserve`, `settle` | Matches |
 | Database rejects totals above the limit | Stated | In-memory stand-in; the check is in Artifact 7's schema | Matches by design |
 
@@ -635,28 +734,33 @@ Limits in code that section 9 does not list: per-call output ≤ 16,000 (`max_ou
 
 ### Conflicts
 
-None of these is resolved here. Sections show the Layer 10 answer unless stated, and each needs a team decision.
-
-| # | Conflict | Sources |
+| Item | Resolution | Decided by |
 | --- | --- | --- |
-| C1 | **Unsettled reservations.** Layer 10 says unknown usage is charged at the maximum and only a never-sent call is released. The Technical Specification, Layers 7 and 8 and the schema (`expires_at`) say an unsettled reservation is released when it expires. `gateway.py` has no expiry | [Q10.36](conversation.md); Tech Spec section 7; Q7.15 of [Layer 7](../layer-07-data-apis-events/conversation.md); Q8.11 of [Layer 8](../layer-08-workflows-state-machines/conversation.md) |
-| C2 | **Limits missing from code.** Per-call input cap (NFR-37), daily and monthly ceilings, and a sourced per-incident cost cap are stated but not implemented | Limits check above; [Q10.27](conversation.md), [Q10.61](conversation.md) |
-| C3 | **Over-limit context.** Section 9 and Q4.33 say "trim or summarise evidence to fit". Q10.60 says no model-written summarisation, and raises an error if required items exceed the budget, so the coordinator narrows the scope | System Design section 9; [Q10.60](conversation.md) |
-| C4 | **Truncation retries.** Q10.18 says one retry. The code doubles on each `TRUNCATED` while below 16,000, so three attempts ran at 500, 1,000 and 2,000. The test checks only the first doubling | [Q10.18](conversation.md); `gateway.py` |
-| C5 | **Context exceeded.** Q10.18 says assembly must shrink the input. The code treats it like `max_tokens` and doubles the output limit, with the same input | [Q10.18](conversation.md); `gateway.py` |
-| C6 | **Broken stream cost.** Q10.19 says usage is unknown, so the reservation is charged in full. `parse` uses any usage in the body regardless of `stream_completed`; in a test-shaped case it settled at reported usage with nothing queued for reconciliation | [Q10.19](conversation.md); `adapters.py` |
-| C7 | **Timeout attempt record.** Q10.35 marks usage as estimated. On timeout, the ledger charges the full reservation, but the logged result has `reported=True` and `cost_micros=0`, so a `model_attempts` row would under-report it | [Q10.35](conversation.md); `gateway.py` `_final` |
-| C8 | **Gateway features named elsewhere.** Layers 4, 8 and 12 put a circuit breaker in the gateway (provisional: opens at 50% failures of at least 10 calls in 60 s, for 30 s). Layer 8 also has it reuse a recorded result with the same `input_sha256`. Neither is in Layer 10's answers or `gateway.py` | NFR-28 (Q4.27); Q8.11, Q8.17, Q8.44 of [Layer 8](../layer-08-workflows-state-machines/conversation.md); Q12.23 of [Layer 12](../layer-12-reliability-evaluation/conversation.md) |
-| C9 | **Where BM25 runs.** ADR-09 says PostgreSQL's built-in full-text search. Q10.50 and `retrieval.py` run BM25 in the worker. System Design says only "keyword search" | Q6.29 of [Layer 6](../layer-06-system-architecture/conversation.md); [Q10.50](conversation.md) |
-| C10 | **Retention versus replay.** Q10.64 relies on model input and output artifacts for a six-month-old diagnosis, and Q10.52 keeps revisions 1 year. The Technical Specification keeps raw evidence and model input and output 30 days (provisional) | [Q10.52](conversation.md), [Q10.64](conversation.md); Tech Spec section 10 |
-| C11 | **`model_attempts` is narrower than Layer 10 needs.** The schema has no columns for checkpoint, adapter version, output schema fingerprint, provider request ID, stop reason, cache tokens or the reported/estimated flag. It uses task `review` where `ModelRequest.task` uses `critique` | [Q10.14](conversation.md), [Q10.23](conversation.md); [schema-tables.sql](../layer-07-data-apis-events/files/schema-tables.sql) |
-| C12 | **Prompt fingerprint.** Q10.23 and Q10.64 keep the prompt fingerprint. `ModelIdentity` and `Manifest` hold the version only; the fingerprint exists only on `PromptVersion` | [Q10.23](conversation.md); `gateway_contracts.py`, `context.py` |
-| C13 | **Tinker capabilities.** Q10.5 and Q10.22 say an adapter declares only what is verified, with no silent downgrade. `TinkerAdapter` declares usage reporting and pinned version up front, and removes `output_config` and `tools` when unverified: a request with a schema but no `required_capabilities` went through without the schema. While disabled, `build` raises `RuntimeError` through the gateway rather than returning a result | [Q10.5](conversation.md), [Q10.22](conversation.md); `adapters.py` |
-| C14 | **Revision ID versus content.** Q10.52 hashes `doc_id@version` only. Two builds with the same ID returned different results when only the build date (stale flags) or a document's permitted groups changed. This also conflicts with re-syncing permissions at each build (Q10.56) | [Q10.50](conversation.md), [Q10.52](conversation.md), [Q10.56](conversation.md); `retrieval.py` |
-| C15 | **Tool proposals with a schema.** Q10.18 sends `TOOL_USE` to the gate. If the request also names an output schema, the code validates the absent text and returns `INVALID_OUTPUT`, so the proposal is not delivered | [Q10.18](conversation.md); `gateway.py` |
-| C16 | **Estimators.** `context.py` says "same conservative estimate as the gateway", but adds 4 where `gateway.py` adds 16 | `context.py`, `gateway.py` |
-| C17 | **ADR references.** ADR-27 is cited as Artifact 8's, and ADR-38 is cited in Layers 10 and 12, but no definition of either was found | [Q10.37](conversation.md), [Q10.39](conversation.md) |
-| C18 | **Answers that claim more than `files/` shows.** Q10.29's parallel refusal has no parallel test, though a run confirmed it. Q10.51's "implemented and tested" does not cover wrong-service and wrong-permission hits. Q10.54's "changed since review" is in `stale_report` but does not set a chunk's stale flag. Q10.55's purge and Q10.56's restricted display are not in code | [Q10.29](conversation.md), [Q10.51](conversation.md), [Q10.54](conversation.md)–[Q10.56](conversation.md) |
+| C1 Unsettled reservations | Sent with unknown usage: charged at the maximum. Never sent: released on expiry. `gateway.py` has no expiry yet | ADR-61 |
+| C2 Limits missing from code | Per-call input cap, daily and monthly ceilings go in the gateway. Per-incident cap is sourced from ADR-56 | ADR-56, ADR-61 |
+| C3 Over-limit context | Deterministic trimming by priority; no model-written summaries; narrow the scope if required items don't fit | ADR-61 |
+| C4 Truncation retries | One retry only, at double the limit, up to 16,000. Code loops today | ADR-61 |
+| C5 Context exceeded | Reassemble a smaller input; never raise the output limit. Code doubles it today | ADR-61 |
+| C6 Broken stream cost | Usage unknown, charged in full, reconciled later, whatever the body reports. `parse` to change | ADR-61 |
+| C7 Timeout attempt record | Reported as estimated, at the charged amount. `_final` to change | ADR-61 |
+| C8 Gateway features named elsewhere | Circuit breaker and `input_sha256` reuse are in the gateway (10.7). Not yet in code | ADR-61 |
+| C9 Where BM25 runs | PostgreSQL stores the corpus; the worker ranks. ADR-09 is amended | ADR-62 |
+| C10 Retention versus replay | Redacted model input and output, and cited evidence, are kept 1 year | ADR-57 |
+| C11 `model_attempts` narrower than needed | Columns added; task name `critique`. `schema.sql` is canonical | ADR-64 |
+| C12 Prompt fingerprint | Each attempt records version and text fingerprint. `ModelIdentity` and `Manifest` gain the field | ADR-63, ADR-64 |
+| C13 Tinker capabilities | Declares nothing until conformance passes. Schema or tools imply the capability, so requests are refused, not stripped. Disabled returns `CAPABILITY_UNSUPPORTED`, not an exception | Layer decision (proposed) |
+| C14 Revision ID versus content | ID hashes document versions, permitted groups and the full build timestamp, so identical IDs mean identical results | ADR-62 |
+| C15 Tool proposals with a schema | Delivered to the gate, not treated as invalid output | ADR-61 |
+| C16 Estimators | One shared function | ADR-61 |
+| C17 ADR references | ADR-27 and ADR-38 are defined in the register; the ADR series continues there | ADR-27, ADR-38, ADR-45 |
+| C18 Answers claiming more than `files/` shows | All five are required behaviour, as these sections state: parallel refusal test (10.5), scope-hit metrics and gate (10.13), changed-since-review sets the stale flag, purge (both 10.9), restricted display (10.9). Each is a code change | Layer decision (proposed) |
+| Claude rejects `temperature` (new) | The adapter's `temperature: 0` fails on every proposed model. Not sent; stored input and output are the record | Layer decision (proposed) |
+| Prompt release versus promotion gates (new) | ADR-63's development-split run gates the merge. ADR-65's held-out gates still apply before production | Layer decision (proposed) |
+| Deletion versus evaluate-before-activate (new) | Deletion activates at once, gate afterwards; removing content is the safer failure | Layer decision (proposed) |
+| Immutable revisions versus purge (new) | Legal or safety purge is the one recorded exception | Layer decision (proposed) |
+| Monthly ceiling at 100% (new) | Same as daily: evidence-only for new investigations, running ones stop after their step | Layer decision (proposed) |
+| Provider spend cap 429 (new) | Not retried, because access stays paused; handled as `AUTH_ERROR` | Layer decision (proposed) |
+| Query set before first activation (new) | No revision activates until the set exists; retrieval records a gap | Layer decision (proposed) |
 
 ## Acceptance checks
 

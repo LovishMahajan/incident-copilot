@@ -2,8 +2,8 @@
 
 - **Layer:** 6, System Architecture
 - **Built from:** [Artifact 4: Requirements Specification](../layer-04-requirements/artifact-04-requirements-specification.md), [Artifact 5: Threat Model](../layer-05-threat-modeling/artifact-05-threat-model.md)
-- **Status:** Draft compiled from the team's answers; pending team review
-- **Sources:** [conversation.md](conversation.md), the team's written Artifact 6 sections and their screenshots in [assets/](assets/), [system-design.md](../../reference/system-design.md), [technical-specification.md](../../reference/technical-specification.md), and for the conflicts recorded below the conversations of [Layer 7](../layer-07-data-apis-events/conversation.md), [Layer 8](../layer-08-workflows-state-machines/conversation.md), [Layer 9](../layer-09-agent-architecture/conversation.md) and [Layer 11](../layer-11-safe-remediation/conversation.md)
+- **Status:** Proposed: gaps resolved 2026-11-02 per [decisions.md](../../decisions.md); pending team sign-off
+- **Sources:** [decisions.md](../../decisions.md), [conversation.md](conversation.md), the team's written Artifact 6 sections and their screenshots in [assets/](assets/), [system-design.md](../../reference/system-design.md), [technical-specification.md](../../reference/technical-specification.md), and for the conflicts recorded below the conversations of [Layer 7](../layer-07-data-apis-events/conversation.md), [Layer 8](../layer-08-workflows-state-machines/conversation.md), [Layer 9](../layer-09-agent-architecture/conversation.md) and [Layer 11](../layer-11-safe-remediation/conversation.md)
 
 ## Required sections
 
@@ -22,7 +22,33 @@
 
 *Answers Q6.34.*
 
-![Context diagram: the AI SRE platform as one box, with engineers and approvers, evidence tools, monitoring, runbooks, the model provider, the release process and messaging around it](assets/image4.png)
+```mermaid
+flowchart TB
+    people(("Engineers and approvers"))
+    platform[["AI SRE platform"]]
+    tools["Logs, traces, error tracker,<br/>change history"]
+    monitoring["Existing monitoring"]
+    runbooks["Runbooks"]
+    model["Model provider"]
+    review["Review system"]
+    release["Release process"]
+    messaging["Messaging"]
+    identity["Identity system"]
+
+    people -->|"CLI and API: incidents, approvals, cancellations"| platform
+    identity -->|"tokens and groups"| platform
+    monitoring -->|"alerts"| platform
+    platform -->|"read-only queries"| tools
+    platform -->|"read-only queries"| monitoring
+    platform -->|"read"| runbooks
+    platform -->|"redacted evidence"| model
+    platform -->|"draft pull request, no direct commits"| review
+    platform -->|"approved change only"| release
+    platform -->|"notifications"| messaging
+    messaging --> people
+```
+
+Earlier version: [the team's original screenshot](assets/image4.png).
 
 | Outside the platform | What crosses the boundary |
 | --- | --- |
@@ -31,7 +57,9 @@
 | Existing monitoring | Alerts in; read-only queries out |
 | Runbooks | Read |
 | Model provider | Redacted evidence |
-| Release process | Approved change only |
+| Identity system | Tokens and groups (ADR-51) |
+| Review system | Draft pull request for the proposed change; no direct commits (ADR-51) |
+| Release process | Approved change only, from the dispatcher, in Release B (ADR-44) |
 | Messaging | Notifications, which reach engineers and approvers |
 
 This is the first of three levels of diagram, each zooming in on the previous one ([Q6.34](conversation.md)):
@@ -46,18 +74,97 @@ Two focused views go with them: **trust boundaries (6.7)**, and **the approval p
 
 *Answers Q6.1–Q6.4, Q6.7, Q6.8, Q6.35, Q6.38.*
 
-![Container and process diagram: API, worker and dispatcher processes, the workflow server, two databases, the isolated test environment, the artifact store, telemetry and the release process](assets/image6.png)
+```mermaid
+flowchart TB
+    subgraph apiProc["API process (FastAPI)"]
+        intake["Intake"]
+        approval["Approval Service"]
+        recordApi["Incident Record<br/>(shared module)"]
+    end
 
-The diagram shows the API calling the workflow server directly. ADR-19 in Layer 7 refines this; see [Decisions and conflicts](#decisions-and-conflicts).
+    subgraph workerProc["Worker process (Temporal worker)"]
+        relay["Outbox relay"]
+        orchestrator["Workflow Orchestrator"]
+        collector["Evidence Collector"]
+        retriever["Knowledge Retriever"]
+        engine["Diagnosis Engine"]
+        reviewer["Diagnosis Reviewer"]
+        proposer["Patch Proposer skill<br/>(in the Diagnosis Engine,<br/>runs after review accepts)"]
+        gateway["Model Gateway"]
+        testRunner["Test Runner"]
+        verifier["Recovery Verifier"]
+        notifier["Notifier"]
+        recordWorker["Incident Record<br/>(shared module)"]
+    end
+
+    subgraph dispatcherProc["Dispatcher process"]
+        dispatcher["Trusted Dispatcher"]
+        recordDispatcher["Incident Record<br/>(shared module)"]
+    end
+
+    temporal["Temporal server<br/>(self-hosted single node)"]
+
+    subgraph pgInstance["PostgreSQL instance"]
+        incidentsDb[("Incidents database")]
+        temporalDb[("Temporal database")]
+    end
+
+    isolated["Isolated test environment:<br/>gVisor, separate host, no network"]
+    artifacts[("Artifact store")]
+    telemetry["Telemetry: OpenTelemetry,<br/>Prometheus, Grafana"]
+    reviewSystem["Review system"]
+    release["Release process"]
+
+    intake -->|"incident and start event"| recordApi
+    approval -->|"decision, signed approval"| recordApi
+    recordApi -->|"writes record and outbox row (one transaction)"| incidentsDb
+
+    relay -->|"claims pending outbox rows"| incidentsDb
+    relay -->|"starts and signals workflows (at least once)"| temporal
+    temporal -->|"stores its own state"| temporalDb
+    temporal -->|"tasks: aisre-investigation queue"| orchestrator
+    orchestrator -->|"schedules dispatch: action ID only"| temporal
+    temporal -->|"action ID only: aisre-dispatcher queue"| dispatcher
+
+    orchestrator --> collector
+    orchestrator --> retriever
+    orchestrator --> engine
+    orchestrator --> reviewer
+    orchestrator --> proposer
+    orchestrator --> testRunner
+    orchestrator --> verifier
+    orchestrator --> notifier
+    engine --> gateway
+    reviewer --> gateway
+    proposer --> gateway
+    proposer -->|"draft pull request"| reviewSystem
+    recordWorker -->|"reads and writes incidents"| incidentsDb
+
+    testRunner -->|"creates; collects scanned results"| isolated
+    testRunner -->|"test output"| artifacts
+    collector -->|"large items"| artifacts
+
+    dispatcher -->|"reloads action and signatures; records attempts"| recordDispatcher
+    recordDispatcher -->|"own role: reads actions, patches, approvals, verifications;<br/>writes execution_attempts, action status for applying and its outcomes, own timeline events"| incidentsDb
+    dispatcher -->|"approved change"| release
+
+    apiProc -.-> telemetry
+    workerProc -.-> telemetry
+    dispatcherProc -.-> telemetry
+```
+
+Earlier version: [the team's original screenshot](assets/image6.png).
+
+One codebase, four processes: API, worker, dispatcher and isolated test environment (ADR-51). The workflow server and the stores are supporting services, not platform processes.
 
 **Process split** ([Q6.3](conversation.md)): by what each part needs to be trusted with, and how it must behave at runtime.
 
 | Responsibility | Where it runs | Why it's separate |
 | --- | --- | --- |
 | Receive requests, record decisions | **API process** | Must answer fast, stay up, and hold no production or model credentials |
-| Collect evidence, call models, plan and review, verify | **Worker process** | Long-running, retried, and scaled separately from the API |
+| Collect evidence, call models, plan and review, draft patches, verify, relay the outbox | **Worker process** | Long-running, retried, and scaled separately from the API |
 | Run generated code | **Isolated test environment** | Untrusted code; no route to production (Artifact 5) |
-| Apply approved changes | **Trusted dispatcher process** | The only holder of production write access (Artifact 5) |
+| Apply approved changes | **Trusted dispatcher process** | The only holder of production write access, which Release A doesn't provision (Artifact 5, ADR-44) |
 
 **What runs inside the request** ([Q6.1](conversation.md), [Q6.2](conversation.md)): the work splits at the point where the platform has safely recorded the incident. The caller follows progress through status, timeline or notifications, and never waits on the original request.
 
@@ -66,27 +173,30 @@ The diagram shows the API calling the workflow server directly. ADR-19 in Layer 
 | Authenticate and authorise the caller | Notify people |
 | Validate mandatory fields | Collect evidence |
 | Deduplicate against open incidents | Retrieve runbooks |
-| Store the incident and its start event, in one transaction | Call the model; build and review hypotheses |
+| Store the incident, its start event and an outbox row, in one transaction (ADR-19) | Generate and test patches |
 | Return the incident ID | Generate and test patches |
 | Read requests: status, timeline | Wait for approval; execute; verify recovery |
-| Recording an approval or a cancellation | Act on the approval or cancellation |
+| Recording an approval or a cancellation, with its outbox row | Act on the approval or cancellation |
 
 **Rule:** anything that calls an outside system or might take more than a fraction of a second runs asynchronously.
 
-**The worker** ([Q6.4](conversation.md)) picks up work in severity order up to the concurrency limit, runs each step, saves progress after each step and resumes after a crash, enforces per-incident limits (time, model calls, tokens and spend), retries within bounds and hands over at limits, honours cancellation, and writes every step to the timeline. It doesn't hold production write access, and doesn't run generated code itself.
+**The worker** ([Q6.4](conversation.md)) picks up work in severity order up to the concurrency limit, runs each step, saves progress after each step and resumes after a crash, enforces per-incident limits (time, model calls, tokens and spend), retries within bounds and hands over at limits, honours cancellation, and writes every step to the timeline. It also relays outbox messages to the workflow engine. It doesn't hold production write access, and doesn't run generated code itself. Its only write credential outside the platform is for draft pull requests (ADR-51).
 
-**Deployment** ([Q6.7](conversation.md), [Q6.8](conversation.md)): a modular monolith, deployed as a small number of processes.
+**Deployment** ([Q6.7](conversation.md), [Q6.8](conversation.md)): a modular monolith, deployed as four processes (ADR-51).
 
-- One codebase, one database, one deployment pipeline.
+- One codebase, one incidents database, one deployment pipeline. The workflow engine has its own database on the same PostgreSQL instance (ADR-51).
 - Several entry points (API, worker, dispatcher), each starting only the modules it needs, from one build artifact started with a different command for each role.
 - Configuration per role: each process gets only the credentials and settings its role needs. The API gets no production credentials; only the dispatcher gets production write access.
 - Shared domain logic and database schema, with one set of schema changes applied before any process starts. Deployed together, so versions always match.
+- Reference environment: the reference application and platform run on one Linux host under Docker Compose, and the test environment runs on a separate host. No Kubernetes in the first version (ADR-51).
 
 **Reading the arrows** ([Q6.35](conversation.md)):
 
-- **the API** writes to PostgreSQL, and starts workflows in Temporal
-- **Temporal** stores its own state in PostgreSQL, in a separate database
+- **the API** writes the record and an outbox row to PostgreSQL in one transaction; it never calls Temporal (ADR-19)
+- **the outbox relay**, in the worker, claims pending rows and starts or signals workflows in Temporal, at least once
+- **Temporal** stores its own state in its own database on the same PostgreSQL instance (ADR-51)
 - **the worker** receives tasks from Temporal, and reads and writes incidents in PostgreSQL
+- **the dispatcher** receives only an action ID on its own task queue, reloads the action and signatures from trusted storage, and uses its own database role (ADR-51)
 
 **Modules and processes** ([Q6.38](conversation.md)): processes are solid outer boxes, labelled with the process name and how it's deployed. Modules are smaller boxes inside the process that runs them. A module shared by several processes (the Incident Record) is shown in each, marked "shared module". The component summary in 6.3 lists which process runs each module, and what it holds.
 
@@ -98,23 +208,76 @@ The diagram shows the API calling the workflow server directly. ADR-19 in Layer 
 
 The investigation as it flows through the components:
 
-![Component flow: intake, incident record, orchestrator, evidence and knowledge, diagnosis engine, reviewer, test runner, approval, dispatcher and recovery verifier, with the hand-over paths](assets/image8.png)
+```mermaid
+flowchart TB
+    intake["Intake"]
+    record["Incident Record<br/>(shared module)"]
+    orchestrator["Workflow Orchestrator"]
+    collector["Evidence Collector"]
+    retriever["Knowledge Retriever"]
+    engine["Diagnosis Engine"]
+    gateway["Model Gateway"]
+    reviewer["Diagnosis Reviewer"]
+    proposer["Patch Proposer skill<br/>(in the Diagnosis Engine)"]
+    reviewSystem["Review system"]
+    testRunner["Test Runner"]
+    artifacts[("Artifact Store")]
+    approval["Approval Service"]
+    recordStored["Incident Record<br/>(shared module)"]
+    orchestratorDispatch["Workflow Orchestrator"]
+    dispatcher["Trusted Dispatcher"]
+    verifier["Recovery Verifier"]
+    close["Incident lead accepts and closes"]
+    undo["Workflow starts the rollback action;<br/>dispatcher applies it"]
+    notifier["Notifier: hand over"]
+
+    intake -->|"incident, start event, outbox row"| record
+    record -->|"outbox relay"| orchestrator
+    orchestrator --> collector
+    orchestrator --> retriever
+    collector --> engine
+    retriever --> engine
+    engine --> gateway
+    engine --> reviewer
+    reviewer --> gateway
+    reviewer -->|"accepted"| proposer
+    reviewer -->|"rejected or inconclusive"| notifier
+    proposer --> gateway
+    proposer -->|"draft pull request"| reviewSystem
+    proposer -->|"no allowed fix"| notifier
+    proposer --> testRunner
+    testRunner -->|"Release A: tested recommendation"| notifier
+    testRunner -->|"Release B: request approval"| approval
+    approval -->|"stores signed approval"| recordStored
+    approval -->|"decision signal through the outbox"| orchestratorDispatch
+    orchestratorDispatch -->|"action ID only, on the dispatcher's queue"| dispatcher
+    dispatcher -->|"reloads action and signatures"| recordStored
+    dispatcher -->|"change applied"| verifier
+    verifier -->|"recovered"| close
+    verifier -->|"not recovered"| undo
+    verifier -->|"inconclusive"| notifier
+    undo --> notifier
+    collector -.->|"large items"| artifacts
+    testRunner -.->|"test output"| artifacts
+```
+
+Earlier version: [the team's original screenshot](assets/image8.png).
 
 **Component summary** ([Q6.22](conversation.md)):
 
 | # | Component | Process | Holds |
 | --- | --- | --- | --- |
 | 1 | Intake | API | — |
-| 2 | Incident Record (with audit chain) | API and worker (shared module) | Database access |
-| 3 | Workflow Orchestrator | Worker | — |
+| 2 | Incident Record (with audit chain) | API, worker and dispatcher (shared module) | Database access; the dispatcher through its own role |
+| 3 | Workflow Orchestrator (with the outbox relay) | Worker | — |
 | 4 | Evidence Collector | Worker | Read-only tool credentials |
 | 5 | Knowledge Retriever | Worker | — |
 | 6 | Model Gateway | Worker | Model provider key |
-| 7 | Diagnosis Engine | Worker | — |
+| 7 | Diagnosis Engine (with the Patch Proposer skill) | Worker | Draft-pull-request credential |
 | 8 | Diagnosis Reviewer | Worker | — |
 | 9 | Test Runner | Worker (controller) + isolated environment | Rights to create test environments only |
 | 10 | Approval Service | API | Approval signing key |
-| 11 | Trusted Dispatcher | Dispatcher | Production write access (release process) |
+| 11 | Trusted Dispatcher | Dispatcher | Production write access (release process); own database role: read actions, patches, approvals and verification results; write `execution_attempts`, action status for `applying` and its outcomes, and its own timeline events |
 | 12 | Recovery Verifier | Worker | Read-only monitoring credentials |
 | 13 | Artifact Store | Storage | — |
 | 14 | Platform Telemetry | Observability stack | — |
@@ -126,22 +289,43 @@ The investigation as it flows through the components:
 | --- | --- | --- |
 | Q6.9 | Intake | Authenticates the source, validates the fields, checks the service exists and the caller may use it, deduplicates, hands the incident to the Incident Record |
 | Q6.10 | Incident Record | Owns the incident, its status, the timeline and the audit chain; every other component reads and writes incidents only through it |
-| Q6.11 | Workflow Orchestrator | Defines the steps, records each step's result, resumes after crashes, runs timers (approval expiry, investigation limits), handles cancellation |
-| Q6.12 | Model Gateway | The only component that calls a model; enforces limits before each call, applies timeouts and retries, records cost and tokens, scans output for secrets, hides provider differences |
+| Q6.11 | Workflow Orchestrator | Defines the steps, records each step's result, resumes after crashes, runs timers (approval expiry, investigation limits), handles cancellation, sends the dispatcher only an action ID; its outbox relay turns stored messages into workflow starts and signals |
+| Q6.12 | Model Gateway | The only component that calls a model; enforces limits before each call, applies timeouts and the only model retries (ADR-27), records cost and tokens, scans output for secrets, hides provider differences |
 | Q6.13 | Knowledge Retriever | Indexes runbooks and past incident reviews, returns the most relevant passages, labels them with their source |
 | Q6.14 | Evidence Collector | One read-only adapter per tool; queries in parallel within the incident's scope, redacts, normalises into evidence records, records gaps |
-| Q6.15 | Diagnosis Engine | Computes facts in code, asks the model (through the gateway) for ranked hypotheses that cite evidence, produces a diagnosis or an inconclusive result, drafts the proposed patch for the leading hypothesis |
-| Q6.16 | Diagnosis Reviewer | Separate from the Engine; checks citations exist and support the claim, checks the action is on the allowed list and within the incident's service, scores confidence from evidence strength, confirms alternatives were considered. Can reject or downgrade; never approves a production change |
-| Q6.17 | Test Runner | Creates the isolated environment, reproduces the failure, applies the patch, runs the checks, collects the scanned results, destroys the environment; no production credentials |
-| Q6.18 | Approval Service | Sends approval requests, checks the approver's rights and recent sign-in, records decisions, signs approvals, handles escalation and expiry |
-| Q6.19 | Trusted Dispatcher | Verifies the approval's signature, fingerprint and expiry, re-checks the service state, applies the change once through the release process, records the result; the only component with production write access |
-| Q6.20 | Recovery Verifier | Reads monitoring directly, using criteria recorded before execution; requires recovery to hold for the set period; if recovery fails, asks the dispatcher to undo the change (pre-approved undo plan) and escalates |
+| Q6.15 | Diagnosis Engine | Computes facts in code, asks the model (through the gateway) for ranked hypotheses that cite evidence, produces a diagnosis or an inconclusive result. After review accepts the diagnosis, its Patch Proposer skill drafts the patch for the leading hypothesis as a draft pull request (ADR-51) |
+| Q6.16 | Diagnosis Reviewer | Separate from the Engine; calls the model through the gateway; checks citations exist and support the claim, checks the action is on the allowed list and within the incident's service, scores confidence from evidence strength, confirms alternatives were considered. Can reject or downgrade; never approves a production change |
+| Q6.17 | Test Runner | Creates the isolated environment, with no network (ADR-60), reproduces the failure, applies the patch, runs the checks, collects the scanned results, destroys the environment; no production credentials |
+| Q6.18 | Approval Service | Sends approval requests, checks the approver's rights and recent sign-in, records decisions, signs approvals and stores them, handles escalation and expiry. Has no path to the dispatcher (ADR-51) |
+| Q6.19 | Trusted Dispatcher | Takes only an action ID, reloads the action and approvals from trusted storage, verifies the signatures against the action digest, checks expiry, re-checks the service state, applies the change once through the release process, records the attempt; the only component with production write access (ADR-49, ADR-51) |
+| Q6.20 | Recovery Verifier | Reads monitoring directly, using criteria recorded before execution; requires recovery to hold for the set period; returns its verdict to the workflow. It writes nothing to production and has no dispatcher path. On a failed verdict the workflow starts the rollback action; on an inconclusive one it hands over (ADR-48, ADR-66) |
 | Q6.21 | Artifact Store | Large items: raw evidence snapshots, patch diffs, test output, model inputs and outputs. The record keeps a reference and a fingerprint; items are write-once, encrypted, access-controlled, and deleted when retention ends |
 | Q6.22 | Platform Telemetry | Receives metrics, traces and structured logs from every process; exposes health and availability, queue length and wait time, step durations, model cost, tokens and errors, evidence source errors, limit breaches; raises alerts on the platform's own targets. Separate from customers' monitoring, which the platform only reads |
 
 **Model Gateway and providers** ([Q6.36](conversation.md)): the Diagnosis Engine and the Reviewer call the gateway through one internal interface, and the gateway calls one adapter per provider. The active adapter is solid; the deferred one is dashed. The provider boxes sit outside the platform's boundary.
 
-![Inside the worker process, the Diagnosis Engine and Reviewer call the Model Gateway, which calls a Claude adapter (active) and a Tinker adapter (deferred, dashed)](assets/image3.png)
+```mermaid
+flowchart LR
+    subgraph workerProc["Worker process"]
+        engine["Diagnosis Engine"]
+        reviewer["Diagnosis Reviewer"]
+        gateway["Model Gateway"]
+        claude["Claude adapter"]
+        tinker["Tinker adapter: deferred"]
+    end
+
+    claudeApi[("Claude API")]
+    tinkerApi[("Tinker API")]
+
+    engine --> gateway
+    reviewer --> gateway
+    gateway --> claude
+    gateway -.-> tinker
+    claude --> claudeApi
+    tinker -.-> tinkerApi
+```
+
+Earlier version: [the team's original screenshot](assets/image3.png).
 
 ## 6.4 Technology selection
 
@@ -151,13 +335,13 @@ The investigation as it flows through the components:
 | --- | --- |
 | Intake, Approval Service | FastAPI, Pydantic |
 | Incident Record | PostgreSQL, SQLAlchemy, Alembic |
-| Workflow Orchestrator | Temporal (single node, PostgreSQL store) |
+| Workflow Orchestrator | Temporal (self-hosted single node, own database on the PostgreSQL instance) (ADR-51) |
 | Model Gateway | Internal adapters; Claude initially |
-| Knowledge Retriever | BM25 through PostgreSQL full-text search |
+| Knowledge Retriever | BM25 in the worker, over a corpus stored in PostgreSQL (ADR-62) |
 | Test Runner | Containers under gVisor, on a separate host |
 | Artifact Store | Object storage (S3-compatible), with write-once retention; MinIO locally |
 | Platform Telemetry | OpenTelemetry, Prometheus, Grafana |
-| Development | Docker Compose, uv |
+| Development, reference environment | Docker Compose, uv |
 | Language | Python |
 
 **Candidate stack decisions** ([Q6.33](conversation.md)):
@@ -178,6 +362,8 @@ The investigation as it flows through the components:
 | Tracing | OpenTelemetry | **Accept** | ADR-13 |
 | Development environment | Docker Compose | **Accept** | ADR-14 |
 | Dependency management | uv | **Accept** | ADR-15 |
+
+ADRs amended by the [decision register](../../decisions.md): ADR-06 by ADR-51 (self-hosted, in its own database on the same PostgreSQL instance); ADR-09 by ADR-62 (PostgreSQL stores the corpus, the worker ranks it).
 
 The reasoning for each choice is in [Q6.23–Q6.33](conversation.md).
 
@@ -208,6 +394,8 @@ Each record follows the decision log format from Artifact 2. Status is **Accepte
 | ADR-17 | Approvals signed with an asymmetric key; the dispatcher holds only the public key | A compromised dispatcher can't forge approvals | Shared secret | Security lead | — | Low |
 | ADR-18 | Large items in a write-once object store; the record keeps references and fingerprints | Keeps the database small; tamper-evident | Large columns in PostgreSQL | Platform owner | — | Low |
 
+ADRs amended by the [decision register](../../decisions.md): ADR-06 by ADR-51 (self-hosted, in its own database on the same PostgreSQL instance); ADR-09 by ADR-62 (PostgreSQL stores the corpus, the worker ranks it).
+
 ## 6.6 Component ownership
 
 *Answers Q6.9–Q6.22.*
@@ -226,21 +414,88 @@ Each record follows the decision log format from Artifact 2. Status is **Accepte
 
 *Answers Q6.37, Q6.39.*
 
-![Trust boundaries: untrusted outside inputs enter the platform through checks; a signed approval is the only way into the privileged dispatcher, and the isolated test environment sits apart](assets/image5.png)
+```mermaid
+flowchart TB
+    subgraph outside["Outside: untrusted"]
+        requests["External requests"]
+        evidence["Evidence content"]
+        modelOutput["Model output"]
+    end
+
+    subgraph platform["Platform: trusted after checks"]
+        api["API process"]
+        worker["Worker process"]
+        record[("Incident Record<br/>(shared module)")]
+    end
+
+    subgraph privileged["Privileged"]
+        dispatcher["Trusted Dispatcher"]
+    end
+
+    subgraph isolatedZone["Isolated: untrusted code"]
+        testEnv["Test environment"]
+    end
+
+    production[("Production")]
+
+    requests -->|"authenticate, authorise"| api
+    evidence -->|"redact, label as data"| worker
+    modelOutput -->|"validate, check citations, allowed list"| worker
+    api -->|"stores signed approval"| record
+    worker -->|"action ID only, on the dispatcher's queue"| dispatcher
+    dispatcher -->|"reloads action and signatures (own role)"| record
+    worker -->|"create; collect scanned results"| testEnv
+    dispatcher -->|"approved change only"| production
+```
+
+Earlier version: [the team's original screenshot](assets/image5.png).
 
 **Which components need their own boundary** ([Q6.39](conversation.md)): ask two questions of every component: what untrusted input does it handle, and what power does it hold? A component needs its own boundary when it handles untrusted input and could otherwise reach power, or when it holds power that others mustn't share.
 
 | Component | Untrusted input | Power held | Boundary |
 | --- | --- | --- | --- |
 | Isolated test environment | Generated code | None | **Own host and runtime** |
-| Trusted Dispatcher | None (signed approvals only) | Production write access | **Own process and identity** |
+| Trusted Dispatcher | None (action ID only; the action and signed approvals are reloaded from trusted storage) | Production write access | **Own process, identity and database role** |
 | Approval Service | People's requests | Signing key | Key in a secrets manager; API process |
 | Evidence Collector, Model Gateway | Evidence, model output | Read-only and model keys | Worker process |
 | Intake | External requests | None | API process |
 
-**The approval path** ([Q6.37](conversation.md)): sandbox, Approval Service and Trusted Dispatcher sit in **three separate trust zones**. The only path to production goes through a person and the Approval Service. The sandbox has **no arrow** to the dispatcher or to production.
+**The approval path** ([Q6.37](conversation.md)): sandbox, Approval Service and Trusted Dispatcher sit in **three separate trust zones**. The only path to production goes through a person and the Approval Service. The approval is stored, and the workflow sends the dispatcher only the action ID (ADR-51). The sandbox has **no arrow** to the dispatcher or to production.
 
-![Approval path across three trust zones: approver to Approval Service, signed approval to Trusted Dispatcher, approved change to the release process and production; the isolated test environment connects only to the Test Runner](assets/image1.png)
+```mermaid
+flowchart LR
+    approver(("Approver"))
+
+    subgraph platformZone["Platform zone"]
+        approval["Approval Service"]
+        orchestrator["Workflow Orchestrator"]
+        testRunner["Test Runner"]
+        record[("Incident Record<br/>(shared module)")]
+    end
+
+    subgraph privilegedZone["Privileged zone"]
+        dispatcher["Trusted Dispatcher"]
+    end
+
+    subgraph untrustedZone["Untrusted zone"]
+        isolated["Isolated test environment"]
+    end
+
+    release["Release process"]
+    production[("Production")]
+
+    approver -->|"approves exact action (action digest)"| approval
+    approval -->|"stores signed approval"| record
+    approval -->|"decision signal through the outbox"| orchestrator
+    orchestrator -->|"action ID only, on the dispatcher's queue"| dispatcher
+    dispatcher -->|"reloads action and signatures"| record
+    dispatcher -->|"approved change only"| release
+    release --> production
+    testRunner -->|"test result"| record
+    testRunner -->|"creates, collects scanned results"| isolated
+```
+
+Earlier version: [the team's original screenshot](assets/image1.png).
 
 **Boundary rules**, from the [Technical specification, section 3](../../reference/technical-specification.md):
 
@@ -248,9 +503,10 @@ Each record follows the decision log format from Artifact 2. Status is **Accepte
 | --- | --- |
 | Evidence → platform | Redacted, labelled as data, size-limited, instruction-like text flagged |
 | Model output → platform | Strict schema; citations must exist; fixes from the allowed list; secrets scanned |
+| Platform → isolated environment | No network (ADR-60) |
 | Isolated environment → platform | Only scanned test results leave |
 | People → API | Authenticated and authorised on every request |
-| Approval → dispatcher | Signature, fingerprint, expiry and service state checked |
+| Approval → dispatcher | Action ID only; action and signatures reloaded from trusted storage; signature, action digest, expiry and service state checked (ADR-49, ADR-51) |
 | Dispatcher → production | Only the approved change, only through the release process |
 
 ## 6.8 Alternatives and trade-offs
@@ -271,7 +527,7 @@ Each record follows the decision log format from Artifact 2. Status is **Accepte
 
 **How the monolith keeps its boundaries** ([Q6.6](conversation.md)):
 
-- One module per responsibility, each with a public interface and private internals.
+- One module per responsibility (intake, incidents, workflow, evidence, knowledge, model gateway, diagnosis, review, testing, approval, dispatch, verification, artifacts, telemetry, notification), each with a public interface and private internals.
 - Each module owns its own tables; other modules don't read them directly.
 - Shared code is limited to common types, such as the incident ID and the evidence record.
 - Dependencies point one way: for example, diagnosis depends on evidence, never the reverse.
@@ -281,14 +537,14 @@ Each record follows the decision log format from Artifact 2. Status is **Accepte
 
 | Avoid initially | Introduce when |
 | --- | --- |
-| Kubernetes | Several environments or organisations, or more processes than simple hosting can manage |
+| Kubernetes | Several environments or organisations, more processes than simple hosting can manage, more than 20 services, or sustained concurrency above 5 (ADR-51) |
 | Separate services per module | A module needs independent scaling or release, shown by measured load or team ownership |
 | Message broker (such as Kafka) | Event volume or fan-out exceeds what the database and workflow engine handle |
-| Vector database and semantic search | Measured retrieval misses relevant runbooks |
+| Vector database and semantic search | Measured retrieval misses relevant runbooks, and hybrid improves end-to-end results without losing exact-identifier recall (ADR-37) |
 | Separate cache | Measured database latency misses the targets |
-| Fine-tuning and self-hosted models, GPUs | The conditions in Q6.27 are met |
+| Fine-tuning and self-hosted models, GPUs | The conditions in Q6.27 are met, or model spend stays above 80% of the ceiling for 3 straight months (ADR-56, provisional) |
 | A product dashboard | The command-line tool and API are shown to be insufficient for engineers |
-| Multiple model providers | Provider outages are frequent enough to hurt |
+| Multiple model providers | Provider-caused hand-overs above 5% of incidents in 90 days, or 2 outages over 60 minutes in a quarter (ADR-38, ADR-56, provisional) |
 
 **Rule:** each addition needs a measured problem, a decision record, and an owner.
 
@@ -307,28 +563,29 @@ Each record follows the decision log format from Artifact 2. Status is **Accepte
 
 ## Decisions and conflicts
 
-**Decisions not recorded in a section above:**
+| Item | Resolution | Decided by |
+| --- | --- | --- |
+| Observability tools | Prefer the organisation's existing installations rather than running new ones ([Q6.31](conversation.md)). | Team answer (Q6.31) |
+| Migrations | Run once, as a separate step, before new processes start. Each is tested in the build pipeline, and a check fails the build if models and migrations disagree ([Q6.25](conversation.md)). | Team answer (Q6.25) |
+| Model Gateway interface | One internal interface, per-provider behaviour as configuration, a fake provider adapter for tests ([Q6.28](conversation.md)). | Team answer (Q6.28) |
+| Local development | Fakes for outside systems (monitoring source, release process, model adapter), and the synthetic test cases as seed data ([Q6.32](conversation.md)). | Team answer (Q6.32) |
+| 1. API to workflow server | Outbox only. The API never calls Temporal; the relay runs in the worker, so the process count is unchanged. 6.2 and 6.3 redrawn. | ADR-19, ADR-51 |
+| 2. How the signed approval reaches the dispatcher | Stored by the API. The workflow sends only the action ID on the dispatcher's queue, and the dispatcher reloads the action and signatures from trusted storage. 6.2, 6.3 and 6.7 redrawn. Code still sends more: one line in the code-changes list. | ADR-51 |
+| 3. Dispatcher access to the record | Its own database role: reads actions, patches, approvals and verification results; writes `execution_attempts`, action status for `applying` and its outcomes, and its own timeline events. In the component summary and 6.2. | ADR-51 |
+| 4. Who drafts the patch, and when | The Patch Proposer, a skill inside the Diagnosis Engine, after review accepts the diagnosis. No new component. The worker holds a draft-pull-request credential only. | ADR-51 |
+| 5. Self-hosted or hosted workflow engine | Self-hosted single node, in its own database on the same PostgreSQL instance. | ADR-51 |
+| 6. Outside systems missing from the context diagram | Identity and review systems added to 6.1. | ADR-51 |
+| 7. Network in the test environment | No network. A package mirror would need a new ADR, a filtering proxy and Security lead sign-off; none is planned. | ADR-60 |
+| 8. Diagrams against the team's own conventions | Diagrams are Mermaid text in this artifact, the screenshots stay as the team's originals. Incident Record marked "shared module"; Reviewer to Model Gateway arrow added. | ADR-51 |
+| 9. Notifier | Component 15, in the worker. Added to the Q6.6 module list in 6.8. | ADR-51 |
+| Technology named outside Part C | Parts A and B ([Q6.1–Q6.22](conversation.md)) name none. The diagrams and Q6.34–Q6.39 do, because they depend on the choices in Q6.23–Q6.33: they are Part C outputs, so the layer's focus holds. | Layer decision (proposed) |
+| Outbox relay placement | Part of the Workflow Orchestrator, in the worker, owned by the Platform owner. Not a sixteenth component. | Layer decision (proposed) |
+| Recovery Verifier and undo | Q6.20's "asks the dispatcher to undo" is replaced: the Verifier writes nothing and has no dispatcher path. The workflow starts a rollback action on the verdict. Inconclusive hands over. | ADR-48, ADR-66 |
+| Where BM25 runs | ADR-09's PostgreSQL full-text search is replaced: PostgreSQL stores the corpus and the worker ranks it. | ADR-62 |
+| Kubernetes revisit trigger | Q6.33's trigger gains more than 20 services, or sustained concurrency above 5. | ADR-51 |
+| Claude and ChatGPT disagreements | No record exists; [conversation.md](conversation.md) marks it TBD for the team. | Open: see below |
 
-- Prefer the organisation's existing installations of the observability tools, rather than running new ones ([Q6.31](conversation.md)).
-- Migrations run once, as a separate step, before new processes start; every migration is tested in the build pipeline, and a check fails the build if the models and migrations disagree ([Q6.25](conversation.md)).
-- The Model Gateway exposes one internal interface, per-provider behaviour is configuration, and tests use a fake provider adapter ([Q6.28](conversation.md)).
-- Local development uses fakes for outside systems (monitoring source, release process, model adapter) and the synthetic test cases as seed data ([Q6.32](conversation.md)).
-
-**Conflicts found while compiling:**
-
-| # | Conflict | Sources | Status |
-| --- | --- | --- | --- |
-| 1 | **API to workflow server.** The 6.2 diagram and Q6.35 show the API calling the workflow server directly ("start workflow", "approval signal"). ADR-19 says the API reaches Temporal only through the outbox, and states that it refines Artifact 6. | [Q6.35](conversation.md); ADR-19 in [Layer 7](../layer-07-data-apis-events/conversation.md) (Q7.57); [Technical specification, section 8](../../reference/technical-specification.md) | ADR-19 is later and explicit, so it governs. The relay runs inside the worker process, so the process count is unchanged. The 6.2 diagram is kept as the team drew it and needs redrawing. |
-| 2 | **How the signed approval reaches the dispatcher.** The diagrams differ: 6.2 shows the Workflow Orchestrator sending "dispatch request + signed approval"; 6.3 shows the Approval Service, and 6.7 the API process, passing it directly. Later layers say the workflow triggers the dispatcher with an action ID only, on the dispatcher's own task queue, and the dispatcher reloads the action and signatures from trusted storage. | 6.2, 6.3 and 6.7 diagrams; [Q8.14](../layer-08-workflows-state-machines/conversation.md); [Q11.68](../layer-11-safe-remediation/conversation.md) | Not resolved by a decision record. Team to confirm the Layer 8 and Layer 11 path and align the diagrams. |
-| 3 | **Dispatcher access to the record.** The component summary places the Incident Record in the API and worker only, and the 6.2 diagram shows no dispatcher link to the incidents database. Q6.8 and Q6.25 share the schema with the dispatcher, Q6.19 has it record the result, and Layers 8 and 11 have it record intent and load the action from storage. | [Q6.8, Q6.19, Q6.22, Q6.25](conversation.md); [Q8.32](../layer-08-workflows-state-machines/conversation.md); [Q11.68](../layer-11-safe-remediation/conversation.md) | Open. Team to confirm and update the component summary and diagram. |
-| 4 | **Who drafts the patch, and when.** Q6.15 has the Diagnosis Engine draft the patch, before review. The System Design drafts the fix after review, the Technical specification drafts no patch below the threshold, and Layer 9 has a Patch Proposer skill act after the critic accepts the diagnosis. | [Q6.15](conversation.md); [System Design, section 6](../../reference/system-design.md); [Technical specification, sections 5.3–5.4](../../reference/technical-specification.md); [Q9.18](../layer-09-agent-architecture/conversation.md) | The later sources agree on order: patch after review. 6.3 keeps Q6.15's wording; the team should update it. |
-| 5 | **Self-hosted or hosted workflow engine.** ADR-06 is Accepted as a single node, and Q6.26 says self-hosted. Q6.26 also lists the choice as an unknown, and the System Design lists it as an open decision (Platform owner, before M1 build). | ADR-06; [Q6.26](conversation.md); [System Design, section 12](../../reference/system-design.md) | Open until the Platform owner decides. ADR-06 stands as written. |
-| 6 | **Outside systems missing from the context diagram.** The Technical specification also integrates with an identity system (tokens and groups) and a review system (proposed change as a pull request). Neither is in the 6.1 diagram. | 6.1 diagram; [Technical specification, section 8](../../reference/technical-specification.md) | Later specification is more complete. The 6.1 diagram needs both added. |
-| 7 | **Network in the test environment.** Q6.30 allows an approved package mirror. The System Design threat table says "no network". Layer 11 makes no network the default, and a mirror only "if ever needed", behind a filtering proxy. | [Q6.30](conversation.md); [System Design, section 11](../../reference/system-design.md); [Layer 11](../layer-11-safe-remediation/conversation.md) | Later Layer 11 wording reconciles the two: no network by default. |
-| 8 | **Diagrams against the team's own conventions.** Q6.34 says to keep diagrams as text in the repository, but this artifact has only screenshots. Q6.38 says to mark the Incident Record "shared module", which the 6.2 diagram doesn't. Q6.36 has the Reviewer call the Model Gateway, which the 6.3 flow omits (6.2 and the Q6.36 diagram show it). | [Q6.34, Q6.36, Q6.38](conversation.md); 6.2 and 6.3 diagrams | Open. Diagram sources are needed to follow Q6.34. |
-| 9 | **Notifier.** It is component 15 and has an owner in 6.6, but no Part B question covers it, and Q6.6's module list omits it. | [Q6.6, Q6.22](conversation.md) | Component summary and 6.6 used. Q6.6's list needs the module added. |
-
-No record of disagreements between Claude and ChatGPT exists yet; [conversation.md](conversation.md) marks it TBD for the team.
+**Needs the team:** Claude vs ChatGPT disagreements and the agent used per conversation, Owner: Team, settled when: conversation logs are filled in (the share link needs sign-in).
 
 ## Acceptance checks
 

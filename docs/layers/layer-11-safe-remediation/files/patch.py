@@ -3,7 +3,7 @@
 A patch is a structured diff against an exact source revision, with a rationale per hunk.
 Its identity is a SHA-256 digest over a canonical form: same content against a different
 revision is a different patch. Protected paths (tests, policies, the sandbox launcher, CI)
-can never be edited by a generated patch.
+can never be edited by a generated patch, and a commit revert touches only what the commit changed.
 """
 
 from __future__ import annotations
@@ -44,14 +44,22 @@ class EditPolicy(Strict):
 
 
 DEFAULT_POLICY = EditPolicy(policy_version="edit-policy@1", allowed={
-    "config_revert": ["config/**/*.yaml", "config/**/*.yml", "config/**/*.toml", "config/**/*.json"],
-    "commit_revert": ["src/**/*.py", "app/**/*.py", "config/**"],
+    "config_revert": ["config/*.yaml", "config/*.yml", "config/*.toml", "config/*.json"],
+    "commit_revert": ["src/*.py", "app/*.py", "config/*"],
     "release_rollback": [],                       # a rollback changes no files: it selects a previous release
 })
 
 
-def _match(path: str, patterns: list[str]) -> bool:
-    return any(fnmatch.fnmatch(path, p) or fnmatch.fnmatch("/" + path, "*/" + p) for p in patterns)
+def _editable(path: str, patterns: list[str]) -> bool:
+    """Anchored at the repository root. fnmatch's `*` crosses `/`, and `**` means nothing special."""
+    return any(fnmatch.fnmatchcase(path, p) for p in patterns)
+
+
+def _protected(path: str) -> bool:
+    """Unanchored, at any depth; the leading "/" lets `**/x` reach a file at the root too."""
+    rooted = "/" + path
+    return any(fnmatch.fnmatchcase(path, p) or fnmatch.fnmatchcase(rooted, p)
+               or fnmatch.fnmatchcase(rooted, "*/" + p) for p in PROTECTED)
 
 
 # ---------------------------------------------------------------------------
@@ -88,6 +96,7 @@ class Patch(Strict):
     target_environment: str
     files: list[FileChange] = Field(default_factory=list)
     target_release: str | None = None             # release_rollback only
+    reverted_commit: str | None = None            # commit_revert only: the commit it undoes
     summary: str = Field(min_length=10, max_length=1000)
 
     @model_validator(mode="after")
@@ -97,6 +106,8 @@ class Patch(Strict):
                 raise ValueError("a release rollback names a target release and changes no files")
         elif not self.files:
             raise ValueError("a patch must change at least one file")
+        if (self.action_kind == "commit_revert") != (self.reverted_commit is not None):
+            raise ValueError("a commit revert, and only a commit revert, names the reverted commit")
         return self
 
     # -- identity (Q11.8) --------------------------------------------------------
@@ -107,6 +118,7 @@ class Patch(Strict):
             "repository": self.repository, "base_revision": self.base_revision,
             "target_service": self.target_service, "target_environment": self.target_environment,
             "action_kind": self.action_kind, "target_release": self.target_release,
+            "reverted_commit": self.reverted_commit,
             "files": [{"path": f.path, "op": f.op, "old_sha256": f.old_sha256, "new_sha256": f.new_sha256,
                        "hunks": [{"old_start": h.old_start, "old_lines": h.old_lines, "new_start": h.new_start,
                                   "new_lines": h.new_lines, "lines": h.lines} for h in f.hunks]}
@@ -139,18 +151,24 @@ class PatchRejected(Exception):
         self.code, self.detail = code, detail
 
 
-def check_boundaries(p: Patch, policy: EditPolicy = DEFAULT_POLICY) -> None:
+def check_boundaries(p: Patch, policy: EditPolicy = DEFAULT_POLICY, commit_paths: list[str] | None = None) -> None:
+    """`commit_paths` is what `reverted_commit` changed, read by code from the repository at the
+    base revision, never from the patch or the model. None means it couldn't be read."""
     allowed = policy.allowed.get(p.action_kind, [])
     changed = 0
     if len(p.files) > policy.max_files:
         raise PatchRejected("too_many_files", f"{len(p.files)} > {policy.max_files}")
+    if p.action_kind == "commit_revert" and commit_paths is None:
+        raise PatchRejected("commit_unreadable", f"can't read the files {p.reverted_commit} changed")
     for f in p.files:
         if f.path.startswith("/") or ".." in f.path.split("/"):
             raise PatchRejected("bad_path", f.path)
-        if _match(f.path, PROTECTED):
+        if _protected(f.path):
             raise PatchRejected("protected_path", f"{f.path} is protected (tests, policies, sandbox, CI, secrets)")
-        if not _match(f.path, allowed):
+        if not _editable(f.path, allowed):
             raise PatchRejected("outside_policy", f"{f.path} not editable for {p.action_kind}")
+        if p.action_kind == "commit_revert" and f.path not in commit_paths:
+            raise PatchRejected("outside_commit", f"{p.reverted_commit} didn't change {f.path}")
         for h in f.hunks:
             changed += sum(1 for l in h.lines if l[:1] in "+-")
             if any(l[:1] not in " +-" for l in h.lines):

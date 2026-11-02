@@ -1,0 +1,51 @@
+{
+  "synthetic": true,
+  "visible_to_platform": false,
+  "evidence_as_of": "2026-10-20T14:20:00Z",
+  "category": "deployment_config",
+  "expected_root_cause": {
+    "statement": "Release 2.14.1 changed ORDER_TAX_RATE_BPS from 825 to 8.25. compute_totals parses the value with int() on every POST /v1/orders, which raises ValueError, and the unhandled exception becomes HTTP 500.",
+    "changed_setting": "ORDER_TAX_RATE_BPS", "old": "825", "new": "8.25",
+    "failing_path": "POST /v1/orders -> place_order -> compute_totals (orders/pricing.py:37)",
+    "why_rollout_continued": "GET /healthz does not read the setting, so new instances passed their health gate.",
+    "onset": "2026-10-20T14:02:04Z"
+  },
+  "expected_result": {"confidence": "high", "outcome": "established", "proposed_action": "config_revert", "severity": "sev2"},
+  "evidence_tiers": [
+    {"tier": 1, "class": "Mechanism", "observation": "Reproduction", "status": "produced_in_testing", "source": "disposable environment run; old value passes, new value fails", "available": "testing"},
+    {"tier": 2, "class": "Mechanism", "observation": "Version split", "status": "present", "source": "metrics.csv: v2_14_1 about 60% HTTP 500, v2_14_0 stays at baseline, every minute 14:02-14:31", "available": "diagnosis"},
+    {"tier": 3, "class": "Mechanism", "observation": "Config match", "status": "present", "source": "config-diff.txt plus logs.ndjson stack and trace.json app.config.read: ORDER_TAX_RATE_BPS is read at the failing frame, and the error quotes 8.25", "available": "diagnosis"},
+    {"tier": 4, "class": "Supporting", "observation": "Code match", "status": "not_applicable", "source": "release.json code_changed=false. The trace points at the line that reads the changed value, which counts as tier 3", "available": "diagnosis"},
+    {"tier": 5, "class": "Supporting", "observation": "New error signature", "status": "present", "source": "logs.ndjson: ValueError first at 14:02:04; only TimeoutError before it", "available": "diagnosis"},
+    {"tier": 6, "class": "Supporting", "observation": "Scale match", "status": "present", "source": "metrics.csv: overall HTTP 500 about 3%, 15%, 30% at rollout 5%, 25%, 50%", "available": "diagnosis"},
+    {"tier": 7, "class": "Supporting", "observation": "Rollback clears it", "status": "after_action", "source": "metrics.csv rows from 14:33; logs.ndjson config_reloaded", "available": "verification"},
+    {"tier": 8, "class": "Weak", "observation": "Timing", "status": "present", "source": "first failure 4 seconds after rollout start", "available": "diagnosis"}
+  ],
+  "required_sources_adr_54": {"alert": "alert.json", "change_history": "release.json, config-diff.txt", "logs_or_error_tracker": "logs.ndjson"},
+  "contradicting_evidence_example": {
+    "seeded": "logs.ndjson 14:04:11 WARNING db_pool_reconnect on orders-api-b (version 2.14.0).",
+    "treatment": "Must be cited and resolved, not ignored. Hypothesis: orders-db caused the errors.",
+    "ruled_out_because": ["It is one reconnect on an old-version instance, and that request returned 200.", "It came after the first failure.", "Old-version HTTP 500 rate stays at baseline.", "The changed value is not a database setting; the pool and timeout settings are unchanged context lines.", "The trace shows SELECT cart succeeded."],
+    "would_contradict": "Version 2.14.0 instances failing with the same ValueError, or the error beginning before 14:02:00. Either leaves the contradiction unresolved, so the result drops to low and inconclusive."
+  },
+  "hypotheses_to_weigh": [
+    {"statement": "The changed config value breaks the order handler", "category": "deployment_config", "verdict": "leading"},
+    {"statement": "orders-db connection failure", "category": "dependency", "verdict": "ruled_out"},
+    {"statement": "Payment gateway timeouts", "category": "dependency", "verdict": "ruled_out: known signature, unchanged rate, version 2.14.0 only"}
+  ],
+  "acceptable_alternatives": {
+    "root_cause_wording": ["ORDER_TAX_RATE_BPS set to a non-integer value", "Tax rate written as a percentage in a setting that expects basis points", "Config cfg-42 breaks tax calculation on the order path"],
+    "actions": ["config_revert (preferred)", "commit_revert of 7d3e91a", "release_rollback to 2.14.0: acceptable but high-impact, two approvers (ADR-49)"],
+    "not_acceptable": ["Naming orders-db or the payment gateway as the cause", "Citing timing alone", "Citing the commit message as proof of intent"]
+  },
+  "expected_escalation": {
+    "notify_at_start": ["service owner", "on-call engineer", "last-change author"],
+    "severity": "Proposed sev2; the incident lead confirms. Treated as high-impact until confirmed (ADR-49).",
+    "approval": "One approver after sev2 is confirmed. synthetic-engineer-a may not be the sole approver.",
+    "release_a_path": ["open", "investigating", "diagnosed", "testing", "handed_over"],
+    "release_b_path": ["open", "investigating", "diagnosed", "testing", "awaiting_approval", "executing", "verifying", "recovered", "closed"],
+    "recovery_acceptance": "Incident lead (ADR-66)",
+    "verification": {"baseline_median_rate_500": 0.00082, "predicate": "rate_500_total <= 0.002 each minute (provisional)", "min_requests_per_60s": 50, "hold": "14:33 to 14:43"},
+    "run_2": {"withheld": ["release.json", "config-diff.txt"], "path": ["open", "investigating", "inconclusive", "handed_over"], "must_state": "Root cause not established", "patch_drafted": false}
+  }
+}
