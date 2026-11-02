@@ -209,7 +209,7 @@ The audit's "15 vs 60 minutes" is not a conflict. These are two different timers
 
 The Layer 8 workflow owns durability, and the Layer 9 coordinator owns the investigation's decisions:
 
-1. The workflow's `investigating` phase is a loop: call pure `coordinator.next_step(state)`, run the returned step as one activity, feed the result back. Each result is checkpointed by Temporal.
+1. The workflow's `investigating` phase is a loop: call pure `coordinator.next_step(state, now)`, run the returned step as one activity, feed the result back. Each result is checkpointed by Temporal.
 2. A patch candidate is one `draft_patch` activity, up to 3 per action. Steps are `COLLECT_BASELINE`, `RETRIEVE_KNOWLEDGE` (added), `HYPOTHESISE`, `COLLECT_TARGETED`, `DIAGNOSE`, `CRITIQUE`, then a stop verdict.
 3. A skill failure returns a typed failure to the coordinator, which stops as inconclusive.
 4. Crash recovery: Temporal re-runs the activity once on another worker (ADR-27). A completed model result is reused by `input_sha256` (ADR-61), so nothing is re-billed.
@@ -479,5 +479,5 @@ Decisions can't supply these. Each stays open in its artifact, marked `**Needs t
 | Provider terms on retention and training | Security lead | Terms confirmed |
 | Actual monthly budget and hourly cost | Engineering manager | Finance confirms (ADR-56) |
 | The frozen suite and its baseline run | SRE lead | Built from the specification in Artifact 12, then run once |
-| Whether the amended behaviour works in code | Platform owner | Changes in [code-changes-required.md](code-changes-required.md) made and tested |
+| Whether the amended behaviour works in a running system | Platform owner | The remaining items in [code-changes-required.md](code-changes-required.md) done, and the 21 skipped security tests run |
 | Legal deletion of runbook text: `documents` and `chunks` are append-only, so `purge_document` can't remove body text from PostgreSQL | Security lead | A deletion path is decided |

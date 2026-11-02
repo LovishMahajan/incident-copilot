@@ -283,7 +283,7 @@ The sources require 40 security tests: "Security (40 cases)", pass mark all pass
 
 - The 40 cover the seven Spec §11 categories, the rest of SD §11's ten threats, and the further threats in 5.2 and 5.5.
 - **Milestone** is when a case must first pass. Each milestone's release check runs the cases due by then ([SD §12](../../reference/system-design.md)), and all 40 pass at M4. M3 cases run on synthetic targets (ADR-44).
-- Test paths are planned. No file under `tests/security/` exists yet. Parts of ST-01 to ST-15 and ST-37 to ST-39 are already exercised by [test_remediation.py](../layer-11-safe-remediation/files/test_remediation.py).
+- All 40 cases are in [tests/security/](../../../tests/security/README.md). 21 test functions are skipped because they need a running API, gVisor, evidence adapters, or the review or notifier systems. Parts of ST-01 to ST-15 and ST-37 to ST-39 are already exercised by [test_remediation.py](../layer-11-safe-remediation/files/test_remediation.py).
 - Cases name refusal codes, not HTTP statuses, because Spec §6 gives the group "401, 403 or 409". Every refused approval attempt writes `aisre.approval.refused.v1` and raises a security alert, and leaves no approval row (ADR-49).
 
 | ID | Threat | Attack input | Expected result | Enforcement layer | Automated test location | Milestone |
