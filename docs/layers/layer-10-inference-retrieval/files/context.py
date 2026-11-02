@@ -10,13 +10,12 @@ from __future__ import annotations
 
 import hashlib
 import json
-import math
+import re
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Optional
 
-
-def tokens(text: str) -> int:
-    return math.ceil(len(text) / 3) + 4          # same conservative estimate as the gateway
+from gateway_contracts import estimate_tokens
 
 
 @dataclass(frozen=True)
@@ -29,8 +28,9 @@ class Item:
     refs: tuple[str, ...] = ()   # for merged items: every source they stand for
 
 
-# Evidence kinds by decisiveness for change-caused failures (Artifact 3 / validation.STRENGTH)
-EVIDENCE_PRIORITY = {"test_result": 10, "trace": 11, "error_group": 11, "metric": 12, "change": 13,
+# Order in which evidence kinds compete for context space (10.11). Not strength tiers: strength
+# belongs to an observation, not a kind (ADR-53).
+CONTEXT_KIND_ORDER = {"test_result": 10, "trace": 11, "error_group": 11, "metric": 12, "change": 13,
                      "log": 14, "dependency": 13, "alert": 15, "past_incident": 30}
 
 
@@ -38,6 +38,7 @@ EVIDENCE_PRIORITY = {"test_result": 10, "trace": 11, "error_group": 11, "metric"
 class Manifest:
     prompt_id: str
     prompt_version: str
+    prompt_sha256: str           # SHA-256 of the prompt text (ADR-63)
     index_revision: Optional[str]
     budget_tokens: int
     used_tokens: int = 0
@@ -67,9 +68,9 @@ def merge_repeated_logs(evidence: list[dict]) -> list[dict]:
     return other + merged
 
 
-def assemble(*, prompt_id: str, prompt_version: str, budget_tokens: int, facts: dict[str, str],
+def assemble(*, prompt_id: str, prompt_version: str, prompt_sha256: str, facts: dict[str, str],
              evidence: list[dict], contradictions: list[tuple[str, str, str]], runbook_hits: list,
-             index_revision: Optional[str], max_item_tokens: int = 600,
+             index_revision: Optional[str], budget_tokens: int = 12_000, max_item_tokens: int = 600,
              must_include: set[str] = frozenset()) -> tuple[list[dict], Manifest]:
     """Returns (context items for ModelRequest.context, manifest).
 
@@ -80,6 +81,9 @@ def assemble(*, prompt_id: str, prompt_version: str, budget_tokens: int, facts: 
       3  evidence named in must_include (cited by the current draft)    always
       10+ other evidence, most decisive kind first, then most recent
       40+ runbook passages, best match first (max 3)
+
+    The default budget leaves room for instructions and schema under the gateway's 16,000-token
+    per-call input limit (ADR-61).
     """
     items: list[Item] = []
     for name, value in facts.items():
@@ -94,24 +98,25 @@ def assemble(*, prompt_id: str, prompt_version: str, budget_tokens: int, facts: 
         if e["kind"] == "gap":
             items.append(Item(f'gap:{e["evidence_id"]}', "gap", f'MISSING: {e["summary"]}', 2, e.get("sha256", "")))
             continue
-        pr = 3 if ref in must_include else EVIDENCE_PRIORITY.get(e["kind"], 20)
+        pr = 3 if ref in must_include else CONTEXT_KIND_ORDER.get(e["kind"], 20)
         label = f'[{e["kind"]} from {e.get("source_system", "?")}, window {e.get("window", "?")}]'
         items.append(Item(ref, "evidence", f'{label} {e["summary"]}', pr, e.get("sha256", ""), refs))
     for rank, h in enumerate(runbook_hits[:3]):
+        stale = ", stale" if h.stale else ""
         items.append(Item(f"runbook:{h.chunk_id}", "runbook",
-                          f'[runbook {" > ".join(h.heading_path)}, version {h.doc_version}] {h.text}', 40 + rank, h.sha256))
+                          f'[runbook {" > ".join(h.heading_path)}, version {h.doc_version}{stale}] {h.text}', 40 + rank, h.sha256))
 
     # Stable order: priority, then recency is already reflected in input order, then ref
     items.sort(key=lambda i: (i.priority, i.ref))
-    man = Manifest(prompt_id, prompt_version, index_revision, budget_tokens)
+    man = Manifest(prompt_id, prompt_version, prompt_sha256, index_revision, budget_tokens)
     out: list[dict] = []
     for it in items:
         text = it.text
-        cost = tokens(text)
+        cost = estimate_tokens(text)
         if cost > max_item_tokens and it.priority >= 3:
-            keep = max_item_tokens * 3 - 80
-            text = text[:keep] + f" … [truncated; full record: {it.ref}]"     # reference kept (Q10.62)
-            cost = tokens(text)
+            marker = f" … [truncated; full record: {it.ref}]"                 # reference kept (Q10.62)
+            text = text[:(max_item_tokens - estimate_tokens("")) * 3 - len(marker)] + marker
+            cost = estimate_tokens(text)
         always = it.priority <= 3
         if man.used_tokens + cost > budget_tokens and not always:
             man.excluded.append({"ref": it.ref, "reason": "token budget", "tokens": cost})
@@ -147,13 +152,35 @@ class PromptVersion:
         return hashlib.sha256(self.text.encode()).hexdigest()
 
 
-class PromptRegistry:
-    """Prompts live in the repository, one file per version; a version is never edited after use.
-    A new version goes live only after it passes the evaluation suite (Artifact 9, 9.11)."""
+PROMPT_FILE = re.compile(r"^v(\d+)\.md$")
 
-    def __init__(self) -> None:
+
+class PromptRegistry:
+    """Prompts live in the repository at prompts/<skill>/v<N>.md, immutable once merged (ADR-63).
+    Each file starts with `key: value` lines for output_schema_name, model_alias and evaluated_on,
+    then a line of `---`, then the prompt text. Which version is active comes from recorded
+    configuration: `activations` lists each prompt's activated versions, oldest first, and the last
+    is live. Rollback activates the previous one. Old versions stay readable for replay."""
+
+    def __init__(self, root: Optional[Path] = None, activations: Optional[dict[str, list[int]]] = None) -> None:
         self._p: dict[str, PromptVersion] = {}
-        self.active: dict[str, int] = {}
+        self.activations: dict[str, list[int]] = {k: list(v) for k, v in (activations or {}).items()}
+        if root is not None:
+            self.load(Path(root))
+
+    def load(self, root: Path) -> None:
+        for path in sorted(root.glob("*/v*.md")):
+            m = PROMPT_FILE.match(path.name)
+            if not m:
+                continue
+            head, _, text = path.read_text().partition("\n---\n")
+            meta = dict(line.split(": ", 1) for line in head.splitlines() if line.strip())
+            self.add(PromptVersion(path.parent.name, int(m.group(1)), text, meta["output_schema_name"],
+                                   meta["model_alias"], meta["evaluated_on"]))
+
+    @property
+    def active(self) -> dict[str, int]:
+        return {k: v[-1] for k, v in self.activations.items() if v}
 
     def add(self, p: PromptVersion) -> None:
         if p.ref in self._p and self._p[p.ref].sha256 != p.sha256:
@@ -163,7 +190,14 @@ class PromptRegistry:
     def activate(self, prompt_id: str, version: int) -> None:
         if f"{prompt_id}@{version}" not in self._p:
             raise KeyError(prompt_id)
-        self.active[prompt_id] = version
+        self.activations.setdefault(prompt_id, []).append(version)
+
+    def rollback(self, prompt_id: str) -> PromptVersion:
+        history = self.activations.get(prompt_id, [])
+        if len(history) < 2:
+            raise ValueError(f"{prompt_id} has no previous version to roll back to")
+        history.pop()
+        return self.current(prompt_id)
 
     def current(self, prompt_id: str) -> PromptVersion:
         return self._p[f"{prompt_id}@{self.active[prompt_id]}"]

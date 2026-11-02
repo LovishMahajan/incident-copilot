@@ -2,6 +2,19 @@
 
 Nov 1, 2026
 
+> **Amended 2026-11-02 (proposed).** The text below is the original document, unchanged. Where it differs from the [decision register](../decisions.md), the register wins.
+>
+> | Section | Amended by |
+> | --- | --- |
+> | 1, 12 Advisory start, milestones | ADR-44: two releases; production write stays off until Release B |
+> | 2 Processes | ADR-51: the API reaches Temporal through the outbox only |
+> | 6 Evidence strength | ADR-53: the eight-tier order from Q3.34; confidence threshold set |
+> | 7, 8 Failures, approvals | ADR-46, ADR-48, ADR-49: state paths, rollback as its own action, approval rules |
+> | 9 Limits | ADR-56, ADR-61: money values, enforcement; "trim or summarise" means trim |
+> | 11 Sandbox network | ADR-60: no network |
+> | 12 Open decisions | Hold period (ADR-66), approval rules (ADR-49), workflow hosting (ADR-51), advisory to applying (ADR-44) |
+> | 13 Execution key | ADR-47: the key is the action ID, not one per approval |
+
 ## 1. Summary
 
 The AI SRE platform investigates production incidents caused by recent changes. Within 5 minutes it gives the on-call engineer an evidence-backed first summary, and within 15 minutes a ranked diagnosis. It proposes the smallest reversible fix, tests it in a disposable environment, and applies it only after a named person approves. Recovery is then verified independently.

@@ -1,9 +1,10 @@
 """Artifact 9.4: the tool registry.
 
-The agent can call only tools listed here, and only READ or PROPOSE tools. WRITE tools
-exist for the application (dispatcher) and are never offered to the model. Every call is
-validated against the tool's schema, the incident's scope, time and size limits, and the
-per-incident call and repeat limits — in code, before anything runs.
+The agent can call only tools listed here, and only READ or PROPOSE tools on its skill's
+fixed list. WRITE tools exist for the application (dispatcher) and are never offered to the
+model. Every call is validated against the tool's schema, the incident's scope, time and
+size limits, and the per-incident call and repeat limits — in code, before anything runs.
+Every result is size-capped by the gate before storage.
 """
 
 from __future__ import annotations
@@ -15,7 +16,9 @@ from datetime import datetime, timedelta
 from enum import Enum
 from typing import Callable, Optional
 
-from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_validator
+from pydantic import AwareDatetime, BaseModel, ConfigDict, Field, ValidationError, model_validator
+
+from coordinator import Limits
 
 
 class ToolKind(str, Enum):
@@ -40,8 +43,8 @@ class _P(BaseModel):
 
 class WindowParams(_P):
     service: str
-    start: datetime
-    end: datetime
+    start: AwareDatetime
+    end: AwareDatetime
     limit: int = Field(default=200, ge=1, le=500)
 
     @model_validator(mode="after")
@@ -68,9 +71,24 @@ class TraceQuery(WindowParams):
     path: Optional[str] = Field(default=None, max_length=300)
 
 
+class ErrorGroupQuery(WindowParams):
+    release: Optional[str] = Field(default=None, max_length=100)
+
+
 class DependencyQuery(_P):
     service: str
-    at: datetime
+    at: AwareDatetime
+
+
+class AlertQuery(_P):
+    service: str
+    alert_id: Optional[str] = Field(default=None, max_length=200)
+
+
+class KnowledgeQuery(_P):
+    service: str
+    query: str = Field(max_length=200)
+    k: int = Field(default=5, ge=1, le=10)
 
 
 class PatchDraftParams(_P):
@@ -97,7 +115,11 @@ class Tool:
 
 DEFAULT_LOOKBACK = timedelta(minutes=60)
 
+CLOCK_ALLOWANCE = timedelta(minutes=1)       # clock difference between a source and the platform
+
 REGISTRY: dict[str, Tool] = {t.name: t for t in [
+    Tool("get_alert", ToolKind.READ, "The alert that opened the incident",
+         AlertQuery, "alerts:read:{service}", None, 16_000, 2),
     Tool("get_logs", ToolKind.READ, "Error and warning log lines for the incident's service",
          LogQuery, "logs:read:{service}", timedelta(hours=6), 256_000, 8),
     Tool("get_metric", ToolKind.READ, "One named metric series for the incident's service",
@@ -106,24 +128,45 @@ REGISTRY: dict[str, Tool] = {t.name: t for t in [
          ChangeQuery, "changes:read:{service}", timedelta(hours=24), 64_000, 4),
     Tool("get_traces", ToolKind.READ, "Failing request traces for the service",
          TraceQuery, "traces:read:{service}", timedelta(hours=2), 128_000, 6),
+    Tool("get_error_groups", ToolKind.READ, "Grouped errors from the error tracker for the service",
+         ErrorGroupQuery, "errors:read:{service}", timedelta(hours=24), 64_000, 4),
     Tool("get_dependency_health", ToolKind.READ, "Health of the service's dependencies at a time",
-         DependencyQuery, "catalog:read", None, 32_000, 4),
+         DependencyQuery, "catalog:read:{service}", None, 32_000, 4),
+    Tool("search_runbooks", ToolKind.READ, "Runbook passages matching a query",
+         KnowledgeQuery, "runbooks:read:{service}", None, 32_000, 3),
+    Tool("search_past_incidents", ToolKind.READ, "Past-incident passages matching a query",
+         KnowledgeQuery, "incidents:read:{service}", None, 32_000, 3),
     Tool("draft_patch", ToolKind.PROPOSE, "Create a draft patch from the allowed list; never applied",
-         PatchDraftParams, "review:propose:{service}", None, 64_000, 2),
+         PatchDraftParams, "review:propose:{service}", None, 64_000, 3),
     # WRITE tools: registered for the dispatcher only. agent_tools() never returns them.
     Tool("apply_change", ToolKind.WRITE, "Apply an approved change through the release process",
          PatchDraftParams, "release:write:{service}", None, 16_000, 1),
 ]}
 
 
-def agent_tools() -> list[Tool]:
-    """What the model is shown. WRITE tools are excluded by construction."""
-    return [t for t in REGISTRY.values() if t.kind != ToolKind.WRITE]
+_READ_TOOLS = frozenset(t.name for t in REGISTRY.values() if t.kind == ToolKind.READ)
+
+# Each skill's fixed tool list (9.2), keyed by the skill's task name. A skill that "runs none"
+# still lists what it may suggest: its requests are pre-checked under its own name.
+SKILL_TOOLS: dict[str, frozenset[str]] = {
+    "collect_evidence": _READ_TOOLS,
+    "retrieve_knowledge": frozenset({"search_runbooks", "search_past_incidents"}),
+    "hypothesise": _READ_TOOLS,
+    "diagnose": frozenset(),
+    "critique": _READ_TOOLS,
+    "draft_patch": frozenset({"draft_patch"}),
+}
 
 
-def tool_schema_for_model() -> list[dict]:
+def agent_tools(skill: str) -> list[Tool]:
+    """What the model is shown for one skill. WRITE tools are on no list, by construction."""
+    allowed = SKILL_TOOLS.get(skill, frozenset())
+    return [t for t in REGISTRY.values() if t.name in allowed]
+
+
+def tool_schema_for_model(skill: str) -> list[dict]:
     return [{"name": t.name, "description": t.description,
-             "input_schema": t.params.model_json_schema()} for t in agent_tools()]
+             "input_schema": t.params.model_json_schema()} for t in agent_tools(skill)]
 
 
 # ---------------------------------------------------------------------------
@@ -135,19 +178,21 @@ class ToolGate:
     service: str
     incident_start: datetime
     now: datetime
-    max_total_calls: int = 20
+    max_total_calls: int = Limits().max_tool_calls
     calls_by_tool: dict[str, int] = field(default_factory=dict)
     seen: dict[str, int] = field(default_factory=dict)       # canonical call hash -> times
     total_calls: int = 0
     log: list[dict] = field(default_factory=list)
 
-    def check(self, name: str, raw_params: dict) -> tuple[Tool, BaseModel, str]:
-        """Validate one requested call. Returns (tool, params, call_hash) or raises ToolRefused."""
+    def check(self, name: str, raw_params: dict, skill: str) -> tuple[Tool, BaseModel, str]:
+        """Validate one call requested by `skill`. Returns (tool, params, call_hash) or raises ToolRefused."""
         tool = REGISTRY.get(name)
         if tool is None:
             raise ToolRefused("unknown_tool", name)
         if tool.kind == ToolKind.WRITE:
             raise ToolRefused("write_forbidden", f"{name} changes external systems; the agent cannot call it")
+        if name not in SKILL_TOOLS.get(skill, frozenset()):
+            raise ToolRefused("tool_not_allowed", f"{name} is not on the {skill} skill's list")
         raw = dict(raw_params)
         if "start" in tool.params.model_fields and "start" not in raw:
             raw["start"] = (self.incident_start - DEFAULT_LOOKBACK).isoformat()
@@ -158,13 +203,15 @@ class ToolGate:
             raise ToolRefused("invalid_params", e.errors()[0]["msg"]) from None
         if getattr(params, "service", self.service) != self.service:
             raise ToolRefused("out_of_scope", f"service {params.service} is not this incident's service")
-        if tool.max_window is not None:
-            if params.end - params.start > tool.max_window:
-                raise ToolRefused("window_too_large", f"max {tool.max_window} for {name}")
-            if params.end > self.now + timedelta(minutes=1):
-                raise ToolRefused("window_in_future", "end is in the future")
-            if params.start < self.incident_start - timedelta(hours=24):
-                raise ToolRefused("window_too_old", "more than 24 h before the incident started")
+        if tool.max_window is not None and params.end - params.start > tool.max_window:
+            raise ToolRefused("window_too_large", f"max {tool.max_window} for {name}")
+        at = getattr(params, "at", None)                 # a point-in-time tool has one instant
+        latest = at if at is not None else getattr(params, "end", None)
+        earliest = at if at is not None else getattr(params, "start", None)
+        if latest is not None and latest > self.now + CLOCK_ALLOWANCE:
+            raise ToolRefused("window_in_future", "the time asked for is in the future")
+        if earliest is not None and earliest < self.incident_start - timedelta(hours=24):
+            raise ToolRefused("window_too_old", "more than 24 h before the incident started")
         if self.total_calls >= self.max_total_calls:
             raise ToolRefused("call_budget", f"{self.max_total_calls} tool calls per incident")
         if self.calls_by_tool.get(name, 0) >= tool.max_calls_per_incident:
@@ -183,3 +230,8 @@ class ToolGate:
 
     def is_repeat(self, call_hash: str) -> bool:
         return self.seen.get(call_hash, 0) >= 1
+
+    def cap_output(self, name: str, raw: bytes) -> tuple[bytes, bool]:
+        """Run on every result before storage. Returns the bytes to keep, and is_partial."""
+        limit = REGISTRY[name].max_output_bytes
+        return raw[:limit], len(raw) > limit

@@ -2,18 +2,18 @@
 
 - **Layer:** 2, Scope and Constraints
 - **Built from:** Artifact 1
-- **Status:** Draft compiled from the team's answers; pending team review
-- **Sources:** [conversation.md](conversation.md), [System Design](../../reference/system-design.md), [Technical specification](../../reference/technical-specification.md), and, for assumption owners and later refinements, the conversations of [Layer 1](../layer-01-problem-discovery/conversation.md), [Layer 3](../layer-03-sre-fundamentals/conversation.md), [Layer 4](../layer-04-requirements/conversation.md), [Layer 6](../layer-06-system-architecture/conversation.md), [Layer 7](../layer-07-data-apis-events/conversation.md), [Layer 9](../layer-09-agent-architecture/conversation.md), [Layer 11](../layer-11-safe-remediation/conversation.md) and [Layer 12](../layer-12-reliability-evaluation/conversation.md)
+- **Status:** Proposed: gaps resolved 2026-11-02 per [decisions.md](../../decisions.md); pending team sign-off
+- **Sources:** [conversation.md](conversation.md), [decisions.md](../../decisions.md), [System Design](../../reference/system-design.md), [Technical specification](../../reference/technical-specification.md), and, for assumption owners and later refinements, the conversations of [Layer 1](../layer-01-problem-discovery/conversation.md), [Layer 3](../layer-03-sre-fundamentals/conversation.md), [Layer 4](../layer-04-requirements/conversation.md), [Layer 6](../layer-06-system-architecture/conversation.md), [Layer 7](../layer-07-data-apis-events/conversation.md), [Layer 9](../layer-09-agent-architecture/conversation.md), [Layer 11](../layer-11-safe-remediation/conversation.md) and [Layer 12](../layer-12-reliability-evaluation/conversation.md)
 
 ## Required sections
 
 | Required section | Questions this section answers | Done |
 | --- | --- | --- |
-| 2.1 Supported environments | Q2.1, Q2.3, Q2.7 | Partial |
+| 2.1 Supported environments | Q2.1, Q2.3, Q2.7 | Yes |
 | 2.2 Supported application types | Q2.2 | Yes |
 | 2.3 Deployment boundaries | Q2.4–Q2.6, Q2.8–Q2.10, Q2.14 | Yes |
 | 2.4 Budget constraints | Q2.15–Q2.18 | Partial |
-| 2.5 Provider assumptions | Q2.11, Q2.12, Q2.19, Q2.22 | Partial |
+| 2.5 Provider assumptions | Q2.11, Q2.12, Q2.19, Q2.22 | Yes |
 | 2.6 Explicit non-goals | Q2.1, Q2.9–Q2.13 | Yes |
 | 2.7 Unresolved dependencies | Q2.20–Q2.23 | Partial |
 
@@ -23,19 +23,19 @@
 
 **A2-a:** One organisation; Python applications only; one deployment environment. *(Q2.1–Q2.3)*
 
+**First version** means everything built through M4, shipped in two releases: Release A (Advisory) and Release B (Controlled remediation) (ADR-44).
+
 | Dimension | First version | Later |
 | --- | --- | --- |
 | Organisations | **One organisation**, used by several of its teams. Teams share the platform, but each team sees and acts only on its own services ([Q2.1](conversation.md)) | Several independent organisations are a non-goal; see 2.6 |
-| Deployment environment | **One environment**: wherever the reference application runs ([Q2.3](conversation.md)) | Reached only through clearly defined connection points (for evidence, changes and fixes), so a second environment can be added later without redesign |
+| Deployment environment | **One environment**: one Linux host under Docker Compose, running the reference application and the platform. The test environment runs on a separate host (ADR-51). The design depends only on that host, so it can sit in a cloud or on private infrastructure | Reached only through clearly defined connection points (for evidence, changes and fixes), so a second environment can be added later without redesign |
 | Data the platform runs on | **Synthetic test cases first**, based on the reference scenario: built, cleaned failures with a known cause and known correct fix ([Q2.7](conversation.md)) | In stages, below |
 
 Real incidents come later, in this order ([Q2.7](conversation.md)):
 
 1. Replay past incidents with sensitive data removed.
-2. Advisory mode on live incidents: the platform investigates and recommends, but takes no action.
-3. Approved fixes on live incidents.
-
-**Gap:** the sources do not say which environment the reference application runs in (cloud or private infrastructure). Q2.3 fixes it only as "wherever the reference application runs", and Q2.9 leaves open whether that application runs on Kubernetes.
+2. Advisory mode on live incidents: the platform investigates and recommends, but takes no action (Release A).
+3. Approved fixes on live incidents (Release B).
 
 ## 2.2 Supported application types
 
@@ -62,7 +62,7 @@ Each extra language multiplies the error formats, the fixes and the tests needed
 - **Don't replace it.** Existing monitoring keeps detecting incidents.
 - **Start from its alerts.** The platform starts work when it receives an alert from existing monitoring.
 - **Read, don't own.** It reads evidence from existing sources with read-only access, and doesn't copy everything into a new store.
-- **Keep the record.** It saves only the evidence it used, in the incident record.
+- **Keep the record.** Everything collected is snapshotted for 30 days. Only the evidence a diagnosis cited is kept long-term, in the incident record, for 1 year. Bulky items go to the object store from the start (ADR-57).
 
 ([Q2.4](conversation.md))
 
@@ -77,7 +77,8 @@ Each extra language multiplies the error formats, the fixes and the tests needed
 | Release and configuration history | Read-only | Services in scope |
 | Service ownership and on-call | Read-only | All services in scope |
 | Notifications to engineers | Send | Owners, on-call, change authors |
-| Undoing a change | Write, **only after approval**, and only the specific change | Affected service only |
+| Undoing a change | Write, **only after approval**, and only the specific change. Release B only: in Release A the credential isn't provisioned at all (ADR-44) | Affected service only |
+| Draft pull requests in the review system | Write, draft only, in both releases; no direct commits (ADR-44). The worker holds this credential and no other write credential (ADR-51) | Services in scope |
 
 Every access uses its own named identity, with the least permission needed. It is approved by the data owner and logged ([Q2.5](conversation.md)).
 
@@ -85,7 +86,8 @@ Every access uses its own named identity, with the least permission needed. It i
 
 - **Release history:** read the record of releases, with each one's time, author, version and the configuration it changed.
 - **Source code:** read-only access, used to compare the failing version with the previous one, with a focus on configuration changes.
-- **Undoing a change:** only through the organisation's existing release process, after approval. The platform never edits source code or history directly.
+- **Draft pull requests:** the platform may open a draft in the review system, in both releases. Direct commits never happen (ADR-44).
+- **Undoing a change:** only through the organisation's existing release process, after approval, in Release B. The platform never edits source code or history directly.
 
 ([Q2.6](conversation.md))
 
@@ -99,26 +101,28 @@ The first version works with only a command-line tool and an HTTP API ([Q2.8](co
 | Command-line tool | Lets engineers view an incident, see evidence and timeline, approve or reject a fix, and accept recovery |
 | Notifications | Carry a short summary and a link or command for the approval step |
 
+The approval steps run against production only in Release B. The Approval Service, dispatcher and Verifier are built and tested at M3 on synthetic targets (ADR-44).
+
 ### Platform shape
 
 | Decision | Value | Revisit |
 | --- | --- | --- |
-| Hosting | No Kubernetes for the first version. Run on the simplest setup that restarts the platform if it fails, packaged so it could move to Kubernetes later ([Q2.9](conversation.md)) | When concurrent incidents, the number of services, or team count make scaling and scheduling a real problem |
-| Structure | No microservices. One deployable application with clear internal modules: intake, evidence, investigation, remediation, verification and record ([Q2.10](conversation.md)) | Split a module out only when it has a different scaling, security or release need. Likely first candidate: the sandbox that runs fixes |
-| Reference application on Kubernetes | If it runs there, the platform still has to read its releases and health. That is integration, not hosting the platform on Kubernetes ([Q2.9](conversation.md)) | |
+| Hosting | No Kubernetes for the first version. Run on the simplest setup that restarts the platform if it fails, Docker Compose on one Linux host, packaged so it could move to Kubernetes later ([Q2.9](conversation.md), ADR-51) | Several environments or organisations in scope, more processes than simple hosting can manage, more than 20 services, or sustained concurrency above 5 (ADR-51) |
+| Structure | No microservices. One codebase with clear internal modules (intake, evidence, investigation, remediation, verification and record), run as four processes: API, worker, dispatcher and isolated test environment ([Q2.10](conversation.md), ADR-51) | Split a further module out only when it has a different scaling, security or release need |
+| Reference application on Kubernetes | It doesn't run there: it runs under Docker Compose (ADR-51). If a later target runs on Kubernetes, the platform still has to read its releases and health. That is integration, not hosting the platform on Kubernetes ([Q2.9](conversation.md)) | |
 
 ### Disposable execution
 
 1. **Build a copy:** a fresh, short-lived copy of the affected service at the failing version, with the reference failure reproduced.
-2. **Isolate it:** no access to production systems, production data or real credentials; no outbound network except what the test needs; strict time and resource limits.
+2. **Isolate it:** no access to production systems, production data or real credentials; no network at all (ADR-60); strict time and resource limits. Patches are limited to configuration and reverts, so nothing new needs installing. A package mirror would take a new ADR, a filtering proxy and Security lead sign-off, and none is planned.
 3. **Apply and test the fix there:** run the original symptom check (errors gone, user-facing checks passing).
 4. **Destroy it:** delete the copy after the test, and keep only the results in the incident record.
-5. **Production is still blocked:** the platform's production write permission stays off. A person applies the fix through the normal release process, or (later) approves it for the platform to apply.
+5. **Production is still blocked:** in Release A the production write credential isn't provisioned, and a person applies the fix by hand through the normal release process. In Release B the dispatcher applies it, on a signed approval (ADR-44).
 
 | Phase | Production boundary |
 | --- | --- |
-| First version | Fixes run in the disposable copy only; people apply any production change |
-| Later | Approved fixes applied to production by the platform, gated as in Artifact 1, 1.5 |
+| Release A: Advisory | Fixes run in the disposable copy only; people apply any production change. The incident ends `testing` → `handed_over` with the tested recommendation (ADR-44) |
+| Release B: Controlled remediation | Approved fixes applied to production by the dispatcher, on a signed approval, gated as in Artifact 1, 1.5. Entry: M3 and M4 gates, then the pilot accuracy and approval review. The write credential is provisioned by a recorded decision (ADR-44) |
 
 ([Q2.14](conversation.md))
 
@@ -130,55 +134,59 @@ The first version works with only a command-line tool and an HTTP API ([Q2.8](co
 
 ### Infrastructure ([Q2.15](conversation.md))
 
-- A **fixed monthly ceiling**, with alerts at 50%, 80% and 100%.
-- The **simplest hosting**: one deployable application, no Kubernetes, no GPUs.
-- **Disposable copies are short-lived:** destroyed after each test, with a cap on how many run at once.
-- **Don't duplicate data:** read evidence from existing monitoring; store only what the incident record needs.
-- **Retention limits** on stored evidence.
+- A **fixed monthly model spend ceiling** of $500 (provisional, ADR-56), with alerts at 50%, 80% and 100%. Infrastructure cost is separate.
+- The **simplest hosting**: one codebase in four processes on simple hosts (ADR-51), no Kubernetes, no GPUs.
+- **Disposable copies are short-lived:** destroyed after each test, with a cap of 3 running at once and the rest queued (provisional, ADR-56).
+- **Don't duplicate data:** read evidence from existing monitoring; long-term, keep only what the incident record needs (ADR-57).
+- **Retention limits** on stored evidence, listed below.
 - **Monthly review**, recording cost per incident.
 
 ### Model spend per incident ([Q2.16](conversation.md))
 
 1. **Start from value:** the engineer time saved per incident, multiplied by an hourly cost, is the most the platform can be worth per incident.
-2. **Set the budget as a small fraction of that value.** The starting fraction is provisional, at 10%.
+2. **Set the budget as a small fraction of that value.** The starting fraction is provisional, at 10%. The per-incident cap is $2.00 (provisional, ADR-56), a placeholder kept from the code until the value is measured. At 10%, it assumes $20 of engineer time saved per incident.
 3. **Enforce it:** a maximum number of model calls and tokens per incident. When the budget is reached, stop and hand over with the findings so far.
 4. **Measure it:** record the actual cost of every incident, and adjust the budget after the pilot.
 5. **Save calls:** gather and line up evidence in code, and call the model only for reasoning.
 
 ### Concurrency ([Q2.17](conversation.md))
 
-- **Size from history:** take the highest number of simultaneous incidents seen in past records, and double it for headroom. The provisional starting point is 5 concurrent investigations.
+- **Size from history:** take the highest number of simultaneous incidents seen in past records, and at least double it for headroom. The provisional limit is 5 concurrent investigations, at least double the assumed peak of 2 (ADR-55).
 - **Group related alerts:** alerts that share a start time and a likely cause become one incident, not many.
 - **Queue the rest by severity:** beyond the limit, incidents wait in a queue ordered by severity, and engineers are told they're queued.
-- **Never drop an alert:** every alert is recorded, even if its investigation waits.
+- **Never drop an alert:** every alert is recorded, even if its investigation waits. A rejected alert is stored in a dead-letter record, and the incident lead is notified (ADR-58).
 
 ### Time ([Q2.18](conversation.md))
 
 | Milestone | Provisional limit |
 | --- | --- |
-| First summary to the on-call engineer | 5 minutes after the alert |
-| Full investigation, with ranked causes | 15 minutes |
+| First summary to the on-call engineer | Target: ≤ 5 minutes p95 after the alert. Missing it doesn't stop the work |
+| Full investigation, with ranked causes | Limit: 15 minutes |
 | Each evidence or model step | Its own short timeout, so one slow source can't block the rest |
 
-When a limit is reached, the platform stops, shares what it has found and what is missing, and hands over to a person.
+When the 15-minute limit is reached, the platform stops, shares what it has found and what is missing, and hands over to a person.
 
 ### Values set after this layer
 
-Layer 2 sets the rules above. Later layers supply these provisional values ([System Design, 9](../../reference/system-design.md), [Q4.34](../layer-04-requirements/conversation.md)):
+Layer 2 sets the rules above. Later layers and the register supply these provisional values ([System Design, 9](../../reference/system-design.md), [Q4.34](../layer-04-requirements/conversation.md), ADR-55, ADR-56, ADR-57). The money values are placeholders, so that limits can be built and tested:
 
 | Limit | Value (provisional) |
 | --- | --- |
+| Currency | USD |
+| Model spend per incident | $2.00 |
+| Monthly ceiling | $500: 250 incidents at the per-incident cap, so sized on model spend |
 | Model calls per incident | 30 |
 | Tokens per incident | 200,000 input, 20,000 output |
 | Tokens per call | 16,000 input |
 | Time per model call | 60 s |
 | Concurrent investigations | 5; queue up to 50 by severity. Beyond 50 queued, new incidents are still recorded, and the incident lead is alerted |
-| Daily spend, all incidents | Monthly budget ÷ 30; alert at 80%, evidence-only at 100% |
-| Retention | Raw evidence and model input and output 30 days; timeline and audit 1 year ([Technical specification, 10](../../reference/technical-specification.md)) |
+| Daily spend, all incidents | $16.67 (monthly ÷ 30); alert at 80%. At 100%, new investigations are evidence-only; running ones finish their current step, then stop and hand over (ADR-55) |
+| Disposable copies at once | 3, queued beyond that |
+| Retention | All collected evidence snapshots 30 days. Evidence cited by a diagnosis, redacted model input and output, timeline and audit, patches and test logs 1 year (ADR-57, which also lists traces, logs, metrics and backups) |
 
-**Gap:** no source gives an amount for the fixed monthly ceiling, the hourly cost or the engineer time saved per incident, so the per-incident budget has no monetary value yet.
+**Needs the team:** the actual monthly budget and hourly cost, Owner: Engineering manager, settled when: finance confirms (ADR-56).
 
-**Gap:** no source gives the cap on how many disposable copies run at once (Q2.15).
+**Needs measurement:** the engineer time saved per incident, which tests the $2.00 cap against the 10% rule, Owner: Engineering manager, settled when: measured in the pilot (ADR-56).
 
 ## 2.5 Provider assumptions
 
@@ -200,19 +208,17 @@ Use an existing hosted model with usage caps, give it gathered evidence, and mea
 | Train or fine-tune our own model | Not for the first version. Revisit when the evaluation data shows the ceiling has been reached | **All** of: a proven ceiling on our evaluation set; enough labelled incidents with confirmed causes and fixes; a narrow, stable task; a hard requirement existing models can't meet, on cost, speed, or data that cannot leave the organisation |
 | Operate our own GPUs | No | **Any one** of: sustained volume where owning hardware is cheaper at measured utilisation; a rule that incident data must never leave the organisation's infrastructure, which no provider can meet contractually; response times a hosted provider cannot meet; a required self-hosted or custom model |
 
-Recorded triggers for revisiting GPUs: monthly model spend above a set threshold, or a data-residency rule that a provider cannot meet.
+Recorded triggers for revisiting GPUs: monthly model spend above 80% of the ceiling for 3 straight months (provisional, ADR-56), or a data-residency rule that a provider cannot meet.
 
 ### Provider outage ([Q2.19](conversation.md))
 
 1. **Keep doing everything that doesn't need the model:** receive the alert, open the record, notify people, gather evidence, build the timeline, and list recent changes around the start time.
-2. **Retry briefly**, then stop calling the provider for a short period, so it doesn't pile up failing calls.
+2. **Retry briefly**, then stop calling the provider for a short period, so it doesn't pile up failing calls. The Model Gateway owns both (ADR-27, ADR-61).
 3. **Tell people plainly** that the analysis is unavailable, and share the evidence and timeline.
 4. **Never propose a fix without the model's reasoning.** People decide.
-5. **Resume the analysis** automatically when the provider returns, if the incident is still open.
+5. **No automatic resume.** The incident goes from `inconclusive` to `handed_over`. Once the provider returns, a person may request re-investigation (ADR-46).
 
-A second provider can be considered later, if outages prove frequent.
-
-**Gap:** no source sets the "set threshold" for monthly model spend (Q2.12), or says how frequent outages must be before a second provider is considered (Q2.19).
+There is no automatic fallback to another provider (ADR-38). A second provider is considered if provider-caused hand-overs exceed 5% of incidents in 90 days, or there are 2 outages over 60 minutes in a quarter (provisional, ADR-56).
 
 ## 2.6 Explicit non-goals
 
@@ -229,8 +235,8 @@ A second provider can be considered later, if outages prove frequent.
 | Microservices | [Q2.10](conversation.md) | See 2.3 |
 | A custom or fine-tuned model | [Q2.11](conversation.md) | See 2.5 |
 | Operating GPUs | [Q2.12](conversation.md) | See 2.5 |
-| The platform writing to production | [Q2.14](conversation.md) | Later phase; see 2.3 and the first conflict under Decisions and conflicts |
-| Other kinds of incident, many services failing at once, a polished interface | [Q1.16](../layer-01-problem-discovery/conversation.md) | Come later |
+| The platform writing to production before Release B | [Q2.14](conversation.md) | Release B's entry conditions and a recorded decision (ADR-44); see 2.3 |
+| Other kinds of incident, many services failing at once, a polished interface | [Q1.16](../layer-01-problem-discovery/conversation.md) | Come later. Out-of-scope failure types are recorded, recognised and handed over, never fixed (ADR-58) |
 
 ### Multi-tenant requirements, if several organisations are served later ([Q2.13](conversation.md))
 
@@ -244,7 +250,7 @@ A second provider can be considered later, if outages prove frequent.
 - **Compliance:** contracts and data-processing terms per organisation; possibly data kept in specific regions.
 - **Separate operations:** per-organisation configuration, upgrades and incident communication.
 
-**Decision.** Out of scope for the first version. Design one small thing now: tag every record with an organisation identifier, so isolation can be enforced later without migrating data.
+**Decision.** Out of scope for the first version. Design one small thing now: tag every top-level record with an organisation identifier, reached by join from the rest (ADR-64), so isolation can be enforced later without migrating data.
 
 ## 2.7 Unresolved dependencies
 
@@ -259,6 +265,8 @@ A second provider can be considered later, if outages prove frequent.
 | **Assumption** | Believed without evidence yet | Recent changes cause most incidents |
 
 Each assumption gets an owner, a validation condition, a deadline, and a note of what breaks if it's wrong.
+
+**Changing a Fixed item.** A Fixed item stays fixed until a new accepted ADR replaces it; a routine team choice can't relax it. Production approval is Fixed for the whole first version, Release B included. After that, a specific low-risk, reversible action may run without approval only through its own ADR, one action at a time, once proven safe, with an owner and a review trigger, signed off by the Engineering manager and Security lead ([Q1.22](../layer-01-problem-discovery/conversation.md), [System Design, 8](../../reference/system-design.md)). Irreversible actions and the actions System Design section 8 prohibits always need a person.
 
 ### Assumptions that could invalidate the design ([Q2.22](conversation.md))
 
@@ -277,29 +285,51 @@ Each needs an early test and a fallback plan.
 
 ### Dependencies to settle
 
-These follow from the Layer 2 answers; the owners and conditions come from the consolidated design ([System Design, 10 and 12](../../reference/system-design.md)).
+These follow from the Layer 2 answers and the consolidated design ([System Design, 10 and 12](../../reference/system-design.md)). Every open entry here traces back to [decisions.md](../../decisions.md), the decision log.
 
-| Dependency | From | Owner (role) | Settled when |
-| --- | --- | --- | --- |
-| Named identities and data-owner approval for each access in 2.3 | [Q2.5](conversation.md) | TBD | TBD |
-| Release process can apply, undo and look up one change by key | [Q2.6](conversation.md) | Platform owner | Scenario revert done through it |
-| On-call rotas cover every in-scope service, including nights | A8 | Engineering manager | Rotas confirmed |
-| Organisation's approval rules by service and severity | A8 | Engineering manager | Rules written down |
-| Historical peak concurrency | [Q2.17](conversation.md), A6 | SRE lead | Past incident records checked |
-| Provider agreement on data retention | A2 | Security lead | Terms confirmed |
+Deadlines are milestone gates, and are provisional (A16). **Before M*n*** means settled before work on that milestone starts. **Before the pilot** means after the M4 gate and before the pilot starts. **Pilot review** is the accuracy and approval review that precedes Release B (ADR-44). System Design section 10 lists its unknowns as "to settle before build", so those are Before M1.
+
+| Dependency | From | Owner (role) | Deadline | Settled when |
+| --- | --- | --- | --- | --- |
+| Named people for each role | [Q2.23](conversation.md) | Engineering manager | Before M1 | Names entered in [decisions.md](../../decisions.md) |
+| Release process can apply, undo and look up one change by key | [Q2.6](conversation.md), ADR-47 | Platform owner | Before M1 | Scenario revert done through it |
+| On-call rotas cover every in-scope service, including nights | A8 | Engineering manager | Before M1 | Rotas confirmed |
+| Historical peak concurrency | [Q2.17](conversation.md), A6 | SRE lead | Before M1 | Past incident records checked |
+| Provider agreement on data retention and training | A2 | Security lead | Before M1 | Terms confirmed |
+| In-scope alerts carry a stable service label and identifier | [System Design, 10](../../reference/system-design.md) | Platform owner | Before M1 | Alert samples inspected |
+| How often real logs contain personal data or secrets | [System Design, 10](../../reference/system-design.md) | Security lead | Before M1 | Seeded and sampled corpus reviewed |
+| Test host that runs containers under gVisor, separate from the platform host | [System Design, 12](../../reference/system-design.md), ADR-51 | Platform owner | Before M2 | A container runs there under gVisor with no network |
+| Named identities and data-owner approval for each access in 2.3 | [Q2.5](conversation.md) | Security lead | Before M3 | Each access has its own identity, its data owner's approval and a log. Due before Release A's first production read; M1 and M2 have no production access |
+| The organisation accepts the approval rules in ADR-49 | A8 | Engineering manager | Before M3 | Rules written down and accepted |
+| Identity system with groups per service | [System Design, 12](../../reference/system-design.md) | Security lead | Before M3 | Approve rights resolve per service through the groups |
+| Managed PostgreSQL with point-in-time recovery | [System Design, 12](../../reference/system-design.md) | Platform owner | Before M4 | A restore is tested |
+| Actual monthly budget and hourly cost | A14 | Engineering manager | Before the pilot | Finance confirms (ADR-56) |
+| Recorded decision to switch on Release B | ADR-44 | Engineering manager | Pilot review | Decision recorded and the write credential provisioned |
+
+**Needs the team:** named people for each role, in place of the role owners used throughout this artifact and the register, Owner: Engineering manager, settled when: names are entered in [decisions.md](../../decisions.md).
+
+**Needs the team:** whether the release process supports apply, undo and lookup by key, Owner: Platform owner, settled when: the scenario revert is done through it.
+
+**Needs the team:** on-call rotas and night coverage, Owner: Engineering manager, settled when: rotas are confirmed.
+
+**Needs the team:** provider terms on retention and training, Owner: Security lead, settled when: terms are confirmed.
+
+**Needs measurement:** real alert samples, Owner: Platform owner, settled when: samples are inspected. Peak concurrency, Owner: SRE lead, settled when: past records are checked. Personal data in logs, Owner: Security lead, settled when: samples are inspected.
 
 ### Decision log format ([Q2.23](conversation.md))
 
-Keep one **decision log** in the team repository, one entry per decision. Review open entries at every layer boundary.
+The one **decision log** is [decisions.md](../../decisions.md), in the team repository, one entry per decision, numbered in the ADR series (ADR-45). Review open entries at every layer boundary.
+
+The log feeds this section: an entry that is still open appears under Dependencies to settle. The Q2.23 reasoning stops mid-way, at "It also feeds the “unresolved dependencies”", and this is the plain reading of that sentence.
 
 | Field | Content |
 | --- | --- |
-| ID and title | e.g. D-04: no Kubernetes for the first version |
+| ID and title | e.g. ADR-51: process topology, which records no Kubernetes for the first version |
 | Status | Proposed, accepted, superseded or reversed |
 | Decision | What was decided |
 | Rationale | Why, and which alternatives were rejected |
 | Assumptions it rests on | Linked assumption IDs (A1, A2…) |
-| Owner | A named person |
+| Owner | A named person. Roles stand in until names are entered |
 | Validation condition | What evidence confirms it, and by when |
 | Revisit trigger | What would reopen it |
 | Reversal cost | How hard it is to undo |
@@ -312,61 +342,72 @@ Recorded as two linked entries. Under Layer 2's focus, the decision is about the
 | Entry | Content |
 | --- | --- |
 | Decision | Use a single relational database for the incident record. *Rationale:* strong consistency, ordered records, and a familiar operations model. *Status:* provisional |
-| Assumption it rests on (A9) | Data volume stays within what one database handles comfortably. *Owner:* platform owner. *Validated when:* volume is measured during the pilot. *If false:* revisit storage for evidence (for example, store bulky evidence separately and keep the record relational) |
+| Assumption it rests on (A9) | Data volume stays within what one database handles comfortably. *Owner:* platform owner. *Validated when:* volume is measured during the pilot. *If false:* revisit storage for the record itself. Bulky evidence is already stored separately, in the object store, from the start (ADR-57) |
 
 The entry also notes the reversal cost and the trigger for revisiting.
 
-**Gap:** the repository has no decision log file, and no answer assigns entries, deadlines or named people. Q2.20 requires a deadline per assumption and Q2.23 a named owner per decision; the sources give neither. The Q2.23 reasoning also stops mid-sentence ("It also feeds the "unresolved dependencies""), so how the log feeds this section isn't stated.
-
 ## Assumptions
 
-Layer 2's answers have no per-question assumption lists, and Q2.23 names the ID form (A1, A2…) without numbering any assumption. IDs here follow source order: Q2.22 (A1–A8), Q2.21 (A9), the Q2.20 example (A10), then the values the team labelled provisional (A11–A13). Owners and conditions come from the assumption's own answer, or from a later answer that states the same assumption, cited in the row.
+Layer 2's answers have no per-question assumption lists, and Q2.23 names the ID form (A1, A2…) without numbering any assumption. IDs here follow source order: Q2.22 (A1–A8), Q2.21 (A9), the Q2.20 example (A10), then the values the team labelled provisional (A11–A13), then the values added to close gaps (A14–A16). Owners and conditions come from the assumption's own answer, or from a later answer that states the same assumption, cited in the row. Where the sources gave neither, the owner is the role the register or System Design gives that area, and the condition is provisional. Deadlines follow the rules in 2.7.
 
 These IDs are separate from the shared-known labels. **A1** is an assumption; **A1-a** is a shared known from Artifact 1. **A2** is an assumption; **A2-a** to **A2-d** are the labels defined in 2.1, 2.3 and 2.4.
 
-| Assumption | Status | Owner | Validated when |
-| --- | --- | --- | --- |
-| **A1:** A capable model is available and affordable | Provisional | TBD | TBD (Q2.11 says measure it on the evaluation set; no condition is set) |
-| **A2:** Incident data may be sent to an outside provider | Provisional | Security lead ([System Design, 10](../../reference/system-design.md)) | Provider terms on data retention are confirmed |
-| **A3:** Evidence sources are accessible read-only | Provisional | Security lead ([Q1.22](../layer-01-problem-discovery/conversation.md)) | The platform's access is confirmed to be read-only |
-| **A4:** Releases and configuration changes are recorded with times and authors | Provisional | Platform owner ([Q3.7](../layer-03-sre-fundamentals/conversation.md), [Q3.26](../layer-03-sre-fundamentals/conversation.md)) | The release record shows configuration differences per release, and the release process emits a record for each deployment |
-| **A5:** A disposable copy can reproduce the failure | Provisional | Platform owner ([Q4.10](../layer-04-requirements/conversation.md)) | The HTTP 500 errors reproduce there |
-| **A6:** Incident volume and concurrency stay small | Provisional | SRE lead ([Q4.34](../layer-04-requirements/conversation.md)) | Past records are checked |
-| **A7:** One organisation only | Provisional | TBD | TBD |
-| **A8:** An approver can be reached at night | Provisional | Engineering manager ([Q1.22](../layer-01-problem-discovery/conversation.md)) | The on-call rota covers every service in scope |
-| **A9:** Data volume stays within what one database handles comfortably | Provisional | Platform owner | Volume is measured during the pilot |
-| **A10:** Recent changes cause most incidents | Provisional | TBD | TBD |
-| **A11:** Model spend at 10% of the value of engineer time saved is the right starting fraction | Provisional | TBD | The actual cost of every incident is recorded, and the budget is adjusted after the pilot |
-| **A12:** 5 concurrent investigations is enough | Provisional | SRE lead ([Q4.34](../layer-04-requirements/conversation.md)) | Past records are checked |
-| **A13:** The 5-minute and 15-minute time limits are right | Provisional | TBD | TBD (the first-summary target is measured on the test suite, then the pilot, per [System Design, 10](../../reference/system-design.md)) |
+| Assumption | Status | Owner | Validated when | Deadline |
+| --- | --- | --- | --- | --- |
+| **A1:** A capable model is available and affordable | Provisional | SRE lead | The M1 gate passes: accuracy ≥ 80% and budget caps hold ([Technical specification, 12](../../reference/technical-specification.md)) | Before M2 |
+| **A2:** Incident data may be sent to an outside provider | Provisional | Security lead ([System Design, 10](../../reference/system-design.md)) | Provider terms on data retention are confirmed | Before M1 |
+| **A3:** Evidence sources are accessible read-only | Provisional | Security lead ([Q1.22](../layer-01-problem-discovery/conversation.md)) | The platform's access is confirmed to be read-only | Before M3 |
+| **A4:** Releases and configuration changes are recorded with times and authors | Provisional | Platform owner ([Q3.7](../layer-03-sre-fundamentals/conversation.md), [Q3.26](../layer-03-sre-fundamentals/conversation.md)) | The release record shows configuration differences per release, and the release process emits a record for each deployment | Before M1 |
+| **A5:** A disposable copy can reproduce the failure | Provisional | Platform owner ([Q4.10](../layer-04-requirements/conversation.md)) | The HTTP 500 errors reproduce there | Before M3 |
+| **A6:** Incident volume and concurrency stay small | Provisional | SRE lead ([Q4.34](../layer-04-requirements/conversation.md)) | Past records are checked | Before M1 |
+| **A7:** One organisation only | Provisional | Engineering manager | No second organisation is planned through the pilot | Before M1 |
+| **A8:** An approver can be reached at night | Provisional | Engineering manager ([Q1.22](../layer-01-problem-discovery/conversation.md)) | The on-call rota covers every service in scope | Before M1 |
+| **A9:** Data volume stays within what one database handles comfortably | Provisional | Platform owner | Volume is measured during the pilot | Pilot review |
+| **A10:** Recent changes cause most incidents | Provisional | SRE lead | Past incident records show that most incidents followed a release or configuration change | Before M1 |
+| **A11:** Model spend at 10% of the value of engineer time saved is the right starting fraction | Provisional | Engineering manager | The actual cost of every incident is recorded, and the budget is adjusted after the pilot | Pilot review |
+| **A12:** 5 concurrent investigations is enough | Provisional | SRE lead ([Q4.34](../layer-04-requirements/conversation.md)) | Past records are checked | Before M1 |
+| **A13:** The 5-minute and 15-minute time limits are right | Provisional | SRE lead | The M1 gate passes on the test suite, then the pilot confirms ([System Design, 10](../../reference/system-design.md)) | Before M2 |
+| **A14:** The spend and capacity values in ADR-56 are workable | Provisional | Engineering manager (ADR-56) | Finance confirms the money values, and the rest are reviewed after the pilot | Before the pilot |
+| **A15:** The retention periods in ADR-57 are allowed | Provisional | Security lead (ADR-57) | Provider terms and any legal review don't require shorter periods | Before M3 |
+| **A16:** The milestone deadlines in 2.7 and in this table are the right gates | Provisional | Engineering manager | Dates are set once staffing is confirmed, and the team signs off the gates | Before M1 |
 
 ## Decisions and conflicts
 
 **Decisions.** Every decision in this layer appears in a section above. Q2.13's organisation identifier is in 2.6; Q2.21's relational-store decision is in 2.7.
 
-**Conflicts found while compiling.** None of these was resolved here. Where the last column names a later value, the consolidated sources state it; the rest need a team decision.
-
-| # | Layer 2 says | Later or other source says | Status |
-| --- | --- | --- | --- |
-| 1 | Production write permission stays off in the first version; people apply any production change ([Q2.14](conversation.md)). But [Q2.5](conversation.md) lists a write access "only after approval" among the accesses to establish | The trusted dispatcher applies approved changes from M3. Applying approved fixes is switched on only after a recorded decision, after an advisory pilot ([System Design, 1 and 12](../../reference/system-design.md), [Technical specification, 12](../../reference/technical-specification.md)) | Later value: built at M3, off until the recorded decision. "First version" needs one meaning: the two sources draw it at different points |
-| 2 | **Resume the analysis** automatically when the provider returns, if the incident is still open ([Q2.19](conversation.md)) | The incident becomes inconclusive and is handed over ([Q12.27](../layer-12-reliability-evaluation/conversation.md)). The allowed transitions have no path back to investigating ([Technical specification, 2](../../reference/technical-specification.md)) | Unresolved: team to decide whether the resume step stays |
-| 3 | One deployable application ([Q2.10](conversation.md)) | One codebase run as four processes ([System Design, 2](../../reference/system-design.md)), "a modular monolith, deployed as a small number of processes" ([Q6.7](../layer-06-system-architecture/conversation.md)) | Later value: four processes |
-| 4 | No outbound network except what the test needs ([Q2.14](conversation.md)) | No network by default; a package mirror only if ever needed ([Q11.21](../layer-11-safe-remediation/conversation.md), [System Design, 11](../../reference/system-design.md)) | Later value: no network |
-| 5 | Saves only the evidence it used ([Q2.4](conversation.md)); store only what the incident record needs ([Q2.15](conversation.md)) | Collected results are normalised, fingerprinted and snapshotted; raw evidence is kept 30 days ([Technical specification, 5.1 and 10](../../reference/technical-specification.md), [Q7.17](../layer-07-data-apis-events/conversation.md)) | Unresolved: team to confirm whether snapshots cover all collected evidence or only what was used |
-| 6 | Source code is read-only; the platform never edits source code directly; the access table has no write to a review system ([Q2.5](conversation.md), [Q2.6](conversation.md)) | The platform sends a proposed change to the review system, with no direct commits ([Technical specification, 8](../../reference/technical-specification.md)); `draft_patch` creates a draft there ([Q9.18](../layer-09-agent-architecture/conversation.md)) | Unresolved: the access in 2.3 omits this one. The direct-edit rule still holds |
-| 7 | Kubernetes revisit trigger: concurrent incidents, the number of services, or team count ([Q2.9](conversation.md)) | Several environments or organisations, or more processes than simple hosting can manage ([Q6.33](../layer-06-system-architecture/conversation.md)) | Unresolved: two different triggers |
-| 8 | The Q2.21 fallback, bulky evidence stored separately, applies only if assumption A9 proves false | A write-once object store for large items is in the design from the start ([System Design, 2](../../reference/system-design.md), [Q7.17](../layer-07-data-apis-events/conversation.md)) | Later value: separate store from the start. A9 still stands for the record itself |
-| 9 | 5 minutes is a limit, and reaching a limit stops the platform ([Q2.18](conversation.md)) | First summary is a target of ≤ 5 min p95; only the 15-minute investigation limit stops and hands over ([System Design, 1 and 9](../../reference/system-design.md)) | Later value: p95 target |
-| 10 | Production approval is the Q2.20 example of **Fixed** | The team may later let specific low-risk, reversible actions run without approval, each as a logged decision ([Q1.22](../layer-01-problem-discovery/conversation.md), [System Design, 8](../../reference/system-design.md)) | Unresolved: a Fixed item that a team decision can relax fits the Q2.20 labels poorly |
-| 11 | Decision IDs of the form D-04 in one log ([Q2.23](conversation.md)) | Later layers use ADR-01 onward, with no D-numbered entries; the only Kubernetes record is the Q6.33 table, and it has no ADR number | Unresolved: team to choose one scheme; no log exists yet (see 2.7) |
-
-**Label wording.** Layer 3 states A2-c once as "changes can be tested in a disposable environment" ([Q3.7](../layer-03-sre-fundamentals/conversation.md)) and elsewhere as the wording kept in 2.3.
+| Item | Resolution | Decided by |
+| --- | --- | --- |
+| Conflict 1: production write off (Q2.14) vs write access after approval (Q2.5) and the M3 dispatcher; two meanings of "first version" | First version is everything through M4, in Releases A and B. Release A has no write credential; a recorded decision provisions it for Release B | ADR-44 |
+| Conflict 2: automatic resume after an outage (Q2.19) vs inconclusive and handed over (Q12.27) | No automatic resume. A person may request re-investigation | ADR-46 |
+| Conflict 3: one deployable (Q2.10) vs four processes | One codebase, four processes | ADR-51 |
+| Conflict 4: outbound network the test needs (Q2.14) vs no network | No network. A mirror needs a new ADR | ADR-60 |
+| Conflict 5: saves only evidence used (Q2.4, Q2.15) vs snapshots of everything collected | All collected snapshots kept 30 days; only cited evidence kept long-term | ADR-57 |
+| Conflict 6: read-only source and no review-system access (Q2.5, Q2.6) vs drafts in the review system | Draft pull requests allowed in both releases and added to 2.3. Direct commits never | ADR-44 |
+| Conflict 7: Kubernetes triggers in Q2.9 vs Q6.33 | One list, in 2.3. Team count is dropped; 20 services and concurrency above 5 give the Q2.9 triggers numbers | ADR-51 |
+| Conflict 8: bulky evidence separate only if A9 fails (Q2.21) vs object store from the start | Object store from the start. A9 still stands for the record | ADR-57 |
+| Conflict 9: 5 minutes as a stopping limit (Q2.18) vs a p95 target | ≤ 5 minutes p95 is a target and stops nothing; only the 15-minute limit stops and hands over. The later source wins, and ADR-65's gates match | Layer decision (proposed) |
+| Conflict 10: production approval is Fixed (Q2.20) vs the team may later relax it (Q1.22, System Design 8) | Stays Fixed for the whole first version. A Fixed item changes only through a new accepted ADR; each later exception is one action, signed off by Engineering manager and Security lead. See 2.7 | Layer decision (proposed) |
+| Conflict 11: D-04 IDs (Q2.23) vs ADR numbers; no log existed | ADR series, and [decisions.md](../../decisions.md) is the log. The Kubernetes record is in ADR-51 | ADR-45 |
+| Label wording: Layer 3 states A2-c once as "changes can be tested in a disposable environment" (Q3.7) | The wording in 2.3 is kept | Layer decision (proposed) |
+| Gap 2.1: where the reference application runs, and whether on Kubernetes | One Linux host under Docker Compose; test environment on a separate host; not Kubernetes | ADR-51 |
+| Gap 2.1: cloud or private infrastructure (not stated in ADR-51) | Either: the design depends only on the Linux host | Layer decision (proposed) |
+| Gap 2.4: no monthly ceiling, hourly cost or time saved | $500 ceiling and $2.00 cap, as placeholders. Budget, hourly cost and time saved stay open in 2.4 | ADR-56 |
+| Gap 2.4: cap on disposable copies | 3, queued beyond that | ADR-56 |
+| Scope of the monthly ceiling: Q2.15 bounds infrastructure, ADR-56 sizes $500 on model spend | The $500 ceiling is model spend only. Infrastructure cost is separate and stays with the actual budget, open in 2.4 | ADR-56 |
+| Gap 2.5: spend threshold for GPUs (Q2.12), and outage frequency for a second provider (Q2.19) | Model spend above 80% of ceiling for 3 straight months, for GPUs, self-hosting and Tinker; the second-provider trigger as in 2.5 | ADR-56 |
+| Gap 2.7: no decision log | [decisions.md](../../decisions.md) | ADR-45 |
+| Gap 2.7: no deadlines per assumption or dependency (Q2.20) | Milestone gates, provisional, in 2.7 and Assumptions (A16) | Layer decision (proposed) |
+| Gap 2.7: no named owners (Q2.23) | Roles for now. Named people stay open in 2.7 | ADR-45 |
+| Gap 2.7: the Q2.23 reasoning stops mid-sentence | The log feeds 2.7. The source sentence stays as it is, and 2.7 notes that it stops mid-way | Layer decision (proposed) |
+| Register entries lack Q2.23's assumption-link and validation-condition fields | Q2.23's field list stays the format. Until entries gain those fields, this layer's Assumptions table holds that link | Layer decision (proposed) |
+| Q2.13 tags every record; ADR-64 places `org_id` on top-level records only | Top-level records, reached by join elsewhere | ADR-64 |
+| Code only: monthly ceiling, daily limit and copy cap aren't in the reference code | Listed for the code changes | ADR-56 |
 
 ## Acceptance checks
 
 - [ ] Every required section above is present and complete.
 - [x] Every section lists the questions it answers, and every question in this layer is answered by at least one section.
-- [ ] Every assumption is marked provisional and has a named owner and a condition under which it will be validated.
+- [x] Every assumption is marked provisional and has a named owner and a condition under which it will be validated.
 - [ ] Every disagreement between Claude and ChatGPT that affected a decision is recorded with the team's resolution.
 - [ ] The artifact is consistent with every artifact it is built from; any conflict is recorded as an explicit decision.
 - [x] The artifact was produced with the team's coding agent and is saved in the team repository.

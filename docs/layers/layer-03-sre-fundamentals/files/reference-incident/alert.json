@@ -1,0 +1,34 @@
+{
+  "synthetic": true,
+  "monitoring_alert": {
+    "alert_name": "OrdersApiHighErrorRate",
+    "alert_id": "alrt-20261020-0417",
+    "state": "firing",
+    "severity_label": "page",
+    "service": "orders-api",
+    "environment": "production",
+    "rule": "HTTP 500 responses / all responses over 1 minute > 0.05, for 3 minutes",
+    "threshold": 0.05,
+    "for_seconds": 180,
+    "value_at_firing": 0.14897,
+    "breach_started_at": "2026-10-20T14:07:00Z",
+    "fired_at": "2026-10-20T14:10:00Z",
+    "runbook": "runbook-orders-api-5xx (synthetic)"
+  },
+  "incident_create": {
+    "service": "orders-api",
+    "environment": "production",
+    "started_at": "2026-10-20T14:07:00Z",
+    "title": "OrdersApiHighErrorRate: HTTP 500 rate above 5%",
+    "source": "monitoring",
+    "source_alert_id": "alrt-20261020-0417",
+    "fingerprint": "orders-api:OrdersApiHighErrorRate",
+    "severity_hint": "sev2",
+    "alert_value": 0.14897,
+    "alert_threshold": 0.05,
+    "affected_paths": [
+      "/v1/orders"
+    ],
+    "description": "Synthetic reference incident. Monitoring fired on the service-wide HTTP 500 ratio."
+  }
+}

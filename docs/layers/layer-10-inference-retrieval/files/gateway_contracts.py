@@ -1,15 +1,27 @@
 """Artifact 10.2: Model Gateway contracts — one internal interface for every provider.
 
 Skills build a ModelRequest; the gateway returns a ModelResult. Nothing outside the
-gateway sees a provider's request or response format.
+gateway sees a provider's request or response format. Also home to the one token estimator
+(ADR-61), shared by the gateway and context assembly.
 """
 
 from __future__ import annotations
 
+import math
 from enum import Enum
 from typing import Any, Literal, Optional, Union
 
 from pydantic import BaseModel, ConfigDict, Field
+
+
+MAX_INPUT_TOKENS_PER_CALL = 16_000             # ADR-61, enforced in the gateway
+MAX_OUTPUT_TOKENS_PER_CALL = 16_000
+
+
+def estimate_tokens(text: str) -> int:
+    """The one pre-call estimate (ADR-61): about 3 characters per token (real text averages nearer 4).
+    Used to reserve budget and to size context; the provider's reported usage settles it."""
+    return math.ceil(len(text) / 3) + 16
 
 
 class Strict(BaseModel):
@@ -48,11 +60,13 @@ class ModelRequest(Strict):
     output_schema_name: Optional[str] = None          # Pydantic model name, for validation
     tools: list[ToolSpec] = Field(default_factory=list)
     required_capabilities: list[Capability] = Field(default_factory=list)
-    max_output_tokens: int = Field(ge=1, le=16_000)
-    temperature: float = Field(default=0.0, ge=0.0, le=1.0)
+    max_output_tokens: int = Field(ge=1, le=MAX_OUTPUT_TOKENS_PER_CALL)
+    temperature: Optional[float] = Field(default=None, ge=0.0, le=1.0)   # sent only to a provider that accepts it (10.1)
     deadline_epoch_s: float                    # absolute: the investigation's remaining window
     call_timeout_s: float = Field(default=60.0, gt=0, le=60.0)
     model_alias: str = "default"               # resolved to a pinned model by configuration
+    step_attempts_used: int = Field(default=0, ge=0, le=2)   # attempts already spent on this step, when a skill
+                                               # reassembles after CONTEXT_EXCEEDED (ADR-61)
 
 
 # ---------------------------------------------------------------------------
@@ -83,7 +97,8 @@ ContentBlock = Union[TextBlock, ToolProposal, ReasoningBlock]
 
 
 class StopReason(str, Enum):
-    """Q10.18. Normalised across providers."""
+    """Q10.18. Normalised across providers. Values are the PostgreSQL enum model_stop_reason in
+    schema.sql: change them together."""
 
     COMPLETE = "complete"                     # natural end
     TOOL_USE = "tool_use"                     # stopped to propose tools
@@ -97,6 +112,8 @@ class StopReason(str, Enum):
 
 
 class ResultStatus(str, Enum):
+    """Values are the PostgreSQL enum model_attempt_status in schema.sql: change them together."""
+
     OK = "ok"                                 # parsed and schema-valid
     INVALID_OUTPUT = "invalid_output"         # unparseable or schema-invalid (Q10.20, Q10.21)
     TRUNCATED = "truncated"                   # max_tokens or context exceeded
@@ -134,8 +151,10 @@ class ModelIdentity(Strict):
     checkpoint: Optional[str] = None           # Tinker: the sampler checkpoint path
     adapter_version: str
     prompt_version: str
+    prompt_sha256: str                         # SHA-256 of the prompt text (ADR-63)
     output_schema_sha256: Optional[str] = None
     context_sha256: str
+    provider_request_id: Optional[str] = None  # stored with the attempt (ADR-64)
 
 
 class ModelResult(Strict):
@@ -155,3 +174,4 @@ class ModelResult(Strict):
     identity: Optional[ModelIdentity] = None
     provider_request_id: Optional[str] = None
     error: Optional[str] = None
+    input_sha256: Optional[str] = None         # the step's reuse key within an incident (ADR-61)

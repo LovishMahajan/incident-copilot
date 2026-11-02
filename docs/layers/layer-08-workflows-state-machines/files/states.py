@@ -21,7 +21,7 @@ class IncidentState(str, Enum):
     RECONCILING = "reconciling"           # outcome unknown; establishing the real state
     VERIFYING = "verifying"               # recovery being checked over the hold period
     RECOVERED = "recovered"
-    NOT_RECOVERED = "not_recovered"       # fix did not hold; undo in progress
+    NOT_RECOVERED = "not_recovered"       # fix did not hold; rollback in progress
     HANDED_OVER = "handed_over"           # a person owns the next step
     CANCELLED = "cancelled"
     CLOSED = "closed"
@@ -47,6 +47,8 @@ class ActionState(str, Enum):
 I = IncidentState
 A = ActionState
 
+ROLLBACK_KIND = "rollback"                # the one action kind that skips testing (ADR-48)
+
 TERMINAL_INCIDENT = {I.CLOSED, I.CANCELLED}
 
 # States in which a production change may be in flight. Cancellation never
@@ -64,14 +66,14 @@ INCIDENT_TRANSITIONS: dict[IncidentState, set[IncidentState]] = {
     I.RECONCILING: {I.VERIFYING, I.HANDED_OVER},
     I.VERIFYING: {I.RECOVERED, I.NOT_RECOVERED, I.HANDED_OVER},
     I.RECOVERED: {I.CLOSED},
-    I.NOT_RECOVERED: {I.HANDED_OVER},
-    I.HANDED_OVER: {I.CLOSED},
+    I.NOT_RECOVERED: {I.HANDED_OVER, I.RECONCILING},   # reconciling: a rollback's outcome is unknown (ADR-46)
+    I.HANDED_OVER: {I.CLOSED, I.INVESTIGATING},        # investigating: a person asks, on a new run (ADR-46)
     I.CANCELLED: set(),
     I.CLOSED: set(),
 }
 
 ACTION_TRANSITIONS: dict[ActionState, set[ActionState]] = {
-    A.PROPOSED: {A.TESTING, A.WITHDRAWN},
+    A.PROPOSED: {A.TESTING, A.WITHDRAWN, A.AWAITING_APPROVAL},   # awaiting_approval: rollback actions only (ADR-46)
     A.TESTING: {A.AWAITING_APPROVAL, A.TEST_FAILED, A.WITHDRAWN},
     A.TEST_FAILED: set(),
     A.AWAITING_APPROVAL: {A.APPROVED, A.REJECTED, A.EXPIRED, A.WITHDRAWN},
@@ -97,6 +99,8 @@ def check_incident(current: IncidentState, target: IncidentState) -> None:
         raise InvalidTransition(f"incident: {current.value} -> {target.value} is not allowed")
 
 
-def check_action(current: ActionState, target: ActionState) -> None:
+def check_action(current: ActionState, target: ActionState, kind: str) -> None:
     if target not in ACTION_TRANSITIONS[current]:
         raise InvalidTransition(f"action: {current.value} -> {target.value} is not allowed")
+    if (current, target) == (A.PROPOSED, A.AWAITING_APPROVAL) and kind != ROLLBACK_KIND:
+        raise InvalidTransition(f"action: only rollback actions skip testing, not {kind}")

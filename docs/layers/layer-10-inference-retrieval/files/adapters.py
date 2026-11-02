@@ -37,13 +37,16 @@ class HttpResponse:
     headers: dict[str, str]
 
 
-def classify_http_error(status: int) -> ResultStatus:
-    """Q10.38: permanent errors are never retried."""
+def classify_http_error(status: int, body: Optional[dict[str, Any]] = None) -> ResultStatus:
+    """Q10.38: permanent errors are never retried. A 429 for the provider's spend cap is permanent
+    too: access stays paused until someone acts. Verify the error's exact field at build."""
     if status in (401, 403):
         return ResultStatus.AUTH_ERROR
     if status in (400, 404, 413, 422):
         return ResultStatus.BAD_REQUEST
     if status == 429:
+        if "enforced_spend_limit_reached" in json.dumps((body or {}).get("error", {})):
+            return ResultStatus.AUTH_ERROR
         return ResultStatus.RATE_LIMITED
     if status == 408:
         return ResultStatus.TIMEOUT
@@ -66,26 +69,39 @@ CLAUDE_STOP = {
 }
 
 
+CLAUDE_MODEL_IDS = {"default": "claude-opus-5-5", "standard": "claude-sonnet-5-5"}   # 10.1, provisional
+
+# Written out because the provider defaults differ per model (10.1). Today's defaults, until the
+# first evaluation run chooses the values.
+CLAUDE_EFFORT = {"default": "medium", "standard": "high"}
+
+
 class ClaudeAdapter:
     provider = "anthropic"
     version = "claude-adapter@1"
+    enabled = True
     capabilities = {Capability.STRUCTURED_OUTPUT, Capability.TOOL_USE, Capability.STRICT_TOOLS,
                     Capability.STREAMING, Capability.USAGE_REPORTING, Capability.PINNED_VERSION}
 
-    def __init__(self, model_ids: dict[str, str]):
+    def __init__(self, model_ids: dict[str, str] = CLAUDE_MODEL_IDS, effort: dict[str, str] = CLAUDE_EFFORT):
         self.model_ids = model_ids            # alias -> pinned model ID, from configuration
+        self.effort = effort                  # alias -> output_config.effort, from configuration
 
     def build(self, req: ModelRequest) -> dict[str, Any]:
         body: dict[str, Any] = {
             "model": self.model_ids[req.model_alias],
             "max_tokens": req.max_output_tokens,
-            "temperature": req.temperature,
-            "system": req.system,
+            "system": req.system,             # no temperature: these models return 400 for it (10.1)
             "messages": [{"role": "user", "content": render_context(req.context)}],
             "metadata": {"user_id": req.incident_id},
         }
+        output_config: dict[str, Any] = {}
+        if req.model_alias in self.effort:
+            output_config["effort"] = self.effort[req.model_alias]
         if req.output_schema is not None:
-            body["output_config"] = {"format": {"type": "json_schema", "schema": req.output_schema}}
+            output_config["format"] = {"type": "json_schema", "schema": req.output_schema}
+        if output_config:
+            body["output_config"] = output_config
         if req.tools:
             body["tools"] = [{"name": t.name, "description": t.description, "input_schema": t.input_schema,
                               "strict": True} for t in req.tools]
@@ -93,14 +109,15 @@ class ClaudeAdapter:
 
     def parse(self, req: ModelRequest, attempt: int, resp: HttpResponse, latency_ms: int,
               stream_completed: bool = True) -> ModelResult:
+        rid = resp.headers.get("request-id")
         identity = ModelIdentity(provider=self.provider, model=resp.body.get("model", self.model_ids[req.model_alias]),
                                  adapter_version=self.version, prompt_version=req.prompt_version,
+                                 prompt_sha256=hashlib.sha256(req.system.encode()).hexdigest(),
                                  output_schema_sha256=sha256(req.output_schema) if req.output_schema else None,
-                                 context_sha256=sha256(req.context))
-        rid = resp.headers.get("request-id")
+                                 context_sha256=sha256(req.context), provider_request_id=rid)
         if resp.status != 200:
             err = resp.body.get("error", {})
-            return ModelResult(request_id=req.request_id, attempt=attempt, status=classify_http_error(resp.status),
+            return ModelResult(request_id=req.request_id, attempt=attempt, status=classify_http_error(resp.status, resp.body),
                                stop_reason=StopReason.UNKNOWN, error=f'{err.get("type")}: {err.get("message")}',
                                latency_ms=latency_ms, identity=identity, provider_request_id=rid,
                                usage=Usage(reported=False))
@@ -116,7 +133,7 @@ class ClaudeAdapter:
         stop = CLAUDE_STOP.get(b.get("stop_reason"), StopReason.UNKNOWN)
         if not stream_completed:
             stop = StopReason.INCOMPLETE
-        u = b.get("usage")
+        u = b.get("usage") if stream_completed else None   # a broken stream's usage is unknown (ADR-61)
         usage = Usage(input_tokens=u.get("input_tokens", 0), output_tokens=u.get("output_tokens", 0),
                       cache_read_input_tokens=u.get("cache_read_input_tokens") or 0,
                       cache_write_input_tokens=u.get("cache_creation_input_tokens") or 0,
@@ -138,28 +155,25 @@ class ClaudeAdapter:
 class TinkerAdapter:
     """Disabled by default (ADR-07). Its serving API is Anthropic- and OpenAI-compatible in beta,
     so it reuses the Claude request shape against a different base URL and a checkpoint model.
-    Capabilities are unverified until our conformance suite passes against it; until then only
-    plain-text capabilities are declared, so skills that need structured output are refused."""
+    It declares no capabilities until our conformance suite passes against it, so a request that
+    needs one is refused by the gateway, never sent without it. While disabled, the gateway
+    refuses everything. `temperature` is sent only if a request sets one."""
 
     provider = "tinker"
     version = "tinker-adapter@0"
-    capabilities: set[Capability] = {Capability.USAGE_REPORTING, Capability.PINNED_VERSION}
+    capabilities: set[Capability] = set()
 
     def __init__(self, checkpoints: dict[str, str], enabled: bool = False, verified: Optional[set[Capability]] = None):
         self.checkpoints = checkpoints        # alias -> "tinker://<run>/sampler_weights/<step>"
         self.enabled = enabled
         if verified:
             self.capabilities = self.capabilities | verified
-        self._claude_shape = ClaudeAdapter(model_ids=checkpoints)
+        self._claude_shape = ClaudeAdapter(model_ids=checkpoints, effort={})
 
     def build(self, req: ModelRequest) -> dict[str, Any]:
-        if not self.enabled:
-            raise RuntimeError("Tinker adapter is disabled")
         body = self._claude_shape.build(req)
-        if Capability.STRUCTURED_OUTPUT not in self.capabilities:
-            body.pop("output_config", None)
-        if Capability.TOOL_USE not in self.capabilities:
-            body.pop("tools", None)
+        if req.temperature is not None:
+            body["temperature"] = req.temperature
         return body
 
     def parse(self, req: ModelRequest, attempt: int, resp: HttpResponse, latency_ms: int,
