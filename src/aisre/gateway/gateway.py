@@ -280,7 +280,7 @@ Transport = Callable[[str, dict[str, Any], float], Awaitable[tuple[HttpResponse,
 # (provider, body, timeout_s) -> (response, stream_completed). Raises asyncio.TimeoutError on timeout.
 
 
-@dataclass
+@dataclass(frozen=True)
 class GatewayConfig:
     max_attempts: int = 3                      # per step, including the first (Artifact 4)
     global_concurrency: int = 8                # across all incidents, per provider (10.6)

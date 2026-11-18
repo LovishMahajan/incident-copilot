@@ -20,9 +20,11 @@ dependencies = [
 
 [dependency-groups]
 dev = [
+    "mypy>=2.4.1",
     "pytest>=8.3",
     "pytest-asyncio>=0.24",
     "pyyaml>=6",
+    "ruff>=0.17.5",
 ]
 
 [build-system]
@@ -36,3 +38,74 @@ packages = ["src/aisre"]
 testpaths = ["tests"]
 asyncio_mode = "strict"
 asyncio_default_fixture_loop_scope = "function"
+# Test tiers (Artifact 13.7). Unmarked means offline. The default run selects
+# everything: marked tests skip themselves when their services, host or key are
+# missing, so a plain `uv run pytest -q` stays offline and reports the skips.
+markers = [
+    "integration: needs PostgreSQL and Temporal; skips when they are unreachable",
+    "system: needs the Compose stack and the gVisor host",
+    "paid: calls a paid provider; needs AISRE_TEST_PROVIDER_KEY and AISRE_PAID_TESTS=1",
+]
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+extend-exclude = ["docs"]
+
+[tool.ruff.lint]
+# pycodestyle, pyflakes, import order, bugbear.
+select = ["E", "F", "W", "I", "B"]
+ignore = [
+    "E501", # the formatter owns line length; what's left is long strings and docstrings
+    "E731", # named lambdas are the eval harness's scoring-table style
+    "E741", # `l` for a line and `I`/`A` as state-table aliases (states.py) read fine here
+]
+
+[tool.ruff.lint.per-file-ignores]
+# pytest.raises(Exception) and zip without strict= are deliberate in tests;
+# test_workflow sets up the Temporal test server path before its imports.
+"tests/**" = ["B017", "B905"]
+"tests/unit/test_workflow.py" = ["E402"]
+
+[tool.ruff.lint.flake8-bugbear]
+# Frozen dataclasses and frozen Pydantic models: safe as argument defaults.
+extend-immutable-calls = [
+    "aisre.agent.coordinator.Limits",
+    "aisre.gateway.gateway.GatewayConfig",
+    "aisre.gateway.gateway_contracts.Usage",
+]
+
+[tool.mypy]
+# Artifact 13.7: report-only on src as a whole, strict and blocking on the
+# M0 modules below. CI runs both; see .github/workflows/ci.yml.
+python_version = "3.12"
+plugins = ["pydantic.mypy"]
+mypy_path = "src"
+packages = ["aisre"]
+warn_unused_configs = true
+warn_redundant_casts = true
+check_untyped_defs = true
+
+[[tool.mypy.overrides]]
+# The new M0 modules: strict from their first commit.
+module = [
+    "aisre.config",
+    "aisre.record",
+    "aisre.record.*",
+    "aisre.api",
+    "aisre.api.*",
+    "aisre.workflow.relay",
+    "aisre.workflow.worker",
+]
+# `strict = true` here applies to every module, so name the flags --strict sets.
+disallow_any_generics = true
+disallow_subclassing_any = true
+disallow_untyped_calls = true
+disallow_untyped_defs = true
+disallow_incomplete_defs = true
+disallow_untyped_decorators = true
+warn_return_any = true
+warn_unused_ignores = true
+no_implicit_reexport = true
+strict_equality = true
+extra_checks = true

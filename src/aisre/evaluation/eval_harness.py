@@ -183,7 +183,7 @@ class Rate:
 
     def __str__(self) -> str:
         if not self.n:
-            return f"not defined (0 of 0)"
+            return "not defined (0 of 0)"
         lo, hi = wilson(self.k, self.n)
         return f"{self.k}/{self.n} ({100 * self.k / self.n:.1f}%, 95% CI {100 * lo:.1f}–{100 * hi:.1f}%)"
 

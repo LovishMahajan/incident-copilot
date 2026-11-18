@@ -21,7 +21,7 @@ from pydantic import BaseModel
 from aisre.retrieval import context
 from aisre.gateway import gateway
 from aisre.gateway.adapters import ClaudeAdapter, HttpResponse, TinkerAdapter, classify_http_error, render_context
-from aisre.retrieval.context import Item, PromptRegistry, PromptVersion, assemble
+from aisre.retrieval.context import PromptRegistry, PromptVersion, assemble
 from aisre.agent.coordinator import Limits
 from aisre.gateway.gateway import (BudgetLedger, CircuitBreaker, FleetBudget, GatewayConfig, IncidentBudget, ModelGateway, Price,
                      Reservation)
