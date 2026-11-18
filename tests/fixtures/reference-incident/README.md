@@ -37,10 +37,11 @@ Rows and log lines after 14:20:00 exist only for verification. Hide them from th
 | `logs.ndjson` | `log` | Yes (logs or error tracker) | Sampled events with version label and stack traces, from a normal period onward |
 | `metrics.csv` | `metric` | No | Per-minute requests and HTTP 500s by version, with rollout percentage. Skip the `#` first line |
 | `trace.json` | `trace` | No, optional | One failing request, also found in `logs.ndjson` by `trace_id` |
+| `dependency-health.json` | `dependency` | No, optional | Health of the two declared dependencies at the alert, added for the dependency-health adapter (T1.10) |
 | `service-catalog.json` | None: catalogue entry for intake and context | No | Owner, on-call, dependencies, normal behaviour, hold period |
 | `answer-key.json` | None: **never shown to the platform** | No | Expected cause, tiers, alternatives, contradiction, escalation |
 
-There is no error-tracker file: the logs stand in for it, and the new signature is read from them. `metrics.csv` runs past 80 lines because ADR-66 needs a 60-minute baseline, 13:02 to 13:57. Logs are a sample, so only metrics give counts (Q3.20).
+There is no error-tracker file: the logs stand in for it, and the new signature is read from them. The fake monitoring source (`ops/fakes/monitoring.py`) serves them grouped by type and message as its error tracker. `metrics.csv` runs past 80 lines because ADR-66 needs a 60-minute baseline, 13:02 to 13:57. Logs are a sample, so only metrics give counts (Q3.20).
 
 ## Reproduction
 

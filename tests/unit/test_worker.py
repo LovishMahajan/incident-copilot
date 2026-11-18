@@ -2,11 +2,13 @@
 
 from __future__ import annotations
 
+import json
 import os
 import time
 
 from aisre.workflow import activities as act
 from aisre.workflow import worker
+from aisre.workflow.record_activities import EvidenceActivities
 
 
 def test_worker_registers_the_investigation_queue_only():
@@ -28,3 +30,37 @@ def test_check_alive_follows_the_file(tmp_path, monkeypatch):
 
 def test_unknown_arguments_are_refused():
     assert worker.main(["--nope"]) == 2
+
+
+def _activities(environ, scripted=True):
+    from sqlalchemy import create_engine
+
+    from aisre.config import Settings
+
+    settings = Settings(env="test", scripted_skills=scripted)
+    engine = create_engine("postgresql+psycopg://aisre_app@127.0.0.1:1/aisre")  # never connects
+    return worker.investigation_activities(settings, engine, environ)
+
+
+def test_the_real_collector_replaces_the_script_once_sources_are_configured():
+    config = {"sources": {"*": {"adapter": "fake_monitoring", "url": "http://fake:8080/x"}}}
+    chosen = _activities({"AISRE_EVIDENCE_SOURCES": json.dumps(config)})
+    names = [worker.activity_name(a) for a in chosen]
+    assert len(names) == len(set(names))
+    collect = next(a for a in chosen if worker.activity_name(a) == "collect_evidence")
+    assert isinstance(collect.__self__, EvidenceActivities) and collect.__self__.snapshots is None
+    s3 = {
+        "AISRE_EVIDENCE_SOURCES": json.dumps(config),
+        "AISRE_OBJECT_STORE_URL": "http://minio:9000",
+        "AISRE_OBJECT_STORE_BUCKET": "aisre-artifacts",
+        "AISRE_OBJECT_STORE_ACCESS_KEY": "fake-minio-admin",
+        "AISRE_OBJECT_STORE_SECRET_KEY": "fake-minio-password",
+    }
+    collect = next(a for a in _activities(s3) if worker.activity_name(a) == "collect_evidence")
+    assert collect.__self__.snapshots is not None
+
+
+def test_without_sources_the_script_still_answers():
+    chosen = _activities({})
+    collect = next(a for a in chosen if worker.activity_name(a) == "collect_evidence")
+    assert collect.__module__ == "aisre.workflow.scripted"

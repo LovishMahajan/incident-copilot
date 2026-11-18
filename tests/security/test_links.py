@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import asyncio
+import uuid
 from datetime import datetime, timedelta, timezone
 
 import pytest
@@ -10,6 +12,8 @@ from support import draft_json
 from aisre.agent.agent_contracts import DiagnosisDraft
 from aisre.agent.tool_registry import REGISTRY, ToolGate, ToolRefused
 from aisre.agent.validation import UnsafeOutput, check_output
+from aisre.evidence.collector import Call, Scope, collect
+from aisre.evidence.sources import SourceResult, SourceSet
 from aisre.gateway.adapters import render_context
 
 NOW = datetime(2026, 11, 1, 9, 0, tzinfo=timezone.utc)
@@ -181,8 +185,57 @@ def test_st30_control_ordinary_query_terms_pass(tool, params):
     gate().check(tool, params, "collect_evidence")
 
 
-def test_st30_adapter_making_no_call_needs_the_evidence_adapters():
-    pytest.skip(
-        "Evidence adapters don't exist (collect_evidence is NotImplementedError), so no-call and attempt logging "
-        "can't be observed"
+@pytest.mark.parametrize(
+    "params",
+    [
+        {"service": "checkout", "contains": METADATA},
+        {"service": "checkout", "contains": INTERNAL},
+        {"service": "postgres.internal"},
+        {"service": "checkout", "url": METADATA},
+    ],
+)
+def test_st30_the_collector_makes_no_call_for_a_refused_address(params):
+    """T1.10: the Evidence Collector runs every call through the gate first, so a refused
+    address never reaches an adapter, and the refusal is kept with the round."""
+
+    class Counting:
+        calls = 0
+
+        def fetch(self, tool, params, environment):
+            Counting.calls += 1
+            return SourceResult("canary", "ref:canary", [])
+
+    scope = Scope(str(uuid.uuid4()), "checkout", NOW, None)
+    out = asyncio.run(
+        collect(
+            scope,
+            [Call("get_logs", params)],
+            gate(),
+            SourceSet({"*": Counting()}),
+            collection_key="k",
+            now=NOW + timedelta(minutes=30),
+        )
     )
+    assert Counting.calls == 0 and not out.collected and not out.calls
+    assert out.refused[0]["refused"] in ("invalid_params", "out_of_scope")
+
+
+def test_st30_control_an_ordinary_query_reaches_the_adapter():
+    seen = []
+
+    class Counting:
+        def fetch(self, tool, params, environment):
+            seen.append(params.contains)
+            return SourceResult("canary", "ref:canary", [])
+
+    out = asyncio.run(
+        collect(
+            Scope(str(uuid.uuid4()), "checkout", NOW, None),
+            [Call("get_logs", {"service": "checkout", "contains": "timeout_ms"})],
+            gate(),
+            SourceSet({"*": Counting()}),
+            collection_key="k",
+            now=NOW + timedelta(minutes=30),
+        )
+    )
+    assert seen == ["timeout_ms"] and len(out.collected) == 1
