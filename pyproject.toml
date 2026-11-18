@@ -106,6 +106,7 @@ module = [
     "aisre.workflow.budget_jobs",
     "aisre.evidence",
     "aisre.evidence.*",
+    "aisre.retrieval.corpus",
 ]
 # `strict = true` here applies to every module, so name the flags --strict sets.
 disallow_any_generics = true

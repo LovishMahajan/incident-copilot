@@ -1,5 +1,5 @@
-"""Artifact 8.2, 13.5 T0.11, T1.10: the real `load_incident`, `record_transition`, `hand_over`
-and `collect_evidence`.
+"""Artifact 8.2, 13.5 T0.11, T1.10, T1.17: the real `load_incident`, `record_transition`,
+`hand_over`, `collect_evidence` and `retrieve_knowledge`.
 
 Bound to the worker's engine (`aisre_app`, ADR-51). The Incident Record is synchronous
 (aisre.record), so each call runs in a thread through `asyncio.to_thread`, one connection and
@@ -22,19 +22,35 @@ from datetime import UTC, datetime
 from typing import Any, Optional, TypeVar
 from uuid import UUID
 
+from pydantic import TypeAdapter, ValidationError
 from sqlalchemy import Connection, Engine
 from sqlalchemy.exc import DBAPIError
 from temporalio import activity
 
-from aisre.agent.agent_contracts import EvidenceKind, SkillFailure, SkillResult, SkillUsage
-from aisre.agent.tool_registry import MemoryToolCalls, ToolGate
+from aisre.agent.agent_contracts import (
+    EvidenceKind,
+    KnowledgeOut,
+    SkillFailure,
+    SkillResult,
+    SkillUsage,
+)
+from aisre.agent.tool_registry import (
+    MemoryToolCalls,
+    QueryText,
+    ToolGate,
+    ToolRefused,
+    search_knowledge,
+)
 from aisre.evidence import collector
 from aisre.evidence.facts import ChangeInfo
 from aisre.evidence.snapshots import SnapshotFailed, SnapshotStore, snapshot_key
 from aisre.evidence.sources import SourceSet
+from aisre.record import corpus as corpus_rec
 from aisre.record import evidence as ev_rec
 from aisre.record import transitions as rec
 from aisre.record.tool_calls import PgToolCalls, rows_in
+from aisre.retrieval import corpus
+from aisre.retrieval.retrieval import IndexRevision
 from aisre.workflow import activities as act
 from aisre.workflow.states import InvalidTransition
 
@@ -104,8 +120,29 @@ def _heartbeat() -> None:
         activity.heartbeat()
 
 
+KNOWLEDGE_TOOLS = ("search_runbooks", "search_past_incidents")
+KNOWLEDGE_K = 5
+_QUERY_TEXT: TypeAdapter[str] = TypeAdapter(QueryText)
+
+
+def knowledge_query(terms: list[str], limit: int = 200) -> str:
+    """Code builds the search from the baseline's identifiers (KnowledgeIn), whole terms only,
+    dropping any the tool's schema would refuse (ST-30) and stopping at the length limit."""
+    words: list[str] = []
+    for t in terms:
+        try:
+            _QUERY_TEXT.validate_python(t)
+        except ValidationError:
+            continue
+        if len(" ".join([*words, t])) > limit:
+            break
+        words.append(t)
+    return " ".join(words)
+
+
 class EvidenceActivities:
-    """The Evidence Collector's activity (T1.10), for `Worker(activities=...)`: `.all()`.
+    """The Evidence Collector's and Knowledge Retriever's activities (T1.10, T1.17), for
+    `Worker(activities=...)`: `.all()`.
 
     `sources` says which adapter answers each READ tool; `snapshots` is the object store, or
     None, in which case records are stored with their fingerprint and no snapshot."""
@@ -124,7 +161,7 @@ class EvidenceActivities:
         self.clock = clock
 
     def all(self) -> list[Callable[..., Any]]:
-        return [self.collect_evidence]
+        return [self.collect_evidence, self.retrieve_knowledge]
 
     def now(self) -> datetime:
         replay = self.sources.replay_as_of
@@ -236,3 +273,108 @@ class EvidenceActivities:
             log.warning("incident %s: snapshot not stored: %s", incident_id, e)
             return ev_rec.NewEvidence(c.evidence, c.attributes | {"snapshot": "not stored"})
         return ev_rec.NewEvidence(c.evidence, c.attributes, key, len(c.snapshot))
+
+    @activity.defn(name="retrieve_knowledge")
+    async def retrieve_knowledge(self, inp: act.SkillIn) -> SkillResult[KnowledgeOut]:
+        """Activity 8.2's Knowledge Retriever (Artifact 10.9): searches the organisation's active
+        index revision for the baseline's identifiers, filtered to the incident's service and its
+        owner group before ranking, and stores each passage as evidence pinned to its revision.
+        No active revision, or no terms, is a gap (10.13 step 6, ADR-54). Idempotent on the key."""
+        incident_id = UUID(inp.incident_id)
+
+        def prepare(conn: Connection) -> tuple[Any, list[Any], list[Any], Any, list[str]]:
+            scope = ev_rec.incident_scope(conn, incident_id)
+            index = corpus_rec.active_revision(conn, scope.org_id) if scope else None
+            return (
+                scope,
+                ev_rec.round_evidence(conn, incident_id, inp.idempotency_key),
+                rows_in(conn, inp.incident_id),
+                index,
+                ev_rec.search_terms(conn, incident_id, inp.evidence_ids),
+            )
+
+        scope, done, rows, index, terms = await asyncio.to_thread(
+            _transaction, self.engine, prepare
+        )
+        if scope is None:
+            failure = SkillFailure(
+                skill="retrieve_knowledge", code="store_failed", detail="incident not found"
+            )
+            return SkillResult(failure=failure, usage=SkillUsage())
+        revision = index.revision_id if isinstance(index, IndexRevision) else "none"
+        if done:
+            gaps = sum(e.kind == EvidenceKind.gap for e in done)
+            ids = [str(e.evidence_id) for e in done]
+            return SkillResult(
+                output=KnowledgeOut(evidence_ids=ids, gap_count=gaps, index_revision=revision),
+                usage=SkillUsage(),
+            )
+
+        now = self.now()
+        key = inp.idempotency_key
+        items: list[ev_rec.NewEvidence] = []
+        call_rows: list[dict[str, Any]] = []
+        query = knowledge_query(terms)
+        if index is None or not query:
+            reason = "no active index revision" if index is None else "no search terms"
+            ev, attrs = corpus.knowledge_gap(incident_id, "search_runbooks", reason, key, now)
+            items.append(ev_rec.NewEvidence(ev, attrs))
+        else:
+            checked = MemoryToolCalls()  # type: ignore[no-untyped-call]
+            for row in rows:
+                checked.add(inp.incident_id, row)
+            gate = ToolGate(inp.incident_id, scope.service, scope.started_at, now, store=checked)
+            for tool in KNOWLEDGE_TOOLS:
+                raw = {"service": scope.service, "query": query, "k": KNOWLEDGE_K}
+                try:
+                    t, params, call_hash = gate.check(tool, raw, "retrieve_knowledge")
+                except ToolRefused as e:
+                    log.info("incident %s: %s refused (%s)", inp.incident_id, tool, e.code)
+                    continue
+                dumped = params.model_dump(mode="json")
+                stored = gate.stored_result(call_hash) if gate.is_repeat(call_hash) else None
+                if stored is not None:
+                    call_rows.append(_call_row(tool, call_hash, dumped, stored, 0, False))
+                    continue
+                hits = search_knowledge(t, params, index, {scope.owner_group})  # type: ignore[arg-type]
+                found = corpus.passages(incident_id, tool, dumped, hits, revision, key, now)
+                items += [ev_rec.NewEvidence(ev, attrs) for ev, attrs in found]
+                ids = [str(ev.evidence_id) for ev, _ in found]
+                call_rows.append(_call_row(tool, call_hash, dumped, ids, len(ids), True))
+        stored_ids, refused = await asyncio.to_thread(
+            _transaction,
+            self.engine,
+            lambda conn: ev_rec.store_round(
+                conn,
+                org_id=scope.org_id,
+                incident_id=incident_id,
+                items=items,
+                calls=call_rows,
+                tool_calls=self.tool_calls,
+                now=now,
+            ),
+        )
+        refused_calls = {r["hash"] for r in refused}
+        gap_ids = [
+            str(i.evidence.evidence_id) for i in items if i.evidence.kind == EvidenceKind.gap
+        ]
+        ids = gap_ids + [
+            i for c in call_rows if c["hash"] not in refused_calls for i in c["evidence_ids"]
+        ]
+        out = KnowledgeOut(evidence_ids=ids, gap_count=len(gap_ids), index_revision=revision)
+        usage = SkillUsage(tool_calls=len(call_rows) - len(refused))
+        return SkillResult(output=out, usage=usage)
+
+
+def _call_row(
+    tool: str, call_hash: str, params: dict[str, Any], ids: list[str], new: int, fresh: bool
+) -> dict[str, Any]:
+    return {
+        "tool": tool,
+        "hash": call_hash,
+        "params": params,
+        "skill": "retrieve_knowledge",
+        "new_evidence": new,
+        "evidence_ids": ids,
+        "fresh": fresh,
+    }

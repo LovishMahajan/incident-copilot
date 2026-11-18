@@ -100,6 +100,13 @@ AISRE_EVIDENCE_SOURCES='{"sources": {"*": {"adapter": "fake_monitoring", "url": 
 
 Snapshots go to the object store when `AISRE_OBJECT_STORE_URL`, `_BUCKET`, `_ACCESS_KEY` and `_SECRET_KEY` are set (MinIO in the stack: `http://minio:9000`, `aisre-artifacts` and the `MINIO_ROOT_*` values); without them a record keeps its fingerprint and no snapshot. `compose.yaml` doesn't pass these to the worker yet, so the stack still runs the scripted collector. The fake adapter and `replay_as_of` are refused when `AISRE_ENV` is production.
 
+**Runbook retrieval** (`src/aisre/retrieval/corpus.py`, `src/aisre/record/corpus.py`, T1.17). The corpus lives in PostgreSQL (`documents`, `chunks`, `index_revisions`, ADR-62) and BM25 runs in the worker. Ingesting a folder builds a new immutable revision, scores it on the labelled query set (Artifact 10.13) and activates it only if every target holds; the evaluation is stored on the revision (migration `0005_m1_evidence`). `retrieve_knowledge` searches the newest activated revision for the identifiers in the baseline evidence, filtered to the incident's service and its owner group before ranking, and stores each passage as `runbook` or `past_incident` evidence pinned to its revision, document version, chunk and span. No activated revision is a gap. No real runbooks exist yet; `tests/fixtures/runbooks/` is a synthetic corpus of 15 documents with a 50-query labelled set, which on 2026-11-18 scored Recall@5 1.00, MRR 0.96, nDCG@5 0.97 (exact identifiers 1.00 / 1.00 / 1.00, paraphrases 1.00 / 0.91 / 0.93), with 0 wrong-service and 0 wrong-permission hits. The corpus and set were written together, so this shows the pipeline works, not how BM25 does on real runbooks. To ingest it into the stack's database for the development organisation (the image doesn't hold `tests/`, so run it from the host):
+
+```
+AISRE_DATABASE_URL=postgresql+psycopg://aisre_app:fake-app-password@127.0.0.1:55432/aisre \
+  uv run python -m aisre.retrieval.corpus tests/fixtures/runbooks --org 00000000-0000-7000-8000-000000000001
+```
+
 **Integration tests** run from the host against the stack, with test settings:
 
 ```

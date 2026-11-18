@@ -49,6 +49,8 @@ def test_the_real_collector_replaces_the_script_once_sources_are_configured():
     assert len(names) == len(set(names))
     collect = next(a for a in chosen if worker.activity_name(a) == "collect_evidence")
     assert isinstance(collect.__self__, EvidenceActivities) and collect.__self__.snapshots is None
+    knowledge = next(a for a in chosen if worker.activity_name(a) == "retrieve_knowledge")
+    assert knowledge.__self__ is collect.__self__
     s3 = {
         "AISRE_EVIDENCE_SOURCES": json.dumps(config),
         "AISRE_OBJECT_STORE_URL": "http://minio:9000",
