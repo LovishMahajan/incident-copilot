@@ -64,6 +64,9 @@ ENV_VARS: dict[str, str] = {
     "sandbox_runtime": "AISRE_SANDBOX_RUNTIME",
     "sandbox_image": "AISRE_SANDBOX_IMAGE",
     "sandbox_repos": "AISRE_SANDBOX_REPOS",
+    "review_adapter": "AISRE_REVIEW_ADAPTER",
+    "review_url": "AISRE_REVIEW_URL",
+    "review_token": "AISRE_REVIEW_TOKEN",
 }
 
 
@@ -129,6 +132,14 @@ class Settings(BaseModel):
         default=None, pattern=r"^([\w./:-]+@sha256:[0-9a-f]{64}|sha256:[0-9a-f]{64})$"
     )
     sandbox_repos: Json[dict[str, str]] | None = None
+    # The review system (M2, T2.8, ADR-72): where draft pull requests are opened and where the
+    # Patch Proposer reads the repository at its base revision, with the worker's
+    # draft-pull-request credential (Artifact 11.7). `fake_review` is Compose's fake
+    # (ops/fakes/review.py), refused in production like the other fakes. Unset: no real
+    # draft_patch, and no pull request.
+    review_adapter: Literal["fake_review"] | None = None
+    review_url: str | None = Field(default=None, pattern=r"^https?://")
+    review_token: SecretStr | None = None
 
     # Fixed: equal to aisre.workflow.activities.INVESTIGATION_QUEUE, DISPATCHER_QUEUE and
     # TEST_RUNNER_QUEUE.
@@ -142,6 +153,12 @@ class Settings(BaseModel):
             raise ValueError("AISRE_SCRIPTED_SKILLS is for development and test, never production")
         if self.sandbox_runtime == "runc" and self.env not in ("development", "test"):
             raise ValueError("AISRE_SANDBOX_RUNTIME=runc is for development and test (ADR-71)")
+        if self.review_adapter == "fake_review" and self.env == "production":
+            raise ValueError("AISRE_REVIEW_ADAPTER=fake_review is for development and test")
+        if (self.review_adapter is None) != (self.review_url is None) or (
+            self.review_adapter is not None and self.review_token is None
+        ):
+            raise ValueError("AISRE_REVIEW_ADAPTER, _URL and _TOKEN go together")
         return self
 
     @model_validator(mode="after")

@@ -369,7 +369,7 @@ Rules carried by the models:
 | Incident | `aisre.incident.created`, `alert_attached`, `severity_proposed`, `severity_confirmed`, `status_changed`, `handed_over`, `cancellation_requested`, `cancelled`, `closed`, `reinvestigation_requested`, `note_added` |
 | Evidence | `aisre.evidence.collected`, `gap_recorded`, `injection_flagged`, `content_removed` |
 | Reasoning | `aisre.hypothesis.created`, `status_changed`; `aisre.diagnosis.produced`, `inconclusive`, `reviewed` |
-| Action | `aisre.action.proposed`, `tested`, `withdrawn`, `undone` |
+| Action | `aisre.action.proposed`, `test_started`, `tested`, `review_opened`, `withdrawn`, `undone` (`test_started` and `review_opened` added for M2, ADR-72) |
 | Approval | `aisre.approval.requested`, `granted`, `rejected`, `revoked`, `refused`, `escalated`, `expired`, `voided` |
 | Execution | `aisre.execution.started`, `completed`, `refused`, `outcome_resolved` |
 | Verification | `aisre.verification.completed`, `accepted` |

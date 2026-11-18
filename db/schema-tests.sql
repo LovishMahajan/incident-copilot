@@ -306,7 +306,9 @@ SELECT pg_temp.must_fail('D4 UPDATE on approval_decisions', $$UPDATE approval_de
 SELECT pg_temp.must_fail('D5 DELETE on approval_decisions', $$DELETE FROM approval_decisions$$, 'append-only');
 SELECT pg_temp.must_fail('D6 UPDATE on evidence', $$UPDATE evidence SET summary = 'x'$$, 'append-only');
 SELECT pg_temp.must_fail('D7 DELETE on evidence', $$DELETE FROM evidence$$, 'append-only');
-SELECT pg_temp.must_fail('D8 UPDATE on patches', $$UPDATE patches SET review_ref = 'x'$$, 'append-only');
+SELECT pg_temp.must_fail('D8 UPDATE on patches', $$UPDATE patches SET base_revision = 'x'$$, 'frozen');
+SELECT pg_temp.must_pass('D8a a patch records its pull request once (ADR-72)', $$UPDATE patches SET review_ref = 'orders-api#1'$$);
+SELECT pg_temp.must_fail('D8b review_ref is write-once', $$UPDATE patches SET review_ref = 'orders-api#2'$$, 'write-once');
 SELECT pg_temp.must_fail('D9 DELETE on patches', $$DELETE FROM patches$$, 'append-only');
 SELECT pg_temp.must_fail('D10 UPDATE on test_runs', $$UPDATE test_runs SET reproduced = false$$, 'append-only');
 SELECT pg_temp.must_fail('D11 DELETE on test_runs', $$DELETE FROM test_runs$$, 'append-only');
