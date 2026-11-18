@@ -20,62 +20,65 @@ from typing import Any, Optional
 
 
 class Step(str, Enum):
-    COLLECT_BASELINE = "collect_baseline"     # fixed evidence plan, no model
-    RETRIEVE_KNOWLEDGE = "retrieve_knowledge" # runbook and past-incident passages, no model
-    HYPOTHESISE = "hypothesise"               # model: 2-5 hypotheses with claims
-    COLLECT_TARGETED = "collect_targeted"     # tools chosen from hypotheses or critic requests
-    DIAGNOSE = "diagnose"                     # model + code scoring
-    CRITIQUE = "critique"                     # code checks, then the independent critic
+    COLLECT_BASELINE = "collect_baseline"  # fixed evidence plan, no model
+    RETRIEVE_KNOWLEDGE = "retrieve_knowledge"  # runbook and past-incident passages, no model
+    HYPOTHESISE = "hypothesise"  # model: 2-5 hypotheses with claims
+    COLLECT_TARGETED = "collect_targeted"  # tools chosen from hypotheses or critic requests
+    DIAGNOSE = "diagnose"  # model + code scoring
+    CRITIQUE = "critique"  # code checks, then the independent critic
     FINISH_ESTABLISHED = "finish_established"
     FINISH_INCONCLUSIVE = "finish_inconclusive"
 
 
 class StopKind(str, Enum):
     """Which incident path a FINISH_INCONCLUSIVE takes (ADR-46, 9.10)."""
-    SECURITY = "security"            # security or data risk: investigating -> handed_over
-    INCONCLUSIVE = "inconclusive"    # every other stop: investigating -> inconclusive -> handed_over
+
+    SECURITY = "security"  # security or data risk: investigating -> handed_over
+    INCONCLUSIVE = "inconclusive"  # every other stop: investigating -> inconclusive -> handed_over
 
 
-SECURITY_FAILURE = "security_risk"   # the one SkillFailure code that takes the direct path
+SECURITY_FAILURE = "security_risk"  # the one SkillFailure code that takes the direct path
 
 
 @dataclass(frozen=True)
 class Limits:
     """The one configuration object (ADR-52), read by the workflow, the gateway's budget
     defaults and the ToolGate. All values provisional; the money value is from ADR-56."""
+
     investigation: timedelta = timedelta(minutes=15)
     max_model_calls: int = 30
     max_input_tokens: int = 200_000
     max_output_tokens: int = 20_000
     max_cost_micros: int = 2_000_000
     max_tool_calls: int = 20
-    max_revisions: int = 2           # diagnose may run at most 1 + 2 times
+    max_revisions: int = 2  # diagnose may run at most 1 + 2 times
     max_targeted_rounds: int = 3
     max_requests_per_round: int = 3
     max_critic_failures: int = 2
-    max_attempts_per_step: int = 3   # enforced by the gateway (ADR-27)
+    max_attempts_per_step: int = 3  # enforced by the gateway (ADR-27)
 
 
 @dataclass
 class AgentState:
     """Everything the loop needs between steps. Persisted by the workflow history (Q9.8)."""
+
     started_at: datetime
     limits: Limits = field(default_factory=Limits)
-    evidence_only: bool = False      # started after the daily limit: no model steps (ADR-55)
+    evidence_only: bool = False  # started after the daily limit: no model steps (ADR-55)
     evidence_ids: list[str] = field(default_factory=list)
     gap_count: int = 0
     knowledge_done: bool = False
     hypotheses_ready: bool = False
     pending_requests: list[dict] = field(default_factory=list)
     targeted_rounds: int = 0
-    last_round_new_evidence: Optional[int] = None    # fresh IDs minus gaps, last targeted round
+    last_round_new_evidence: Optional[int] = None  # fresh IDs minus gaps, last targeted round
     diagnoses: int = 0
     diagnosis_fingerprints: list[str] = field(default_factory=list)
     supported_ratios: list[float] = field(default_factory=list)
     observations_at_diagnosis: list[int] = field(default_factory=list)
-    last_verdict: Optional[str] = None       # accept | revise | escalate | invalid
-    last_outcome: Optional[str] = None       # established | inconclusive (from the diagnoser)
-    confidence: Optional[str] = None         # final: low | medium | high, from validation.combine
+    last_verdict: Optional[str] = None  # accept | revise | escalate | invalid
+    last_outcome: Optional[str] = None  # established | inconclusive (from the diagnoser)
+    confidence: Optional[str] = None  # final: low | medium | high, from validation.combine
     critic_failures: int = 0
     model_calls: int = 0
     tool_calls: int = 0
@@ -84,9 +87,9 @@ class AgentState:
     cost_micros: int = 0
     daily_spend_exhausted: bool = False
     baseline_done: bool = False
-    failure: Optional[dict] = None           # the first SkillFailure: skill, code, detail
+    failure: Optional[dict] = None  # the first SkillFailure: skill, code, detail
     stop_reason: Optional[str] = None
-    stop_kind: Optional[StopKind] = None     # set with FINISH_INCONCLUSIVE only
+    stop_kind: Optional[StopKind] = None  # set with FINISH_INCONCLUSIVE only
     decisions: list[str] = field(default_factory=list)
 
     @property
@@ -158,13 +161,23 @@ def _decide(s: AgentState, now: datetime) -> tuple[Step, str]:
     if s.last_verdict == "revise":
         if s.revisions >= L.max_revisions:
             return Step.FINISH_INCONCLUSIVE, f"revision limit ({L.max_revisions}) reached"
-        if len(s.diagnosis_fingerprints) >= 2 and s.diagnosis_fingerprints[-1] == s.diagnosis_fingerprints[-2]:
+        if (
+            len(s.diagnosis_fingerprints) >= 2
+            and s.diagnosis_fingerprints[-1] == s.diagnosis_fingerprints[-2]
+        ):
             return Step.FINISH_INCONCLUSIVE, "revision repeated the same diagnosis"
-        if len(s.supported_ratios) >= 2 and s.supported_ratios[-1] <= s.supported_ratios[-2] \
-                and s.observations == s.observations_at_diagnosis[-2]:
+        if (
+            len(s.supported_ratios) >= 2
+            and s.supported_ratios[-1] <= s.supported_ratios[-2]
+            and s.observations == s.observations_at_diagnosis[-2]
+        ):
             return Step.FINISH_INCONCLUSIVE, "revision did not improve support and no new evidence"
 
-    if s.pending_requests and s.targeted_rounds < L.max_targeted_rounds and s.tool_calls < L.max_tool_calls:
+    if (
+        s.pending_requests
+        and s.targeted_rounds < L.max_targeted_rounds
+        and s.tool_calls < L.max_tool_calls
+    ):
         return Step.COLLECT_TARGETED, f"{len(s.pending_requests)} evidence requests pending"
     if s.diagnoses == 0:
         return Step.DIAGNOSE, "hypotheses ready"
@@ -197,17 +210,26 @@ def apply_result(s: AgentState, step: Step, result: Any) -> None:
         return
     o = result.output
     if step in (Step.COLLECT_BASELINE, Step.COLLECT_TARGETED):
-        after_collect(s, o.evidence_ids, o.gap_count, u.tool_calls, targeted=step == Step.COLLECT_TARGETED)
+        after_collect(
+            s, o.evidence_ids, o.gap_count, u.tool_calls, targeted=step == Step.COLLECT_TARGETED
+        )
     elif step == Step.RETRIEVE_KNOWLEDGE:
         after_knowledge(s, o.evidence_ids, o.gap_count, u.tool_calls)
     elif step == Step.HYPOTHESISE:
-        after_hypotheses(s, u.model_calls, [[r.model_dump() for r in h.evidence_needed] for h in o.hypotheses])
+        after_hypotheses(
+            s, u.model_calls, [[r.model_dump() for r in h.evidence_needed] for h in o.hypotheses]
+        )
     elif step == Step.DIAGNOSE:
         after_diagnosis(s, o.fingerprint, o.supported_ratio, u.model_calls, o.draft.outcome)
     elif step == Step.CRITIQUE:
         v = o.verdict
-        after_critique(s, v.verdict if v else None, [r.model_dump() for r in v.evidence_requests] if v else [],
-                       u.model_calls, o.confidence)
+        after_critique(
+            s,
+            v.verdict if v else None,
+            [r.model_dump() for r in v.evidence_requests] if v else [],
+            u.model_calls,
+            o.confidence,
+        )
     else:
         raise ValueError(f"{step} runs no skill")
 
@@ -219,7 +241,9 @@ def after_failure(s: AgentState, skill: str, code: str, detail: str) -> None:
         s.failure = {"skill": skill, "code": code, "detail": detail}
 
 
-def after_collect(s: AgentState, new_ids: list[str], gaps: int, tool_calls: int, targeted: bool) -> None:
+def after_collect(
+    s: AgentState, new_ids: list[str], gaps: int, tool_calls: int, targeted: bool
+) -> None:
     fresh = [i for i in new_ids if i not in s.evidence_ids]
     s.evidence_ids.extend(fresh)
     s.gap_count += gaps
@@ -227,7 +251,7 @@ def after_collect(s: AgentState, new_ids: list[str], gaps: int, tool_calls: int,
     if targeted:
         s.targeted_rounds += 1
         s.pending_requests = []
-        s.last_round_new_evidence = max(0, len(fresh) - gaps)     # a gap is not new evidence
+        s.last_round_new_evidence = max(0, len(fresh) - gaps)  # a gap is not new evidence
         # last_verdict stays 'revise' (if set), so the revision policy decides what follows
     else:
         s.baseline_done = True
@@ -255,8 +279,13 @@ def after_hypotheses(s: AgentState, model_calls: int, requests: list[list[dict]]
     _log_not_run(s, [r for rest in left for r in rest])
 
 
-def after_diagnosis(s: AgentState, fingerprint: str, supported_ratio: float, model_calls: int,
-                    outcome: str = "established") -> None:
+def after_diagnosis(
+    s: AgentState,
+    fingerprint: str,
+    supported_ratio: float,
+    model_calls: int,
+    outcome: str = "established",
+) -> None:
     s.diagnoses += 1
     s.last_outcome = outcome
     s.model_calls += model_calls
@@ -266,8 +295,13 @@ def after_diagnosis(s: AgentState, fingerprint: str, supported_ratio: float, mod
     s.last_verdict = None
 
 
-def after_critique(s: AgentState, verdict: Optional[str], requests: list[dict], model_calls: int,
-                   confidence: Optional[str] = None) -> None:
+def after_critique(
+    s: AgentState,
+    verdict: Optional[str],
+    requests: list[dict],
+    model_calls: int,
+    confidence: Optional[str] = None,
+) -> None:
     """verdict None = invalid critic output after its own retry. `confidence` is the final
     confidence from validation.combine; accept without medium or high ends inconclusive."""
     s.model_calls += model_calls
@@ -279,7 +313,7 @@ def after_critique(s: AgentState, verdict: Optional[str], requests: list[dict], 
     s.confidence = confidence
     if verdict == "revise":
         s.pending_requests = requests[: s.limits.max_requests_per_round]
-        _log_not_run(s, requests[s.limits.max_requests_per_round:])
+        _log_not_run(s, requests[s.limits.max_requests_per_round :])
 
 
 def _log_not_run(s: AgentState, requests: list[dict]) -> None:

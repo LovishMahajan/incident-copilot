@@ -52,20 +52,22 @@ class Evidence(Strict):
     incident_id: UUID
     kind: EvidenceKind
     source_system: str
-    tool: str                                   # registry name of the tool that produced it
-    query: Optional[str]                        # exact, rerunnable
+    tool: str  # registry name of the tool that produced it
+    query: Optional[str]  # exact, rerunnable
     # Three clocks (Q9.21)
-    window_start: Optional[datetime]            # when the data happened (from)
-    window_end: Optional[datetime]              # when the data happened (to)
-    collected_at: datetime                      # when we read it
-    source_as_of: Optional[datetime]            # the source's own version or last-modified time
+    window_start: Optional[datetime]  # when the data happened (from)
+    window_end: Optional[datetime]  # when the data happened (to)
+    collected_at: datetime  # when we read it
+    source_as_of: Optional[datetime]  # the source's own version or last-modified time
     source_link: Optional[str]
-    summary: Annotated[str, StringConstraints(max_length=4000)]   # redacted extract given to the model
-    content_sha256: Sha256                      # fingerprint of the snapshot (Q9.22)
+    summary: Annotated[
+        str, StringConstraints(max_length=4000)
+    ]  # redacted extract given to the model
+    content_sha256: Sha256  # fingerprint of the snapshot (Q9.22)
     is_partial: bool = False
     flagged_injection: bool = False
-    gap_reason: Optional[str] = None            # set only when kind == gap
-    strength_tier: Optional[int] = Field(default=None, ge=1, le=8)   # set by code (ADR-53)
+    gap_reason: Optional[str] = None  # set only when kind == gap
+    strength_tier: Optional[int] = Field(default=None, ge=1, le=8)  # set by code (ADR-53)
 
     @model_validator(mode="after")
     def gap_has_reason(self) -> Evidence:
@@ -99,12 +101,19 @@ class Claim(Strict):
 
 class HypothesisDraft(Strict):
     statement: Short
-    category: Literal["deployment_code", "deployment_config", "dependency", "capacity",
-                      "data", "infrastructure", "unknown"]
+    category: Literal[
+        "deployment_code",
+        "deployment_config",
+        "dependency",
+        "capacity",
+        "data",
+        "infrastructure",
+        "unknown",
+    ]
     claims: list[Claim] = Field(min_length=1, max_length=8)
     contradicting_evidence_ids: list[UUID] = Field(default_factory=list)
-    confirm_test: Short                        # what would confirm it
-    refute_test: Short                         # what would rule it out
+    confirm_test: Short  # what would confirm it
+    refute_test: Short  # what would rule it out
     evidence_needed: list[EvidenceRequest] = Field(default_factory=list, max_length=5)
 
 
@@ -126,7 +135,7 @@ class DiagnosisDraft(Strict):
     leading_index: Optional[int] = Field(default=None, ge=0, le=4)
     hypotheses: list[HypothesisDraft] = Field(min_length=2, max_length=5)
     summary: Annotated[str, StringConstraints(min_length=1, max_length=4000)]
-    ruled_out: list[Short] = Field(default_factory=list)    # why each alternative was set aside
+    ruled_out: list[Short] = Field(default_factory=list)  # why each alternative was set aside
     missing_evidence: list[Short] = Field(default_factory=list)
     proposed_action: Optional[Literal["config_revert", "commit_revert", "release_rollback"]] = None
 
@@ -144,10 +153,14 @@ class DiagnosisDraft(Strict):
         """The model's part of a `diagnoses` row (schema.sql). The leading hypothesis gives
         category and claims; an inconclusive diagnosis has none, so `unknown` and no claims."""
         lead = self.hypotheses[self.leading_index] if self.leading_index is not None else None
-        return {"outcome": self.outcome, "summary": self.summary,
-                "category": lead.category if lead else "unknown",
-                "claims": [c.model_dump(mode="json") for c in lead.claims] if lead else [],
-                "ruled_out": list(self.ruled_out), "missing_evidence": list(self.missing_evidence)}
+        return {
+            "outcome": self.outcome,
+            "summary": self.summary,
+            "category": lead.category if lead else "unknown",
+            "claims": [c.model_dump(mode="json") for c in lead.claims] if lead else [],
+            "ruled_out": list(self.ruled_out),
+            "missing_evidence": list(self.missing_evidence),
+        }
 
 
 class Confidence(str, Enum):
@@ -160,13 +173,15 @@ class Confidence(str, Enum):
 # 9.8 Critic schema
 # ---------------------------------------------------------------------------
 class IssueKind(str, Enum):
-    unsupported_claim = "unsupported_claim"          # claim cites nothing, or cites evidence that doesn't say it
-    contradicted = "contradicted"                    # evidence contradicts the leading hypothesis
+    unsupported_claim = (
+        "unsupported_claim"  # claim cites nothing, or cites evidence that doesn't say it
+    )
+    contradicted = "contradicted"  # evidence contradicts the leading hypothesis
     alternative_not_ruled_out = "alternative_not_ruled_out"
-    correlation_only = "correlation_only"            # only timing links the change to the failure
-    missing_evidence = "missing_evidence"            # a decisive check was not collected
-    stale_evidence = "stale_evidence"                # cited evidence changed after collection
-    scope = "scope"                                  # action outside the incident's service or allowed list
+    correlation_only = "correlation_only"  # only timing links the change to the failure
+    missing_evidence = "missing_evidence"  # a decisive check was not collected
+    stale_evidence = "stale_evidence"  # cited evidence changed after collection
+    scope = "scope"  # action outside the incident's service or allowed list
     overconfident = "overconfident"
 
 
@@ -247,7 +262,7 @@ class KnowledgeIn(Strict):
 
 
 class KnowledgeOut(Strict):
-    evidence_ids: list[str]                     # passages stored as evidence, gap records included
+    evidence_ids: list[str]  # passages stored as evidence, gap records included
     gap_count: int = Field(ge=0)
     index_revision: str
 
@@ -256,7 +271,7 @@ class PatchIn(Strict):
     context: SkillContext
     diagnosis_id: UUID
     diagnosis: DiagnosisDraft
-    evidence: list[Evidence]                    # cited by the leading hypothesis
+    evidence: list[Evidence]  # cited by the leading hypothesis
     candidate_no: int = Field(ge=1, le=3)
 
     @model_validator(mode="after")
@@ -267,11 +282,13 @@ class PatchIn(Strict):
 
 
 class PatchFileEdit(Strict):
-    model_config = ConfigDict(str_strip_whitespace=False)       # new_content keeps its whitespace
+    model_config = ConfigDict(str_strip_whitespace=False)  # new_content keeps its whitespace
 
     path: Annotated[str, StringConstraints(strip_whitespace=True, min_length=1, pattern=r"^[^/]")]
     new_content: str
-    rationale: Annotated[str, StringConstraints(strip_whitespace=True, min_length=10, max_length=600)]
+    rationale: Annotated[
+        str, StringConstraints(strip_whitespace=True, min_length=10, max_length=600)
+    ]
     evidence_ids: list[UUID] = Field(min_length=1)
 
 
@@ -295,7 +312,7 @@ class DiagnosisResult(Strict):
 
     diagnosis_id: UUID
     draft: DiagnosisDraft
-    fingerprint: Sha256                         # validation.fingerprint
+    fingerprint: Sha256  # validation.fingerprint
     supported_ratio: float = Field(ge=0, le=1)  # validation.CitationReport
 
 
@@ -304,7 +321,7 @@ class ReviewResult(Strict):
     means invalid critic output after its retries (9.8), which isn't a SkillFailure."""
 
     verdict: Optional[CriticVerdict] = None
-    confidence: Optional[Confidence] = None     # final: the lower of scored and confidence_cap
+    confidence: Optional[Confidence] = None  # final: the lower of scored and confidence_cap
 
     @model_validator(mode="after")
     def both_or_neither(self) -> ReviewResult:
@@ -319,26 +336,39 @@ class ReviewResult(Strict):
         output stores nothing."""
         if self.verdict is None:
             return {}
-        established = (self.verdict.verdict == "accept" and draft.outcome == "established"
-                       and self.confidence != Confidence.low)
-        return {"reviewed": True, "final_outcome": "established" if established else "inconclusive",
-                "final_confidence": self.confidence.value}
+        established = (
+            self.verdict.verdict == "accept"
+            and draft.outcome == "established"
+            and self.confidence != Confidence.low
+        )
+        return {
+            "reviewed": True,
+            "final_outcome": "established" if established else "inconclusive",
+            "final_confidence": self.confidence.value,
+        }
 
 
 class SkillFailure(Strict):
     skill: str
-    code: Literal["invalid_output", "provider_unavailable", "budget_refused", "deadline_passed",
-                  "no_allowed_fix", "store_failed", "security_risk"]
-    detail: Short                               # recorded in stop_reason
+    code: Literal[
+        "invalid_output",
+        "provider_unavailable",
+        "budget_refused",
+        "deadline_passed",
+        "no_allowed_fix",
+        "store_failed",
+        "security_risk",
+    ]
+    detail: Short  # recorded in stop_reason
 
 
 class SkillUsage(Strict):
-    model_calls: int = Field(default=0, ge=0)   # gateway attempts; a reused result counts 0
-    tool_calls: int = Field(default=0, ge=0)    # calls recorded by the ToolGate
+    model_calls: int = Field(default=0, ge=0)  # gateway attempts; a reused result counts 0
+    tool_calls: int = Field(default=0, ge=0)  # calls recorded by the ToolGate
     input_tokens: int = Field(default=0, ge=0)
     output_tokens: int = Field(default=0, ge=0)
     cost_micros: int = Field(default=0, ge=0)
-    daily_spend_exhausted: bool = False         # ADR-55
+    daily_spend_exhausted: bool = False  # ADR-55
 
 
 T = TypeVar("T")

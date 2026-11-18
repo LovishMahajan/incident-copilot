@@ -25,29 +25,43 @@ from datetime import datetime, timedelta
 from typing import Literal, Optional
 
 from temporalio import activity
-from temporalio.client import (Client, Schedule, ScheduleActionStartWorkflow, ScheduleIntervalSpec,
-                               ScheduleSpec)
+from temporalio.client import (
+    Client,
+    Schedule,
+    ScheduleActionStartWorkflow,
+    ScheduleIntervalSpec,
+    ScheduleSpec,
+)
 from temporalio.contrib.pydantic import pydantic_data_converter
 
-from aisre.agent.agent_contracts import (CriticVerdict, DiagnosisDraft, DiagnosisResult, HypothesesOut, KnowledgeOut,
-                             ReviewResult, SkillFailure, SkillResult, SkillUsage)
-from aisre.workflow.states import InvalidTransition
+from aisre.agent.agent_contracts import (
+    CriticVerdict,
+    DiagnosisDraft,
+    DiagnosisResult,
+    HypothesesOut,
+    KnowledgeOut,
+    ReviewResult,
+    SkillFailure,
+    SkillResult,
+    SkillUsage,
+)
 from aisre.agent.tool_registry import ToolGate, ToolRefused
 from aisre.agent.validation import UnsafeOutput, check_output
+from aisre.workflow.states import InvalidTransition
 
 # Task queues (Artifact 6: the worker process and the dispatcher process)
 INVESTIGATION_QUEUE = "aisre-investigation"
 DISPATCHER_QUEUE = "aisre-dispatcher"
 
 DATA_CONVERTER = pydantic_data_converter
-MAX_INVESTIGATIONS = 5                 # running at once, across all workers (8.1)
-MAX_SLOTS_PER_SERVICE = 4              # NFR-44, provisional: one service can't take every slot
+MAX_INVESTIGATIONS = 5  # running at once, across all workers (8.1)
+MAX_SLOTS_PER_SERVICE = 4  # NFR-44, provisional: one service can't take every slot
 RECONCILIATION_SCHEDULE = "aisre-reconciliation"
-RECONCILIATION_EVERY = timedelta(minutes=5)   # provisional (8.9)
-REFUSED_EXPIRED = "approval expired"   # start of the dispatcher's reason when the approval ran out
-DB_REFUSALS = {"23514", "23001"}       # check_violation, restrict_violation: the record said no
-MAX_PATCH_CANDIDATES = 3               # per diagnosis, one action each, drafted one at a time (ADR-69)
-VOIDED = "voided"                      # close reason for an approval the dispatcher found tampered or outdated
+RECONCILIATION_EVERY = timedelta(minutes=5)  # provisional (8.9)
+REFUSED_EXPIRED = "approval expired"  # start of the dispatcher's reason when the approval ran out
+DB_REFUSALS = {"23514", "23001"}  # check_violation, restrict_violation: the record said no
+MAX_PATCH_CANDIDATES = 3  # per diagnosis, one action each, drafted one at a time (ADR-69)
+VOIDED = "voided"  # close reason for an approval the dispatcher found tampered or outdated
 
 
 # ---------------------------------------------------------------------------
@@ -59,11 +73,12 @@ class TransitionIn:
     removal of the investigation_queue row when the incident leaves `investigating` or goes
     `open` -> `cancelled`. The second change is the rollback action's (ADR-48). No seq or hash:
     the database sets those."""
+
     incident_id: str
-    transition_id: str            # idempotency key: deterministic per workflow step
+    transition_id: str  # idempotency key: deterministic per workflow step
     from_state: str
     to_state: str
-    expected_version: int         # the last version the workflow saw; StaleVersion if a person moved it on
+    expected_version: int  # the last version the workflow saw; StaleVersion if a person moved it on
     reason: str
     action_id: Optional[str] = None
     action_from: Optional[str] = None
@@ -87,7 +102,7 @@ class IncidentIn:
 
 @dataclass
 class SlotIn(IncidentIn):
-    run_id: str = ""              # the workflow ID; stored on the investigation_queue row (ADR-69)
+    run_id: str = ""  # the workflow ID; stored on the investigation_queue row (ADR-69)
 
 
 @dataclass
@@ -97,19 +112,21 @@ class IncidentSnapshot:
     environment: str
     version: int
     status: str
-    remediation_enabled: bool = False   # false until the recorded decision that opens Release B (ADR-44)
+    remediation_enabled: bool = (
+        False  # false until the recorded decision that opens Release B (ADR-44)
+    )
 
 
 @dataclass
 class SpendOut:
-    evidence_only: bool           # ledger.fleet.evidence_only(now): the daily limit is reached (ADR-55)
+    evidence_only: bool  # ledger.fleet.evidence_only(now): the daily limit is reached (ADR-55)
 
 
 @dataclass
 class NotifyIn:
     incident_id: str
-    notification_id: str          # idempotency key
-    kind: str                     # opened, summary, approval_needed, handed_over, ...
+    notification_id: str  # idempotency key
+    kind: str  # opened, summary, approval_needed, handed_over, ...
     audience: list[str]
     detail: Optional[str] = None  # e.g. "not yet reviewed" on the first summary
 
@@ -117,19 +134,22 @@ class NotifyIn:
 @dataclass
 class EvidenceIn(IncidentIn):
     mode: Literal["baseline", "targeted"] = "baseline"
-    requests: list[dict] = field(default_factory=list)     # AgentState.pending_requests, targeted only
+    requests: list[dict] = field(default_factory=list)  # AgentState.pending_requests, targeted only
 
 
 @dataclass
 class SkillIn(IncidentIn):
     """What a skill activity needs beyond the record. review_diagnosis gets only the diagnosis:
     the critic never sees the diagnoser's reasoning (Artifact 9, CritiqueIn)."""
+
     evidence_ids: list[str] = field(default_factory=list)
     hypotheses: Optional[HypothesesOut] = None
     diagnosis: Optional[DiagnosisDraft] = None
     diagnosis_id: Optional[str] = None
     critic: Optional[CriticVerdict] = None
-    candidate_no: int = 1         # draft_patch only: 1 to MAX_PATCH_CANDIDATES, PatchIn.candidate_no (ADR-69)
+    candidate_no: int = (
+        1  # draft_patch only: 1 to MAX_PATCH_CANDIDATES, PatchIn.candidate_no (ADR-69)
+    )
 
 
 @dataclass
@@ -143,15 +163,15 @@ class PatchOut:
     action_id: str
     patch_sha256: str
     action_kind: str = "config_revert"
-    hold_seconds: int = 600            # on the action: longer per service in the catalogue
-    sandbox_available: bool = True     # false in Release A: hand over the untested draft
+    hold_seconds: int = 600  # on the action: longer per service in the catalogue
+    sandbox_available: bool = True  # false in Release A: hand over the untested draft
 
 
 @dataclass
 class TestIn:
     action_id: str
     patch_sha256: str
-    test_key: str                 # idempotency key
+    test_key: str  # idempotency key
 
 
 @dataclass
@@ -159,31 +179,33 @@ class TestOut:
     test_run_id: str
     reproduced: bool
     outcome: Literal["passed", "failed", "not_reproduced", "inconclusive", "crashed", "timeout"]
-    action_digest: Optional[str] = None   # write-once, set when testing ends (ADR-64)
+    action_digest: Optional[str] = None  # write-once, set when testing ends (ADR-64)
 
 
 @dataclass
 class ApprovalRequestIn:
     action_id: str
     action_digest: str
-    request_key: str              # idempotency key
-    close_reason: Optional[str] = None   # close_approval_request only: expired, withdrawn or voided
-    close_detail: Optional[str] = None   # with `voided`: the dispatcher's reason, for the event
+    request_key: str  # idempotency key
+    close_reason: Optional[str] = None  # close_approval_request only: expired, withdrawn or voided
+    close_detail: Optional[str] = None  # with `voided`: the dispatcher's reason, for the event
 
 
 @dataclass
 class ApprovalRequestOut:
     approval_request_id: str
     approvers_needed: int
-    rollback_action_id: Optional[str] = None   # the fix's rollback, created here, status `proposed`
-    rollback_digest: Optional[str] = None      # set when the rollback is created, still `proposed`: it is never
-                                               # tested, the one exception to ADR-64's "when testing ends" (ADR-48)
-    conditional_approval: bool = False         # on a rollback's request: one was signed with the fix
+    rollback_action_id: Optional[str] = None  # the fix's rollback, created here, status `proposed`
+    rollback_digest: Optional[str] = (
+        None  # set when the rollback is created, still `proposed`: it is never
+    )
+    # tested, the one exception to ADR-64's "when testing ends" (ADR-48)
+    conditional_approval: bool = False  # on a rollback's request: one was signed with the fix
 
 
 @dataclass
 class DispatchIn:
-    action_id: str                # the execution key; the dispatcher reloads the rest (ADR-47, ADR-51)
+    action_id: str  # the execution key; the dispatcher reloads the rest (ADR-47, ADR-51)
 
 
 @dataclass
@@ -191,9 +213,9 @@ class DispatchOut:
     attempt_id: str
     outcome: Literal["applied", "not_applied", "refused", "unknown"]
     external_ref: Optional[str] = None
-    refusal_reason: Optional[str] = None       # set with `refused`
-    intent_recorded: bool = True               # false on a refusal, or a reconcile that found no intent
-    void_approval: bool = False                # a refusal that voids the approval: ST-01, ST-02, ST-13
+    refusal_reason: Optional[str] = None  # set with `refused`
+    intent_recorded: bool = True  # false on a refusal, or a reconcile that found no intent
+    void_approval: bool = False  # a refusal that voids the approval: ST-01, ST-02, ST-13
 
 
 @dataclass
@@ -201,7 +223,7 @@ class VerifyIn:
     action_id: str
     attempt_id: str
     hold_seconds: int
-    verification_key: str         # idempotency key
+    verification_key: str  # idempotency key
 
 
 @dataclass
@@ -245,6 +267,7 @@ class QueueRow:
     """One investigation_queue row, with its incident's service. `severity` is the confirmed one,
     else the proposed one, else None, which sorts last as NULL does in the table. `run_id` is the
     workflow run that queued it (ADR-69)."""
+
     incident_id: str
     service: str
     severity: Optional[str]
@@ -260,12 +283,16 @@ def may_grant(incident_id: str, rows: list[QueueRow]) -> bool:
     if sum(r.granted for r in rows) >= MAX_INVESTIGATIONS:
         return False
     held = Counter(r.service for r in rows if r.granted)
-    waiting = sorted((r for r in rows if not r.granted and held[r.service] < MAX_SLOTS_PER_SERVICE),
-                     key=lambda r: (r.severity is None, r.severity or "", r.queued_at))
+    waiting = sorted(
+        (r for r in rows if not r.granted and held[r.service] < MAX_SLOTS_PER_SERVICE),
+        key=lambda r: (r.severity is None, r.severity or "", r.queued_at),
+    )
     return bool(waiting) and waiting[0].incident_id == incident_id
 
 
-def precheck_requests(gate: ToolGate, requests: list[dict], skill: str) -> tuple[list[dict], list[dict]]:
+def precheck_requests(
+    gate: ToolGate, requests: list[dict], skill: str
+) -> tuple[list[dict], list[dict]]:
     """Runs evidence requests through the ToolGate under the skill that produced them, `hypothesise`
     or `critique`, in that skill's own activity (9.4), so its fixed tool list applies. Returns
     (allowed, refused); a refused request is recorded and dropped, not a SkillFailure."""
@@ -286,8 +313,10 @@ def checked_result(skill: str, output, usage: SkillUsage) -> SkillResult:
         check_output(output)
     except UnsafeOutput as e:
         code = "security_risk" if str(e) == "secret" else "invalid_output"
-        return SkillResult(failure=SkillFailure(skill=skill, code=code, detail=f"unsafe model output: {e}"),
-                           usage=usage)
+        return SkillResult(
+            failure=SkillFailure(skill=skill, code=code, detail=f"unsafe model output: {e}"),
+            usage=usage,
+        )
     return SkillResult(output=output, usage=usage)
 
 
@@ -295,9 +324,14 @@ def dispatch_out(result, attempt_id: str = "", external_ref: Optional[str] = Non
     """Maps a Layer 11 dispatcher.DispatchResult. dispatcher.ReleaseInProgress is left to
     propagate: it isn't in READ_RETRY's non-retryable list, so its backoff is the wait."""
     outcome = result.outcome.value
-    return DispatchOut(attempt_id, outcome, external_ref,
-                       refusal_reason=result.reason if outcome == "refused" else None,
-                       intent_recorded=result.intent_recorded, void_approval=result.void_approval)
+    return DispatchOut(
+        attempt_id,
+        outcome,
+        external_ref,
+        refusal_reason=result.reason if outcome == "refused" else None,
+        intent_recorded=result.intent_recorded,
+        void_approval=result.void_approval,
+    )
 
 
 def db_error(sqlstate: str, message: str) -> Exception:
@@ -306,9 +340,13 @@ def db_error(sqlstate: str, message: str) -> Exception:
     return InvalidTransition(message) if sqlstate in DB_REFUSALS else ConnectionError(message)
 
 
-def reconciliation_findings(incidents: dict[str, str], running: dict[str, str], queue: dict[str, str],
-                            pending_outbox: set[str], live_runs: set[str] = frozenset()
-                            ) -> tuple[dict[str, int], list[str]]:
+def reconciliation_findings(
+    incidents: dict[str, str],
+    running: dict[str, str],
+    queue: dict[str, str],
+    pending_outbox: set[str],
+    live_runs: set[str] = frozenset(),
+) -> tuple[dict[str, int], list[str]]:
     """The 8.9 table. `incidents` maps ID to the record's status, `running` maps ID to a live
     workflow's current_state, `queue` maps each investigation_queue row's incident ID to its run
     ID, `pending_outbox` holds the IDs with an undelivered start, `live_runs` the IDs of workflow
@@ -326,17 +364,24 @@ def reconciliation_findings(incidents: dict[str, str], running: dict[str, str], 
             mismatch = status in ("closed", "cancelled") or live != status
         if mismatch:
             stalled[status] = stalled.get(status, 0) + 1
-    orphans = [iid for iid in sorted(queue)
-               if incidents.get(iid) not in ("open", "investigating") and queue[iid] not in live_runs]
+    orphans = [
+        iid
+        for iid in sorted(queue)
+        if incidents.get(iid) not in ("open", "investigating") and queue[iid] not in live_runs
+    ]
     return stalled, orphans
 
 
 def reconciliation_schedule() -> Schedule:
     """Every 5 minutes, one ReconciliationWorkflow, one activity on the investigation queue."""
-    return Schedule(action=ScheduleActionStartWorkflow("ReconciliationWorkflow",
-                                                       id=f"{RECONCILIATION_SCHEDULE}-run",
-                                                       task_queue=INVESTIGATION_QUEUE),
-                    spec=ScheduleSpec(intervals=[ScheduleIntervalSpec(every=RECONCILIATION_EVERY)]))
+    return Schedule(
+        action=ScheduleActionStartWorkflow(
+            "ReconciliationWorkflow",
+            id=f"{RECONCILIATION_SCHEDULE}-run",
+            task_queue=INVESTIGATION_QUEUE,
+        ),
+        spec=ScheduleSpec(intervals=[ScheduleIntervalSpec(every=RECONCILIATION_EVERY)]),
+    )
 
 
 async def ensure_reconciliation_schedule(client: Client) -> None:
@@ -503,9 +548,24 @@ async def reconcile_workflows(inp: ReconciliationIn) -> ReconciliationOut:
 
 
 ALL_INVESTIGATION_ACTIVITIES = [
-    load_incident, acquire_investigation_slot, read_spend_state, record_transition, notify,
-    record_notification_failed, collect_evidence, retrieve_knowledge, hypothesise, diagnose,
-    review_diagnosis, draft_patch, run_sandbox_test, request_approval, escalate_approval,
-    close_approval_request, verify_recovery, hand_over, reconcile_workflows,
+    load_incident,
+    acquire_investigation_slot,
+    read_spend_state,
+    record_transition,
+    notify,
+    record_notification_failed,
+    collect_evidence,
+    retrieve_knowledge,
+    hypothesise,
+    diagnose,
+    review_diagnosis,
+    draft_patch,
+    run_sandbox_test,
+    request_approval,
+    escalate_approval,
+    close_approval_request,
+    verify_recovery,
+    hand_over,
+    reconcile_workflows,
 ]
 ALL_DISPATCHER_ACTIVITIES = [dispatch_change, reconcile_execution]

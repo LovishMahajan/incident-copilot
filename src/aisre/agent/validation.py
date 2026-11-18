@@ -17,8 +17,19 @@ from uuid import UUID
 
 from pydantic import BaseModel
 
-from aisre.agent.agent_contracts import (Claim, Confidence, CriticIssue, CriticVerdict, DiagnosisDraft, Evidence,
-                             EvidenceKind, HypothesisDraft, IssueKind, NO_TIER_KINDS, ReviewResult)
+from aisre.agent.agent_contracts import (
+    NO_TIER_KINDS,
+    Claim,
+    Confidence,
+    CriticIssue,
+    CriticVerdict,
+    DiagnosisDraft,
+    Evidence,
+    EvidenceKind,
+    HypothesisDraft,
+    IssueKind,
+    ReviewResult,
+)
 
 
 class UnsupportedReference(Exception):
@@ -55,7 +66,9 @@ def _claim_supported(c: Claim, evidence: dict[UUID, Evidence]) -> bool:
     return any(e in evidence and _supports(evidence[e]) for e in c.evidence_ids)
 
 
-def check_citations(draft: DiagnosisDraft, evidence: dict[UUID, Evidence], incident_id: UUID) -> CitationReport:
+def check_citations(
+    draft: DiagnosisDraft, evidence: dict[UUID, Evidence], incident_id: UUID
+) -> CitationReport:
     """Every cited ID must exist and belong to this incident. Raises on any violation:
     a draft with an invented or foreign reference is rejected whole and counts as invalid output.
     A claim is supported if at least one of its citations is a valid record that supports."""
@@ -82,7 +95,9 @@ def check_citations(draft: DiagnosisDraft, evidence: dict[UUID, Evidence], incid
     return report
 
 
-def recheck_fingerprints(cited: list[Evidence], fetch_sha: Callable[[Evidence], Optional[str]]) -> list[UUID]:
+def recheck_fingerprints(
+    cited: list[Evidence], fetch_sha: Callable[[Evidence], Optional[str]]
+) -> list[UUID]:
     """Q9.22: re-read the source's fingerprint for cited evidence. Returns IDs whose source changed
     (None from fetch_sha means the source can no longer be read, which also counts as changed)."""
     return [e.evidence_id for e in cited if fetch_sha(e) != e.content_sha256]
@@ -93,14 +108,14 @@ class ObservationFacts:
     """What code computed about one record. Set by the Evidence Collector or Test Runner from
     the data, never by the model. One field per "Assigned when" rule in 9.7 (provisional)."""
 
-    fails_with_change_clears_without: bool = False      # sandbox reproduction
-    only_new_version_failing: bool = False              # error_rate_by_version
-    changed_key_on_failing_path: bool = False           # a get_changes key, per a log or trace
-    frames_in_changed_file: bool = False                # trace or error-group frames
-    first_seen_after_change: bool = False               # error group
-    failures_grow_with_rollout: bool = False            # metric
-    rollback_and_recovery: bool = False                 # change history, then http_5xx_rate
-    linked_by_time: bool = False                        # any record tied to the change by time only
+    fails_with_change_clears_without: bool = False  # sandbox reproduction
+    only_new_version_failing: bool = False  # error_rate_by_version
+    changed_key_on_failing_path: bool = False  # a get_changes key, per a log or trace
+    frames_in_changed_file: bool = False  # trace or error-group frames
+    first_seen_after_change: bool = False  # error group
+    failures_grow_with_rollout: bool = False  # metric
+    rollback_and_recovery: bool = False  # change history, then http_5xx_rate
+    linked_by_time: bool = False  # any record tied to the change by time only
 
 
 # (tier, fact, kinds it may be assigned to), strongest first (ADR-53)
@@ -158,12 +173,18 @@ def _strength(h: HypothesisDraft, evidence: dict[UUID, Evidence]) -> Confidence:
 
 def _contradicting(h: HypothesisDraft, evidence: dict[UUID, Evidence]) -> list[UUID]:
     """Observations against h. Gaps, retrieved guidance and timing alone don't count."""
-    return [e for e in h.contradicting_evidence_ids if e in evidence
-            and evidence[e].kind not in NO_TIER_KINDS and evidence[e].strength_tier != 8]
+    return [
+        e
+        for e in h.contradicting_evidence_ids
+        if e in evidence
+        and evidence[e].kind not in NO_TIER_KINDS
+        and evidence[e].strength_tier != 8
+    ]
 
 
-def score_confidence(h: HypothesisDraft, evidence: dict[UUID, Evidence], gaps: int,
-                     required_missing: list[str]) -> Confidence:
+def score_confidence(
+    h: HypothesisDraft, evidence: dict[UUID, Evidence], gaps: int, required_missing: list[str]
+) -> Confidence:
     """ADR-53 levels. A missing required source (ADR-54) or a contradiction gives low; any
     other gap lowers high to medium."""
     level = _strength(h, evidence)
@@ -174,39 +195,77 @@ def score_confidence(h: HypothesisDraft, evidence: dict[UUID, Evidence], gaps: i
     return level
 
 
-def code_checks(draft: DiagnosisDraft, evidence: dict[UUID, Evidence], incident_id: UUID,
-                gaps: int, changed: list[UUID]) -> list[CriticIssue]:
+def code_checks(
+    draft: DiagnosisDraft,
+    evidence: dict[UUID, Evidence],
+    incident_id: UUID,
+    gaps: int,
+    changed: list[UUID],
+) -> list[CriticIssue]:
     """Deterministic review that runs before the model critic; its blocking issues can't be overruled."""
     issues: list[CriticIssue] = []
     if draft.outcome != "established":
         return issues
-    claims = [c for h in draft.hypotheses for c in h.claims]        # claim_index counts across the draft
+    claims = [c for h in draft.hypotheses for c in h.claims]  # claim_index counts across the draft
     for i, c in enumerate(claims):
         if not _claim_supported(c, evidence):
-            issues.append(CriticIssue(kind=IssueKind.unsupported_claim, detail="claim has no valid supporting evidence",
-                                      claim_index=i, blocking=True))
+            issues.append(
+                CriticIssue(
+                    kind=IssueKind.unsupported_claim,
+                    detail="claim has no valid supporting evidence",
+                    claim_index=i,
+                    blocking=True,
+                )
+            )
     lead = draft.hypotheses[draft.leading_index]
     deployment = lead.category.startswith("deployment")
     if deployment and _strength(lead, evidence) == Confidence.low:
-        issues.append(CriticIssue(kind=IssueKind.correlation_only,
-                                  detail="the observations cited don't reach the medium bar for causation",
-                                  blocking=True))
+        issues.append(
+            CriticIssue(
+                kind=IssueKind.correlation_only,
+                detail="the observations cited don't reach the medium bar for causation",
+                blocking=True,
+            )
+        )
     against = _contradicting(lead, evidence)
     if against:
-        issues.append(CriticIssue(kind=IssueKind.contradicted, detail="evidence contradicts the leading hypothesis",
-                                  evidence_ids=against, blocking=True))
+        issues.append(
+            CriticIssue(
+                kind=IssueKind.contradicted,
+                detail="evidence contradicts the leading hypothesis",
+                evidence_ids=against,
+                blocking=True,
+            )
+        )
     if len(draft.ruled_out) < len(draft.hypotheses) - 1:
-        issues.append(CriticIssue(kind=IssueKind.alternative_not_ruled_out,
-                                  detail="every alternative needs a reason it was set aside", blocking=True))
+        issues.append(
+            CriticIssue(
+                kind=IssueKind.alternative_not_ruled_out,
+                detail="every alternative needs a reason it was set aside",
+                blocking=True,
+            )
+        )
     cited = {e for c in lead.claims for e in c.evidence_ids}
     stale = [e for e in changed if e in cited]
     if stale:
-        issues.append(CriticIssue(kind=IssueKind.stale_evidence, detail="cited evidence changed since collection",
-                                  evidence_ids=stale, blocking=True))
+        issues.append(
+            CriticIssue(
+                kind=IssueKind.stale_evidence,
+                detail="cited evidence changed since collection",
+                evidence_ids=stale,
+                blocking=True,
+            )
+        )
     if draft.proposed_action is not None and not (
-            deployment and any(e.tool == "get_changes" for e in _cited(lead, evidence))):
-        issues.append(CriticIssue(kind=IssueKind.scope, blocking=True,
-                                  detail="an action needs a deployment cause and cited get_changes evidence"))
+        deployment and any(e.tool == "get_changes" for e in _cited(lead, evidence))
+    ):
+        issues.append(
+            CriticIssue(
+                kind=IssueKind.scope,
+                blocking=True,
+                detail="an action needs a deployment cause and cited get_changes evidence",
+            )
+        )
     return issues
 
 
@@ -214,37 +273,47 @@ def code_checks(draft: DiagnosisDraft, evidence: dict[UUID, Evidence], incident_
 # evaluation run decides how far they go. The secret patterns are telemetry.SECRET_PATTERNS'
 # credential rows (Layer 12, tested equal); its e-mail, card and address rows would match ordinary IDs.
 _SECRET_PATTERNS = [
-    re.compile(r"""(?i)(?:bearer|token|api[_-]?key|access[_-]?key|private[_-]?key|secret|password|passwd|pwd)"""
-               r"""(?:[_-](?:access[_-])?(?:key|value))?["']?\s*[:=]\s*(?:"[^"]*"|'[^']*'|[^\s"',;]+)"""),
-    re.compile(r"""(?i)\bauthorization["']?\s*[:=]\s*["']?(?:bearer|basic|digest|token)\s+[^\s"',;]+"""),
-    re.compile(r"(?i)\bbearer\s+(?=[\w.~+/-]*\d)[\w.~+/-]{16,}=*"),      # needs a digit: "bearer authentication" is prose
+    re.compile(
+        r"""(?i)(?:bearer|token|api[_-]?key|access[_-]?key|private[_-]?key|secret|password|passwd|pwd)"""
+        r"""(?:[_-](?:access[_-])?(?:key|value))?["']?\s*[:=]\s*(?:"[^"]*"|'[^']*'|[^\s"',;]+)"""
+    ),
+    re.compile(
+        r"""(?i)\bauthorization["']?\s*[:=]\s*["']?(?:bearer|basic|digest|token)\s+[^\s"',;]+"""
+    ),
+    re.compile(
+        r"(?i)\bbearer\s+(?=[\w.~+/-]*\d)[\w.~+/-]{16,}=*"
+    ),  # needs a digit: "bearer authentication" is prose
     re.compile(r"\bsk-[A-Za-z0-9_-]{16,}\b"),
     re.compile(r"\bAKIA[0-9A-Z]{16}\b"),
     re.compile(r"\b(?:gh[pousr]_[A-Za-z0-9]{20,}|github_pat_[A-Za-z0-9_]{20,})\b"),
-    re.compile(r"\beyJ[\w-]+\.[\w-]+\.[\w-]+"),                          # a JWT
-    re.compile(r"(?s)-----BEGIN [A-Z ]*PRIVATE KEY-----.*?(?:-----END [A-Z ]*PRIVATE KEY-----|\Z)"),   # with its body
+    re.compile(r"\beyJ[\w-]+\.[\w-]+\.[\w-]+"),  # a JWT
+    re.compile(
+        r"(?s)-----BEGIN [A-Z ]*PRIVATE KEY-----.*?(?:-----END [A-Z ]*PRIVATE KEY-----|\Z)"
+    ),  # with its body
 ]
 _LINK = re.compile(
     r"(?i)\b[a-z][a-z0-9+.-]*://|\bwww\."
-    r"|(?<![\w:/.-])//[\w-]+(?:\.[\w-]+)+"                     # scheme-relative
-    r"|(?<![\w/.@-])(?:[a-z0-9-]+\.)+[a-z]{2,}/\S*"            # a bare host with a path, not a/b/file.yaml
-    r"|\b(?:javascript|vbscript):\S|\bdata:[a-z]+/[\w.+-]+[;,]")
+    r"|(?<![\w:/.-])//[\w-]+(?:\.[\w-]+)+"  # scheme-relative
+    r"|(?<![\w/.@-])(?:[a-z0-9-]+\.)+[a-z]{2,}/\S*"  # a bare host with a path, not a/b/file.yaml
+    r"|\b(?:javascript|vbscript):\S|\bdata:[a-z]+/[\w.+-]+[;,]"
+)
 _COMMAND = re.compile(
     r"(?im)^\s*\$\s"
     r"|\b(sudo\s+\S|rm\s+-[rf]|curl\s+\S|wget\s+\S|kubectl\s+\S|psql\s+\S|bash\s+-c|sh\s+-c|chmod\s+\S|docker\s+(run|exec)\b"
     r"|terraform\s+(destroy|apply)\b|helm\s+(uninstall|delete)\b|systemctl\s+(stop|disable|mask|restart)\b"
     r"|(python\d?|perl|ruby|node)\s+-[ce]\b)"
-    r"|\b(drop\s+(table|database|schema)|delete\s+from|truncate\s+table|update\s+\S+\s+set\s+\S+\s*=)")
+    r"|\b(drop\s+(table|database|schema)|delete\s+from|truncate\s+table|update\s+\S+\s+set\s+\S+\s*=)"
+)
 
 
 def _strings(value) -> Iterable[str]:
     if isinstance(value, str):
         yield value
     elif isinstance(value, dict):
-        for k, v in value.items():                  # keys too: EvidenceRequest.params is free-form
+        for k, v in value.items():  # keys too: EvidenceRequest.params is free-form
             yield str(k)
             if isinstance(v, str):
-                yield f"{k}: {v}"                   # a secret split across a key and its value
+                yield f"{k}: {v}"  # a secret split across a key and its value
             yield from _strings(v)
     elif isinstance(value, list):
         for v in value:
@@ -272,7 +341,8 @@ _INJECTION = re.compile(
     r"\b(errors?|failures?|alerts?|incidents?|evidence)\b"
     r"|\b(run|execute)\b.{0,20}`[^`\n]+`"
     r"|\bmark (this|the) (incident|alert|diagnosis) as (resolved|recovered|closed|established)\b"
-    r"|<\s*/?\s*(system|instructions?)\s*>")
+    r"|<\s*/?\s*(system|instructions?)\s*>"
+)
 
 
 def flags_injection(text: str) -> bool:
@@ -296,7 +366,9 @@ def mask_secrets(text: str) -> str:
 _ORDER = [Confidence.low, Confidence.medium, Confidence.high]
 
 
-def combine(model_verdict: CriticVerdict, issues: list[CriticIssue], scored: Confidence) -> ReviewResult:
+def combine(
+    model_verdict: CriticVerdict, issues: list[CriticIssue], scored: Confidence
+) -> ReviewResult:
     """Code issues go ahead of the critic's, so the 20-issue limit can't drop them; a blocking
     code issue turns 'accept' into 'revise'. Final confidence is the lower of the scored level
     and the critic's confidence_cap (ADR-53)."""
@@ -305,17 +377,24 @@ def combine(model_verdict: CriticVerdict, issues: list[CriticIssue], scored: Con
     if verdict == "accept" and any(i.blocking for i in issues):
         verdict = "revise"
     final = min(scored, model_verdict.confidence_cap, key=_ORDER.index)
-    return ReviewResult(verdict=CriticVerdict(verdict=verdict, issues=all_issues[:20],
-                                              evidence_requests=model_verdict.evidence_requests,
-                                              confidence_cap=model_verdict.confidence_cap),
-                        confidence=final)
+    return ReviewResult(
+        verdict=CriticVerdict(
+            verdict=verdict,
+            issues=all_issues[:20],
+            evidence_requests=model_verdict.evidence_requests,
+            confidence_cap=model_verdict.confidence_cap,
+        ),
+        confidence=final,
+    )
 
 
 def fingerprint(draft: DiagnosisDraft) -> str:
     """Stable fingerprint of what a diagnosis claims, for detecting no-change revisions."""
     lead = draft.hypotheses[draft.leading_index] if draft.leading_index is not None else None
-    core = {"outcome": draft.outcome,
-            "lead": lead.statement.lower() if lead else None,
-            "cited": sorted(str(e) for c in (lead.claims if lead else []) for e in c.evidence_ids),
-            "action": draft.proposed_action}
+    core = {
+        "outcome": draft.outcome,
+        "lead": lead.statement.lower() if lead else None,
+        "cited": sorted(str(e) for c in (lead.claims if lead else []) for e in c.evidence_ids),
+        "action": draft.proposed_action,
+    }
     return hashlib.sha256(json.dumps(core, sort_keys=True).encode()).hexdigest()

@@ -11,18 +11,18 @@ from enum import Enum
 
 
 class IncidentState(str, Enum):
-    OPEN = "open"                         # accepted, workflow not yet running
-    INVESTIGATING = "investigating"       # evidence, retrieval, diagnosis, review
-    DIAGNOSED = "diagnosed"               # reviewed diagnosis, established
-    INCONCLUSIVE = "inconclusive"         # root cause not established
-    TESTING = "testing"                   # patch being tested in the isolated environment
+    OPEN = "open"  # accepted, workflow not yet running
+    INVESTIGATING = "investigating"  # evidence, retrieval, diagnosis, review
+    DIAGNOSED = "diagnosed"  # reviewed diagnosis, established
+    INCONCLUSIVE = "inconclusive"  # root cause not established
+    TESTING = "testing"  # patch being tested in the isolated environment
     AWAITING_APPROVAL = "awaiting_approval"
-    EXECUTING = "executing"               # trusted dispatcher applying the change
-    RECONCILING = "reconciling"           # outcome unknown; establishing the real state
-    VERIFYING = "verifying"               # recovery being checked over the hold period
+    EXECUTING = "executing"  # trusted dispatcher applying the change
+    RECONCILING = "reconciling"  # outcome unknown; establishing the real state
+    VERIFYING = "verifying"  # recovery being checked over the hold period
     RECOVERED = "recovered"
-    NOT_RECOVERED = "not_recovered"       # fix did not hold; rollback in progress
-    HANDED_OVER = "handed_over"           # a person owns the next step
+    NOT_RECOVERED = "not_recovered"  # fix did not hold; rollback in progress
+    HANDED_OVER = "handed_over"  # a person owns the next step
     CANCELLED = "cancelled"
     CLOSED = "closed"
 
@@ -37,8 +37,8 @@ class ActionState(str, Enum):
     EXPIRED = "expired"
     APPLYING = "applying"
     OUTCOME_UNKNOWN = "outcome_unknown"
-    EXECUTED = "executed"                 # the release process confirms it was applied
-    NOT_APPLIED = "not_applied"           # confirmed never applied
+    EXECUTED = "executed"  # the release process confirms it was applied
+    NOT_APPLIED = "not_applied"  # confirmed never applied
     VERIFIED = "verified"
     UNDONE = "undone"
     WITHDRAWN = "withdrawn"
@@ -47,7 +47,7 @@ class ActionState(str, Enum):
 I = IncidentState
 A = ActionState
 
-ROLLBACK_KIND = "rollback"                # the one action kind that skips testing (ADR-48)
+ROLLBACK_KIND = "rollback"  # the one action kind that skips testing (ADR-48)
 
 TERMINAL_INCIDENT = {I.CLOSED, I.CANCELLED}
 
@@ -66,14 +66,24 @@ INCIDENT_TRANSITIONS: dict[IncidentState, set[IncidentState]] = {
     I.RECONCILING: {I.VERIFYING, I.HANDED_OVER},
     I.VERIFYING: {I.RECOVERED, I.NOT_RECOVERED, I.HANDED_OVER},
     I.RECOVERED: {I.CLOSED},
-    I.NOT_RECOVERED: {I.HANDED_OVER, I.RECONCILING},   # reconciling: a rollback's outcome is unknown (ADR-46)
-    I.HANDED_OVER: {I.CLOSED, I.INVESTIGATING},        # investigating: a person asks, on a new run (ADR-46)
+    I.NOT_RECOVERED: {
+        I.HANDED_OVER,
+        I.RECONCILING,
+    },  # reconciling: a rollback's outcome is unknown (ADR-46)
+    I.HANDED_OVER: {
+        I.CLOSED,
+        I.INVESTIGATING,
+    },  # investigating: a person asks, on a new run (ADR-46)
     I.CANCELLED: set(),
     I.CLOSED: set(),
 }
 
 ACTION_TRANSITIONS: dict[ActionState, set[ActionState]] = {
-    A.PROPOSED: {A.TESTING, A.WITHDRAWN, A.AWAITING_APPROVAL},   # awaiting_approval: rollback actions only (ADR-46)
+    A.PROPOSED: {
+        A.TESTING,
+        A.WITHDRAWN,
+        A.AWAITING_APPROVAL,
+    },  # awaiting_approval: rollback actions only (ADR-46)
     A.TESTING: {A.AWAITING_APPROVAL, A.TEST_FAILED, A.WITHDRAWN},
     A.TEST_FAILED: set(),
     A.AWAITING_APPROVAL: {A.APPROVED, A.REJECTED, A.EXPIRED, A.WITHDRAWN},
@@ -81,7 +91,10 @@ ACTION_TRANSITIONS: dict[ActionState, set[ActionState]] = {
     A.REJECTED: set(),
     A.EXPIRED: set(),
     A.APPLYING: {A.EXECUTED, A.NOT_APPLIED, A.OUTCOME_UNKNOWN},
-    A.OUTCOME_UNKNOWN: {A.EXECUTED, A.NOT_APPLIED},  # left by reconciliation, or a person's outcome resolution
+    A.OUTCOME_UNKNOWN: {
+        A.EXECUTED,
+        A.NOT_APPLIED,
+    },  # left by reconciliation, or a person's outcome resolution
     A.EXECUTED: {A.VERIFIED, A.UNDONE},
     A.NOT_APPLIED: set(),
     A.VERIFIED: set(),

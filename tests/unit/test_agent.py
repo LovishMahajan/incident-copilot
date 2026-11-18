@@ -15,29 +15,95 @@ import pytest
 from pydantic import ValidationError
 
 from aisre.agent import coordinator
-from aisre.agent.agent_contracts import (Claim, CollectIn, Confidence, CriticIssue, CriticVerdict, DiagnosisDraft, DiagnosisResult,
-                             Evidence, EvidenceKind, EvidenceRequest, HypothesesOut, HypothesisDraft,
-                             IssueKind, KnowledgeIn, KnowledgeOut, PatchFileEdit, PatchIn, PatchProposal,
-                             ReviewResult, SkillContext, SkillFailure, SkillResult, SkillUsage)
-from aisre.agent.coordinator import (AgentState, Limits, Step, StopKind, after_collect, after_critique, after_diagnosis,
-                         after_failure, after_hypotheses, after_knowledge, apply_result, next_step)
-from aisre.agent.tool_registry import (REGISTRY, SKILL_TOOLS, MemoryToolCalls, PatchDraftParams, ToolGate, ToolRefused, agent_tools, search_knowledge,
-                           tool_schema_for_model)
-from aisre.agent.validation import (ObservationFacts, UnsafeOutput, UnsupportedReference, assign_tier, check_citations,
-                        check_output, code_checks, combine, fingerprint, mask_secrets,
-                        missing_required_sources, recheck_fingerprints, score_confidence)
+from aisre.agent.agent_contracts import (
+    Claim,
+    CollectIn,
+    Confidence,
+    CriticIssue,
+    CriticVerdict,
+    DiagnosisDraft,
+    DiagnosisResult,
+    Evidence,
+    EvidenceKind,
+    EvidenceRequest,
+    HypothesesOut,
+    HypothesisDraft,
+    IssueKind,
+    KnowledgeIn,
+    KnowledgeOut,
+    PatchFileEdit,
+    PatchIn,
+    PatchProposal,
+    ReviewResult,
+    SkillContext,
+    SkillFailure,
+    SkillResult,
+    SkillUsage,
+)
+from aisre.agent.coordinator import (
+    AgentState,
+    Limits,
+    Step,
+    StopKind,
+    after_collect,
+    after_critique,
+    after_diagnosis,
+    after_failure,
+    after_hypotheses,
+    after_knowledge,
+    apply_result,
+    next_step,
+)
+from aisre.agent.tool_registry import (
+    REGISTRY,
+    SKILL_TOOLS,
+    MemoryToolCalls,
+    PatchDraftParams,
+    ToolGate,
+    ToolRefused,
+    agent_tools,
+    search_knowledge,
+    tool_schema_for_model,
+)
+from aisre.agent.validation import (
+    ObservationFacts,
+    UnsafeOutput,
+    UnsupportedReference,
+    assign_tier,
+    check_citations,
+    check_output,
+    code_checks,
+    combine,
+    fingerprint,
+    mask_secrets,
+    missing_required_sources,
+    recheck_fingerprints,
+    score_confidence,
+)
 
 T0 = datetime(2026, 11, 1, 9, 0, tzinfo=timezone.utc)
 INC = uuid.uuid4()
 
 
 def ev(kind, incident=INC, summary="x", tier=None, system="sys", tool="get_logs", flagged=False):
-    return Evidence(evidence_id=uuid.uuid4(), incident_id=incident, kind=kind, source_system=system,
-                    tool=tool, query="q", window_start=T0 - timedelta(hours=1), window_end=T0,
-                    collected_at=T0, source_as_of=T0,
-                    source_link=None if kind == EvidenceKind.gap else "https://source/1", summary=summary,
-                    content_sha256=hashlib.sha256(summary.encode()).hexdigest(), strength_tier=tier,
-                    flagged_injection=flagged, gap_reason="timeout" if kind == EvidenceKind.gap else None)
+    return Evidence(
+        evidence_id=uuid.uuid4(),
+        incident_id=incident,
+        kind=kind,
+        source_system=system,
+        tool=tool,
+        query="q",
+        window_start=T0 - timedelta(hours=1),
+        window_end=T0,
+        collected_at=T0,
+        source_as_of=T0,
+        source_link=None if kind == EvidenceKind.gap else "https://source/1",
+        summary=summary,
+        content_sha256=hashlib.sha256(summary.encode()).hexdigest(),
+        strength_tier=tier,
+        flagged_injection=flagged,
+        gap_reason="timeout" if kind == EvidenceKind.gap else None,
+    )
 
 
 def store(*records):
@@ -45,9 +111,14 @@ def store(*records):
 
 
 def hyp(category, ids, against=(), stmt=None):
-    return HypothesisDraft(statement=stmt or f"{category} cause", category=category,
-                           claims=[Claim(text="observed", evidence_ids=list(ids))],
-                           contradicting_evidence_ids=list(against), confirm_test="c", refute_test="r")
+    return HypothesisDraft(
+        statement=stmt or f"{category} cause",
+        category=category,
+        claims=[Claim(text="observed", evidence_ids=list(ids))],
+        contradicting_evidence_ids=list(against),
+        confirm_test="c",
+        refute_test="r",
+    )
 
 
 # ---------------------------------------------------------------- coordinator
@@ -66,7 +137,13 @@ def run(script, limits=Limits(), clock_step=timedelta(seconds=30), evidence_only
             after_hypotheses(s, 1, script.get("hyp_requests", []))
         elif step == Step.COLLECT_TARGETED:
             new = script["targeted"].pop(0) if script.get("targeted") else []
-            after_collect(s, new, gaps=script.get("gaps", 0), tool_calls=len(s.pending_requests), targeted=True)
+            after_collect(
+                s,
+                new,
+                gaps=script.get("gaps", 0),
+                tool_calls=len(s.pending_requests),
+                targeted=True,
+            )
         elif step == Step.DIAGNOSE:
             fp, ratio = script["diagnoses"].pop(0)
             after_diagnosis(s, fp, ratio, 1)
@@ -85,31 +162,53 @@ def test_reference_case_accepted_first_time():
 
 
 def test_revise_with_evidence_request_then_accept():
-    s, step = run({"diagnoses": [("fp1", 0.6), ("fp2", 1.0)],
-                   "verdicts": [("revise", [{"tool": "get_metric"}]), ("accept", [])],
-                   "targeted": [["e-new"]]})
+    s, step = run(
+        {
+            "diagnoses": [("fp1", 0.6), ("fp2", 1.0)],
+            "verdicts": [("revise", [{"tool": "get_metric"}]), ("accept", [])],
+            "targeted": [["e-new"]],
+        }
+    )
     assert step == Step.FINISH_ESTABLISHED and s.revisions == 1 and s.targeted_rounds == 1
 
 
 def test_identical_revision_stops():
-    s, step = run({"diagnoses": [("fp1", 0.6), ("fp1", 0.6)],
-                   "verdicts": [("revise", [{"tool": "get_logs"}]), ("revise", [])],
-                   "targeted": [["e-new"]]})
+    s, step = run(
+        {
+            "diagnoses": [("fp1", 0.6), ("fp1", 0.6)],
+            "verdicts": [("revise", [{"tool": "get_logs"}]), ("revise", [])],
+            "targeted": [["e-new"]],
+        }
+    )
     assert step == Step.FINISH_INCONCLUSIVE and "same diagnosis" in s.stop_reason
 
 
 def test_revision_limit():
-    s, step = run({"diagnoses": [("a", 0.2), ("b", 0.4), ("c", 0.6)],
-                   "verdicts": [("revise", [{"t": 1}]), ("revise", [{"t": 2}]), ("revise", [{"t": 3}])],
-                   "targeted": [["n1"], ["n2"], ["n3"]]})
-    assert step == Step.FINISH_INCONCLUSIVE and "revision limit" in s.stop_reason and s.diagnoses == 3
+    s, step = run(
+        {
+            "diagnoses": [("a", 0.2), ("b", 0.4), ("c", 0.6)],
+            "verdicts": [("revise", [{"t": 1}]), ("revise", [{"t": 2}]), ("revise", [{"t": 3}])],
+            "targeted": [["n1"], ["n2"], ["n3"]],
+        }
+    )
+    assert (
+        step == Step.FINISH_INCONCLUSIVE and "revision limit" in s.stop_reason and s.diagnoses == 3
+    )
 
 
 def test_requested_evidence_adds_nothing_stops():
-    s, step = run({"diagnoses": [("a", 0.5), ("b", 0.5)],
-                   "verdicts": [("revise", [{"t": 1}]), ("revise", [])],
-                   "targeted": [[]]})
-    assert step == Step.FINISH_INCONCLUSIVE and "added nothing new" in s.stop_reason and s.diagnoses == 1
+    s, step = run(
+        {
+            "diagnoses": [("a", 0.5), ("b", 0.5)],
+            "verdicts": [("revise", [{"t": 1}]), ("revise", [])],
+            "targeted": [[]],
+        }
+    )
+    assert (
+        step == Step.FINISH_INCONCLUSIVE
+        and "added nothing new" in s.stop_reason
+        and s.diagnoses == 1
+    )
 
 
 def test_critic_invalid_twice_fails_closed():
@@ -123,14 +222,21 @@ def test_escalate_stops():
 
 
 def test_time_limit_stops():
-    s, step = run({"diagnoses": [("a", 0.5)] * 5, "verdicts": [("revise", [{"t": 1}])] * 5,
-                   "targeted": [["n"]] * 5}, clock_step=timedelta(minutes=6))
+    s, step = run(
+        {
+            "diagnoses": [("a", 0.5)] * 5,
+            "verdicts": [("revise", [{"t": 1}])] * 5,
+            "targeted": [["n"]] * 5,
+        },
+        clock_step=timedelta(minutes=6),
+    )
     assert step == Step.FINISH_INCONCLUSIVE and "time limit" in s.stop_reason
 
 
 def test_model_budget_stops():
-    s, step = run({"diagnoses": [("a", 1.0)], "verdicts": [("accept", [])]},
-                  limits=Limits(max_model_calls=2))
+    s, step = run(
+        {"diagnoses": [("a", 1.0)], "verdicts": [("accept", [])]}, limits=Limits(max_model_calls=2)
+    )
     assert step == Step.FINISH_INCONCLUSIVE and "model call budget" in s.stop_reason
 
 
@@ -143,7 +249,11 @@ def test_knowledge_runs_between_baseline_and_hypotheses():
 
 def test_zero_yield_round_stops_before_any_diagnosis():
     s, step = run({"hyp_requests": [[{"tool": "get_metric"}]], "targeted": [[]]})
-    assert step == Step.FINISH_INCONCLUSIVE and "added nothing new" in s.stop_reason and s.diagnoses == 0
+    assert (
+        step == Step.FINISH_INCONCLUSIVE
+        and "added nothing new" in s.stop_reason
+        and s.diagnoses == 0
+    )
 
 
 def test_a_round_of_only_gaps_adds_nothing():
@@ -152,22 +262,33 @@ def test_a_round_of_only_gaps_adds_nothing():
 
 
 def test_revision_checks_run_before_pending_requests():
-    s, step = run({"diagnoses": [("a", 0.2), ("b", 0.4)],
-                   "verdicts": [("revise", [{"t": 1}]), ("revise", [{"t": 2}])],
-                   "targeted": [["n1"], ["n2"]]}, limits=Limits(max_revisions=1))
+    s, step = run(
+        {
+            "diagnoses": [("a", 0.2), ("b", 0.4)],
+            "verdicts": [("revise", [{"t": 1}]), ("revise", [{"t": 2}])],
+            "targeted": [["n1"], ["n2"]],
+        },
+        limits=Limits(max_revisions=1),
+    )
     assert step == Step.FINISH_INCONCLUSIVE and "revision limit" in s.stop_reason
-    assert s.targeted_rounds == 1                            # no wasted round
+    assert s.targeted_rounds == 1  # no wasted round
 
 
 def test_support_ratio_stop_with_no_new_evidence():
-    s, step = run({"diagnoses": [("a", 0.5), ("b", 0.5)], "verdicts": [("revise", []), ("revise", [])]})
+    s, step = run(
+        {"diagnoses": [("a", 0.5), ("b", 0.5)], "verdicts": [("revise", []), ("revise", [])]}
+    )
     assert step == Step.FINISH_INCONCLUSIVE and "did not improve" in s.stop_reason
 
 
 def test_flat_support_is_allowed_when_evidence_arrived_since_the_previous_diagnosis():
-    s, step = run({"diagnoses": [("a", 0.5), ("b", 0.5), ("c", 1.0)],
-                   "verdicts": [("revise", [{"t": 1}]), ("revise", []), ("accept", [])],
-                   "targeted": [["n1"]]})
+    s, step = run(
+        {
+            "diagnoses": [("a", 0.5), ("b", 0.5), ("c", 1.0)],
+            "verdicts": [("revise", [{"t": 1}]), ("revise", []), ("accept", [])],
+            "targeted": [["n1"]],
+        }
+    )
     assert step == Step.FINISH_ESTABLISHED and s.diagnoses == 3
 
 
@@ -177,9 +298,15 @@ def test_diagnoser_inconclusive_skips_critic():
     assert next_step(s, T0) == Step.FINISH_INCONCLUSIVE and "could not establish" in s.stop_reason
 
 
-@pytest.mark.parametrize("field,value,reason", [
-    ("input_tokens", 200_000, "token budget"), ("output_tokens", 20_000, "token budget"),
-    ("cost_micros", 2_000_000, "incident spend"), ("daily_spend_exhausted", True, "daily spend")])
+@pytest.mark.parametrize(
+    "field,value,reason",
+    [
+        ("input_tokens", 200_000, "token budget"),
+        ("output_tokens", 20_000, "token budget"),
+        ("cost_micros", 2_000_000, "incident spend"),
+        ("daily_spend_exhausted", True, "daily spend"),
+    ],
+)
 def test_token_and_spend_stops_go_through_inconclusive(field, value, reason):
     s = AgentState(started_at=T0, **{field: value})
     assert next_step(s, T0) == Step.FINISH_INCONCLUSIVE
@@ -187,13 +314,19 @@ def test_token_and_spend_stops_go_through_inconclusive(field, value, reason):
 
 
 def test_critic_failure_limit_reads_limits():
-    s, step = run({"diagnoses": [("a", 1.0)], "verdicts": [(None, [])]}, limits=Limits(max_critic_failures=1))
+    s, step = run(
+        {"diagnoses": [("a", 1.0)], "verdicts": [(None, [])]}, limits=Limits(max_critic_failures=1)
+    )
     assert step == Step.FINISH_INCONCLUSIVE and "failing closed" in s.stop_reason
 
 
 def test_limits_hold_the_decided_values():
     L = Limits()
-    assert (L.max_input_tokens, L.max_output_tokens, L.max_cost_micros) == (200_000, 20_000, 2_000_000)
+    assert (L.max_input_tokens, L.max_output_tokens, L.max_cost_micros) == (
+        200_000,
+        20_000,
+        2_000_000,
+    )
     assert (L.max_critic_failures, L.max_attempts_per_step, L.max_tool_calls) == (2, 3, 20)
 
 
@@ -210,17 +343,31 @@ def test_daily_flag_does_not_cut_an_evidence_only_run_short():
 
 def test_running_investigation_stops_after_the_step_that_reports_the_daily_limit():
     s = AgentState(started_at=T0)
-    apply_result(s, next_step(s, T0), SkillResult(output=Out(["e1"], 0), usage=SkillUsage(daily_spend_exhausted=True)))
-    assert s.baseline_done and next_step(s, T0) == Step.FINISH_INCONCLUSIVE and "daily spend" in s.stop_reason
+    apply_result(
+        s,
+        next_step(s, T0),
+        SkillResult(output=Out(["e1"], 0), usage=SkillUsage(daily_spend_exhausted=True)),
+    )
+    assert (
+        s.baseline_done
+        and next_step(s, T0) == Step.FINISH_INCONCLUSIVE
+        and "daily spend" in s.stop_reason
+    )
 
 
-@pytest.mark.parametrize("code", ["invalid_output", "provider_unavailable", "budget_refused",
-                                  "deadline_passed", "store_failed"])
+@pytest.mark.parametrize(
+    "code",
+    ["invalid_output", "provider_unavailable", "budget_refused", "deadline_passed", "store_failed"],
+)
 def test_skill_failure_stops_through_inconclusive(code):
     s = AgentState(started_at=T0)
     after_failure(s, "diagnose", code, "details")
     assert next_step(s, T0) == Step.FINISH_INCONCLUSIVE
-    assert code in s.stop_reason and "details" in s.stop_reason and s.stop_kind == StopKind.INCONCLUSIVE
+    assert (
+        code in s.stop_reason
+        and "details" in s.stop_reason
+        and s.stop_kind == StopKind.INCONCLUSIVE
+    )
 
 
 def test_security_stop_goes_direct_and_outranks_everything():
@@ -232,66 +379,120 @@ def test_security_stop_goes_direct_and_outranks_everything():
 
 @pytest.mark.parametrize("confidence", ["low", None])
 def test_accept_without_medium_confidence_is_inconclusive(confidence):
-    s, step = run({"diagnoses": [("a", 1.0)], "verdicts": [("accept", [])], "confidence": confidence})
+    s, step = run(
+        {"diagnoses": [("a", 1.0)], "verdicts": [("accept", [])], "confidence": confidence}
+    )
     assert step == Step.FINISH_INCONCLUSIVE and "final confidence is low" in s.stop_reason
     assert s.stop_kind == StopKind.INCONCLUSIVE
 
 
 def test_hypothesis_requests_taken_in_turn_and_the_rest_logged():
     s = AgentState(started_at=T0)
-    a, b, c = [{"tool": "a1"}, {"tool": "a2"}, {"tool": "a3"}], [{"tool": "b1"}], [{"tool": "c1"}, {"tool": "c2"}]
+    a, b, c = (
+        [{"tool": "a1"}, {"tool": "a2"}, {"tool": "a3"}],
+        [{"tool": "b1"}],
+        [{"tool": "c1"}, {"tool": "c2"}],
+    )
     after_hypotheses(s, 1, [a, b, c])
     assert [r["tool"] for r in s.pending_requests] == ["a1", "b1", "c1"]
     assert sum("not run" in d for d in s.decisions) == 3
 
 
 def test_targeted_round_not_run_when_limits_are_used():
-    s, step = run({"hyp_requests": [[{"tool": "get_logs"}]], "diagnoses": [("a", 1.0)], "verdicts": [("accept", [])]},
-                  limits=Limits(max_tool_calls=8))
+    s, step = run(
+        {
+            "hyp_requests": [[{"tool": "get_logs"}]],
+            "diagnoses": [("a", 1.0)],
+            "verdicts": [("accept", [])],
+        },
+        limits=Limits(max_tool_calls=8),
+    )
     assert step == Step.FINISH_ESTABLISHED and s.targeted_rounds == 0
 
 
 @dataclass
-class Out:                                   # stands in for activities.EvidenceOut (Layer 8)
+class Out:  # stands in for activities.EvidenceOut (Layer 8)
     evidence_ids: list[str]
     gap_count: int
 
 
 def test_apply_result_drives_a_whole_loop():
     e1 = uuid.uuid4()
-    request = EvidenceRequest(tool="get_metric", reason="version split", params={"metric": "error_rate_by_version"})
-    lead = HypothesisDraft(statement="config", category="deployment_config", confirm_test="c", refute_test="r",
-                           claims=[Claim(text="t", evidence_ids=[e1])], evidence_needed=[request])
-    draft = DiagnosisDraft(outcome="established", leading_index=0, summary="s", ruled_out=["r"],
-                           proposed_action="config_revert", hypotheses=[lead, hyp("dependency", [e1])])
+    request = EvidenceRequest(
+        tool="get_metric", reason="version split", params={"metric": "error_rate_by_version"}
+    )
+    lead = HypothesisDraft(
+        statement="config",
+        category="deployment_config",
+        confirm_test="c",
+        refute_test="r",
+        claims=[Claim(text="t", evidence_ids=[e1])],
+        evidence_needed=[request],
+    )
+    draft = DiagnosisDraft(
+        outcome="established",
+        leading_index=0,
+        summary="s",
+        ruled_out=["r"],
+        proposed_action="config_revert",
+        hypotheses=[lead, hyp("dependency", [e1])],
+    )
     usage = SkillUsage(model_calls=2, input_tokens=100, output_tokens=10, cost_micros=7)
     results = [
         SkillResult[Out](output=Out(["e1", "e2"], 1), usage=SkillUsage(tool_calls=8)),
-        SkillResult[KnowledgeOut](output=KnowledgeOut(evidence_ids=["k1"], gap_count=0, index_revision="r1"),
-                                  usage=SkillUsage(tool_calls=2)),
-        SkillResult[HypothesesOut](output=HypothesesOut(hypotheses=[lead, hyp("dependency", [e1])]), usage=usage),
+        SkillResult[KnowledgeOut](
+            output=KnowledgeOut(evidence_ids=["k1"], gap_count=0, index_revision="r1"),
+            usage=SkillUsage(tool_calls=2),
+        ),
+        SkillResult[HypothesesOut](
+            output=HypothesesOut(hypotheses=[lead, hyp("dependency", [e1])]), usage=usage
+        ),
         SkillResult[Out](output=Out(["e3"], 0), usage=SkillUsage(tool_calls=1)),
-        SkillResult[DiagnosisResult](output=DiagnosisResult(diagnosis_id=uuid.uuid4(), draft=draft, fingerprint="a" * 64,
-                                                            supported_ratio=1.0), usage=usage),
-        SkillResult[ReviewResult](output=ReviewResult(), usage=usage),       # invalid critic output
-        SkillResult[ReviewResult](output=ReviewResult(verdict=CriticVerdict(verdict="accept", confidence_cap=Confidence.high),
-                                                      confidence=Confidence.medium), usage=usage),
+        SkillResult[DiagnosisResult](
+            output=DiagnosisResult(
+                diagnosis_id=uuid.uuid4(), draft=draft, fingerprint="a" * 64, supported_ratio=1.0
+            ),
+            usage=usage,
+        ),
+        SkillResult[ReviewResult](output=ReviewResult(), usage=usage),  # invalid critic output
+        SkillResult[ReviewResult](
+            output=ReviewResult(
+                verdict=CriticVerdict(verdict="accept", confidence_cap=Confidence.high),
+                confidence=Confidence.medium,
+            ),
+            usage=usage,
+        ),
     ]
     s, steps = AgentState(started_at=T0), []
     for r in results:
         steps.append(next_step(s, T0))
         apply_result(s, steps[-1], r)
-    assert steps == [Step.COLLECT_BASELINE, Step.RETRIEVE_KNOWLEDGE, Step.HYPOTHESISE, Step.COLLECT_TARGETED,
-                     Step.DIAGNOSE, Step.CRITIQUE, Step.CRITIQUE]
+    assert steps == [
+        Step.COLLECT_BASELINE,
+        Step.RETRIEVE_KNOWLEDGE,
+        Step.HYPOTHESISE,
+        Step.COLLECT_TARGETED,
+        Step.DIAGNOSE,
+        Step.CRITIQUE,
+        Step.CRITIQUE,
+    ]
     assert next_step(s, T0) == Step.FINISH_ESTABLISHED
-    assert (s.model_calls, s.tool_calls, s.input_tokens, s.output_tokens, s.cost_micros) == (8, 11, 400, 40, 28)
+    assert (s.model_calls, s.tool_calls, s.input_tokens, s.output_tokens, s.cost_micros) == (
+        8,
+        11,
+        400,
+        40,
+        28,
+    )
     assert s.critic_failures == 1 and s.confidence == "medium" and s.gap_count == 1
 
 
 def test_apply_result_records_a_typed_failure_and_its_usage():
     s = AgentState(started_at=T0)
-    failed = SkillResult[HypothesesOut](failure=SkillFailure(skill="hypothesise", code="invalid_output", detail="3 attempts"),
-                                        usage=SkillUsage(model_calls=3, cost_micros=9))
+    failed = SkillResult[HypothesesOut](
+        failure=SkillFailure(skill="hypothesise", code="invalid_output", detail="3 attempts"),
+        usage=SkillUsage(model_calls=3, cost_micros=9),
+    )
     apply_result(s, Step.HYPOTHESISE, failed)
     assert s.model_calls == 3 and s.cost_micros == 9 and s.failure["code"] == "invalid_output"
     assert not s.hypotheses_ready and next_step(s, T0) == Step.FINISH_INCONCLUSIVE
@@ -301,7 +502,12 @@ def test_coordinator_is_pure():
     tree = ast.parse(open(coordinator.__file__).read())
     assert not [n for n in ast.walk(tree) if isinstance(n, ast.Import)]
     assert {n.module for n in ast.walk(tree) if isinstance(n, ast.ImportFrom)} == {
-        "__future__", "dataclasses", "datetime", "enum", "typing"}
+        "__future__",
+        "dataclasses",
+        "datetime",
+        "enum",
+        "typing",
+    }
     s = AgentState(started_at=T0)
     a, b = copy.deepcopy(s), copy.deepcopy(s)
     assert next_step(a, T0) == next_step(b, T0) and a.decisions == b.decisions
@@ -312,13 +518,23 @@ SKILL = "collect_evidence"
 
 
 def gate(**kw):
-    return ToolGate(incident_id=str(INC), service="checkout", incident_start=T0, now=T0 + timedelta(minutes=5), **kw)
+    return ToolGate(
+        incident_id=str(INC),
+        service="checkout",
+        incident_start=T0,
+        now=T0 + timedelta(minutes=5),
+        **kw,
+    )
 
 
 def test_write_tools_never_offered_or_callable():
     assert all(t.kind.value != "write" for skill in SKILL_TOOLS for t in agent_tools(skill))
     with pytest.raises(ToolRefused) as e:
-        gate().check("apply_change", {"service": "checkout", "action_kind": "config_revert", "target_ref": "x"}, "draft_patch")
+        gate().check(
+            "apply_change",
+            {"service": "checkout", "action_kind": "config_revert", "target_ref": "x"},
+            "draft_patch",
+        )
     assert e.value.code == "write_forbidden"
 
 
@@ -337,8 +553,15 @@ def test_out_of_scope_service_refused():
 def test_month_of_logs_refused_and_default_window_applied():
     g = gate()
     with pytest.raises(ToolRefused) as e:
-        g.check("get_logs", {"service": "checkout", "start": (T0 - timedelta(days=30)).isoformat(),
-                             "end": T0.isoformat()}, SKILL)
+        g.check(
+            "get_logs",
+            {
+                "service": "checkout",
+                "start": (T0 - timedelta(days=30)).isoformat(),
+                "end": T0.isoformat(),
+            },
+            SKILL,
+        )
     assert e.value.code == "window_too_large"
     _, p, _ = g.check("get_logs", {"service": "checkout"}, SKILL)
     assert p.end - p.start == timedelta(minutes=65)
@@ -347,7 +570,15 @@ def test_month_of_logs_refused_and_default_window_applied():
 def test_invalid_range_and_unbounded_limit_refused():
     g = gate()
     with pytest.raises(ToolRefused) as e:
-        g.check("get_logs", {"service": "checkout", "start": T0.isoformat(), "end": (T0 - timedelta(hours=1)).isoformat()}, SKILL)
+        g.check(
+            "get_logs",
+            {
+                "service": "checkout",
+                "start": T0.isoformat(),
+                "end": (T0 - timedelta(hours=1)).isoformat(),
+            },
+            SKILL,
+        )
     assert e.value.code == "invalid_params"
     with pytest.raises(ToolRefused):
         g.check("get_logs", {"service": "checkout", "limit": 100000}, SKILL)
@@ -355,8 +586,12 @@ def test_invalid_range_and_unbounded_limit_refused():
 
 def test_repeated_identical_call_limited():
     g = gate()
-    params = {"service": "checkout", "metric": "http_5xx_rate", "start": (T0 - timedelta(hours=1)).isoformat(),
-              "end": T0.isoformat()}
+    params = {
+        "service": "checkout",
+        "metric": "http_5xx_rate",
+        "start": (T0 - timedelta(hours=1)).isoformat(),
+        "end": T0.isoformat(),
+    }
     for _ in range(2):
         tool, p, h = g.check("get_metric", params, SKILL)
         g.record("get_metric", h, new_evidence=0)
@@ -368,8 +603,15 @@ def test_repeated_identical_call_limited():
 def test_per_tool_budget():
     g = gate()
     for i in range(4):
-        _, _, h = g.check("get_changes", {"service": "checkout", "start": (T0 - timedelta(hours=i + 1)).isoformat(),
-                                          "end": T0.isoformat()}, SKILL)
+        _, _, h = g.check(
+            "get_changes",
+            {
+                "service": "checkout",
+                "start": (T0 - timedelta(hours=i + 1)).isoformat(),
+                "end": T0.isoformat(),
+            },
+            SKILL,
+        )
         g.record("get_changes", h, 1)
     with pytest.raises(ToolRefused) as e:
         g.check("get_changes", {"service": "checkout"}, SKILL)
@@ -379,23 +621,39 @@ def test_per_tool_budget():
 def test_budgets_and_repeats_are_counted_from_the_stored_log_not_the_gate():
     """ADR-69: each activity builds its own gate, on another worker after a crash. The log is what they share."""
     store = MemoryToolCalls()
-    params = {"service": "checkout", "metric": "http_5xx_rate", "start": (T0 - timedelta(hours=1)).isoformat(),
-              "end": T0.isoformat()}
+    params = {
+        "service": "checkout",
+        "metric": "http_5xx_rate",
+        "start": (T0 - timedelta(hours=1)).isoformat(),
+        "end": T0.isoformat(),
+    }
     for _ in range(2):
         g = gate(store=store, max_total_calls=3)
         _, p, h = g.check("get_metric", params, SKILL)
-        g.record("get_metric", h, 1, skill=SKILL, params=p.model_dump(mode="json"), evidence_ids=("e1",))
+        g.record(
+            "get_metric", h, 1, skill=SKILL, params=p.model_dump(mode="json"), evidence_ids=("e1",)
+        )
     later = gate(store=store, max_total_calls=3)
     with pytest.raises(ToolRefused) as e:
         later.check("get_metric", params, SKILL)
-    assert e.value.code == "repeated_call" and later.is_repeat(h) and later.stored_result(h) == ["e1"]
+    assert (
+        e.value.code == "repeated_call" and later.is_repeat(h) and later.stored_result(h) == ["e1"]
+    )
     _, _, h2 = later.check("get_logs", {"service": "checkout"}, SKILL)
     later.record("get_logs", h2, 0)
     with pytest.raises(ToolRefused) as e:
-        gate(store=store, max_total_calls=3).check("get_logs", {"service": "checkout", "level": "error"}, SKILL)
+        gate(store=store, max_total_calls=3).check(
+            "get_logs", {"service": "checkout", "level": "error"}, SKILL
+        )
     assert e.value.code == "call_budget"
-    row = store.rows(str(INC))[0]                               # the tool_calls columns
-    assert (row["tool"], row["skill"], row["hash"], row["new_evidence"], row["evidence_ids"]) == ("get_metric", SKILL, h, 1, ["e1"])
+    row = store.rows(str(INC))[0]  # the tool_calls columns
+    assert (row["tool"], row["skill"], row["hash"], row["new_evidence"], row["evidence_ids"]) == (
+        "get_metric",
+        SKILL,
+        h,
+        1,
+        ["e1"],
+    )
     assert row["params"]["metric"] == "http_5xx_rate"
 
 
@@ -404,7 +662,14 @@ def test_the_log_is_per_incident_and_a_fresh_gate_starts_empty():
     one = gate(store=store, max_total_calls=1)
     _, _, h = one.check("get_logs", {"service": "checkout"}, SKILL)
     one.record("get_logs", h, 1)
-    other = ToolGate("another-incident", "checkout", T0, T0 + timedelta(minutes=5), max_total_calls=1, store=store)
+    other = ToolGate(
+        "another-incident",
+        "checkout",
+        T0,
+        T0 + timedelta(minutes=5),
+        max_total_calls=1,
+        store=store,
+    )
     other.check("get_logs", {"service": "checkout"}, SKILL)
     assert gate().log == [] and gate().stored_result(h) is None and len(one.log) == 1
 
@@ -412,18 +677,37 @@ def test_the_log_is_per_incident_and_a_fresh_gate_starts_empty():
 def test_the_review_stores_the_final_outcome_and_confidence_once():
     """ADR-69: what diagnoses.final_outcome and final_confidence get, from the review's result."""
     established = draft_saying("the config change")
-    unsure = established.model_copy(update={"outcome": "inconclusive", "leading_index": None, "proposed_action": None})
+    unsure = established.model_copy(
+        update={"outcome": "inconclusive", "leading_index": None, "proposed_action": None}
+    )
 
     def stored(verdict, confidence, d=established):
-        return ReviewResult(verdict=CriticVerdict(verdict=verdict, confidence_cap=Confidence.high,
-                                                  issues=[] if verdict == "accept" else [CriticIssue(
-                                                      kind="overconfident", detail="too sure", blocking=True)]),
-                            confidence=confidence).stored_fields(d)
-    assert stored("accept", Confidence.medium) == {"reviewed": True, "final_outcome": "established", "final_confidence": "medium"}
-    assert stored("accept", Confidence.low) == {"reviewed": True, "final_outcome": "inconclusive", "final_confidence": "low"}
+        return ReviewResult(
+            verdict=CriticVerdict(
+                verdict=verdict,
+                confidence_cap=Confidence.high,
+                issues=[]
+                if verdict == "accept"
+                else [CriticIssue(kind="overconfident", detail="too sure", blocking=True)],
+            ),
+            confidence=confidence,
+        ).stored_fields(d)
+
+    assert stored("accept", Confidence.medium) == {
+        "reviewed": True,
+        "final_outcome": "established",
+        "final_confidence": "medium",
+    }
+    assert stored("accept", Confidence.low) == {
+        "reviewed": True,
+        "final_outcome": "inconclusive",
+        "final_confidence": "low",
+    }
     assert stored("revise", Confidence.high)["final_outcome"] == "inconclusive"
     assert stored("accept", Confidence.high, unsure)["final_outcome"] == "inconclusive"
-    assert ReviewResult().stored_fields(established) == {}          # invalid critic output: nothing to store
+    assert (
+        ReviewResult().stored_fields(established) == {}
+    )  # invalid critic output: nothing to store
 
 
 def test_total_call_budget_reads_limits():
@@ -436,10 +720,18 @@ def test_total_call_budget_reads_limits():
     assert e.value.code == "call_budget"
 
 
-@pytest.mark.parametrize("skill,tool", [("diagnose", "get_logs"), ("retrieve_knowledge", "get_logs"),
-                                        ("critique", "draft_patch"), ("hypothesise", "draft_patch"),
-                                        ("collect_evidence", "draft_patch"), ("draft_patch", "get_logs"),
-                                        ("no_such_skill", "get_logs")])
+@pytest.mark.parametrize(
+    "skill,tool",
+    [
+        ("diagnose", "get_logs"),
+        ("retrieve_knowledge", "get_logs"),
+        ("critique", "draft_patch"),
+        ("hypothesise", "draft_patch"),
+        ("collect_evidence", "draft_patch"),
+        ("draft_patch", "get_logs"),
+        ("no_such_skill", "get_logs"),
+    ],
+)
 def test_tool_outside_the_skills_list_refused(skill, tool):
     with pytest.raises(ToolRefused) as e:
         gate().check(tool, {"service": "checkout"}, skill)
@@ -449,7 +741,10 @@ def test_tool_outside_the_skills_list_refused(skill, tool):
 def test_each_skill_is_shown_only_its_tools():
     assert agent_tools("diagnose") == [] and tool_schema_for_model("diagnose") == []
     assert {t.name for t in agent_tools("draft_patch")} == {"draft_patch"}
-    assert {t.name for t in agent_tools("retrieve_knowledge")} == {"search_runbooks", "search_past_incidents"}
+    assert {t.name for t in agent_tools("retrieve_knowledge")} == {
+        "search_runbooks",
+        "search_past_incidents",
+    }
     assert {t["name"] for t in tool_schema_for_model("critique")} == SKILL_TOOLS["critique"]
     assert all(REGISTRY[n].kind.value == "read" for n in SKILL_TOOLS["critique"])
 
@@ -457,10 +752,22 @@ def test_each_skill_is_shown_only_its_tools():
 def test_added_tools_validate_their_parameters():
     g = gate()
     assert g.check("get_alert", {"service": "checkout"}, SKILL)[1].alert_id is None
-    assert g.check("get_error_groups", {"service": "checkout", "release": "v2"}, SKILL)[1].release == "v2"
-    assert g.check("search_runbooks", {"service": "checkout", "query": "5xx"}, "retrieve_knowledge")[1].k == 5
+    assert (
+        g.check("get_error_groups", {"service": "checkout", "release": "v2"}, SKILL)[1].release
+        == "v2"
+    )
+    assert (
+        g.check("search_runbooks", {"service": "checkout", "query": "5xx"}, "retrieve_knowledge")[
+            1
+        ].k
+        == 5
+    )
     with pytest.raises(ToolRefused) as e:
-        g.check("search_past_incidents", {"service": "checkout", "query": "x" * 201}, "retrieve_knowledge")
+        g.check(
+            "search_past_incidents",
+            {"service": "checkout", "query": "x" * 201},
+            "retrieve_knowledge",
+        )
     assert e.value.code == "invalid_params"
     with pytest.raises(ToolRefused) as e:
         g.check("search_runbooks", {"service": "payments", "query": "x"}, "retrieve_knowledge")
@@ -476,7 +783,7 @@ def test_point_in_time_is_checked_against_the_window_rules():
     g = gate()
     now = T0 + timedelta(minutes=5)
     params = lambda at: {"service": "checkout", "at": at.isoformat()}
-    g.check("get_dependency_health", params(now + timedelta(seconds=59)), SKILL)      # clock allowance
+    g.check("get_dependency_health", params(now + timedelta(seconds=59)), SKILL)  # clock allowance
     with pytest.raises(ToolRefused) as e:
         g.check("get_dependency_health", params(now + timedelta(minutes=2)), SKILL)
     assert e.value.code == "window_in_future"
@@ -487,7 +794,9 @@ def test_point_in_time_is_checked_against_the_window_rules():
 
 def test_time_without_a_zone_is_refused_not_a_crash():
     with pytest.raises(ToolRefused) as e:
-        gate().check("get_dependency_health", {"service": "checkout", "at": "2026-11-01T09:00:00"}, SKILL)
+        gate().check(
+            "get_dependency_health", {"service": "checkout", "at": "2026-11-01T09:00:00"}, SKILL
+        )
     assert e.value.code == "invalid_params"
 
 
@@ -509,19 +818,39 @@ def test_hypotheses_must_include_a_non_deployment_cause():
 def test_inconclusive_cannot_propose_action():
     e1 = uuid.uuid4()
     with pytest.raises(ValidationError):
-        DiagnosisDraft(outcome="inconclusive", hypotheses=[hyp("deployment_config", [e1]), hyp("dependency", [e1])],
-                       summary="s", proposed_action="config_revert")
+        DiagnosisDraft(
+            outcome="inconclusive",
+            hypotheses=[hyp("deployment_config", [e1]), hyp("dependency", [e1])],
+            summary="s",
+            proposed_action="config_revert",
+        )
 
 
 def test_invented_and_foreign_citations_rejected():
     mine, other = ev(EvidenceKind.log), ev(EvidenceKind.log, incident=uuid.uuid4())
     records = store(mine, other)
-    invented = DiagnosisDraft(outcome="established", leading_index=0, summary="s", ruled_out=["r"],
-                              hypotheses=[hyp("deployment_config", [uuid.uuid4()]), hyp("dependency", [mine.evidence_id])])
+    invented = DiagnosisDraft(
+        outcome="established",
+        leading_index=0,
+        summary="s",
+        ruled_out=["r"],
+        hypotheses=[
+            hyp("deployment_config", [uuid.uuid4()]),
+            hyp("dependency", [mine.evidence_id]),
+        ],
+    )
     with pytest.raises(UnsupportedReference):
         check_citations(invented, records, INC)
-    foreign = DiagnosisDraft(outcome="established", leading_index=0, summary="s", ruled_out=["r"],
-                             hypotheses=[hyp("deployment_config", [other.evidence_id]), hyp("dependency", [mine.evidence_id])])
+    foreign = DiagnosisDraft(
+        outcome="established",
+        leading_index=0,
+        summary="s",
+        ruled_out=["r"],
+        hypotheses=[
+            hyp("deployment_config", [other.evidence_id]),
+            hyp("dependency", [mine.evidence_id]),
+        ],
+    )
     with pytest.raises(UnsupportedReference):
         check_citations(foreign, records, INC)
 
@@ -530,33 +859,55 @@ def test_correlation_only_is_blocking_and_low_confidence():
     change, alert = ev(EvidenceKind.change), ev(EvidenceKind.alert)
     evidence = store(change, alert)
     lead = hyp("deployment_config", [change.evidence_id, alert.evidence_id])
-    d = DiagnosisDraft(outcome="established", leading_index=0, summary="s", ruled_out=["db fine"],
-                       hypotheses=[lead, hyp("dependency", [alert.evidence_id])])
+    d = DiagnosisDraft(
+        outcome="established",
+        leading_index=0,
+        summary="s",
+        ruled_out=["db fine"],
+        hypotheses=[lead, hyp("dependency", [alert.evidence_id])],
+    )
     issues = code_checks(d, evidence, INC, gaps=0, changed=[])
     assert any(i.kind == IssueKind.correlation_only and i.blocking for i in issues)
     assert score_confidence(lead, evidence, 0, []) == Confidence.low
     accepted = CriticVerdict(verdict="accept", confidence_cap=Confidence.high)
-    assert combine(accepted, issues, Confidence.low).verdict.verdict == "revise"     # the model critic can't overrule code
+    assert (
+        combine(accepted, issues, Confidence.low).verdict.verdict == "revise"
+    )  # the model critic can't overrule code
 
 
 def test_strong_contradiction_blocks():
     log, trace = ev(EvidenceKind.log), ev(EvidenceKind.trace)
-    d = DiagnosisDraft(outcome="established", leading_index=0, summary="s", ruled_out=["r"],
-                       hypotheses=[hyp("deployment_config", [log.evidence_id], against=[trace.evidence_id]),
-                                   hyp("dependency", [trace.evidence_id])])
+    d = DiagnosisDraft(
+        outcome="established",
+        leading_index=0,
+        summary="s",
+        ruled_out=["r"],
+        hypotheses=[
+            hyp("deployment_config", [log.evidence_id], against=[trace.evidence_id]),
+            hyp("dependency", [trace.evidence_id]),
+        ],
+    )
     issues = code_checks(d, store(log, trace), INC, 0, [])
     assert any(i.kind == IssueKind.contradicted for i in issues)
 
 
 def test_changed_source_detected_and_blocks():
     log = ev(EvidenceKind.log, summary="original")
-    assert recheck_fingerprints([log], lambda e: hashlib.sha256(b"edited").hexdigest()) == [log.evidence_id]
+    assert recheck_fingerprints([log], lambda e: hashlib.sha256(b"edited").hexdigest()) == [
+        log.evidence_id
+    ]
     assert recheck_fingerprints([log], lambda e: e.content_sha256) == []
 
 
 def established(lead, *others, ruled_out=("r",), action=None):
-    return DiagnosisDraft(outcome="established", leading_index=0, summary="s", ruled_out=list(ruled_out),
-                          proposed_action=action, hypotheses=[lead, *others])
+    return DiagnosisDraft(
+        outcome="established",
+        leading_index=0,
+        summary="s",
+        ruled_out=list(ruled_out),
+        proposed_action=action,
+        hypotheses=[lead, *others],
+    )
 
 
 def kinds(issues):
@@ -565,10 +916,14 @@ def kinds(issues):
 
 def test_stale_cited_evidence_blocks_through_code_checks():
     log = ev(EvidenceKind.log, tier=3)
-    d = established(hyp("deployment_config", [log.evidence_id]), hyp("dependency", [log.evidence_id]))
+    d = established(
+        hyp("deployment_config", [log.evidence_id]), hyp("dependency", [log.evidence_id])
+    )
     issues = code_checks(d, store(log), INC, 0, changed=[log.evidence_id])
     assert [i.blocking for i in issues if i.kind == IssueKind.stale_evidence] == [True]
-    assert IssueKind.stale_evidence not in kinds(code_checks(d, store(log), INC, 0, changed=[uuid.uuid4()]))
+    assert IssueKind.stale_evidence not in kinds(
+        code_checks(d, store(log), INC, 0, changed=[uuid.uuid4()])
+    )
 
 
 def test_mechanism_tier_scores_high_and_a_gap_lowers_it():
@@ -586,21 +941,41 @@ def test_kind_alone_gives_no_strength():
 
 def test_tier_four_is_medium():
     code = ev(EvidenceKind.trace, tier=4)
-    assert score_confidence(hyp("deployment_code", [code.evidence_id]), store(code), 0, []) == Confidence.medium
+    assert (
+        score_confidence(hyp("deployment_code", [code.evidence_id]), store(code), 0, [])
+        == Confidence.medium
+    )
 
 
 def test_two_supporting_observations_need_independent_sources():
-    a, b = ev(EvidenceKind.error_group, tier=5, system="tracker"), ev(EvidenceKind.metric, tier=6, system="prom")
+    a, b = (
+        ev(EvidenceKind.error_group, tier=5, system="tracker"),
+        ev(EvidenceKind.metric, tier=6, system="prom"),
+    )
     same = ev(EvidenceKind.metric, tier=6, system="tracker")
-    assert score_confidence(hyp("deployment_code", [a.evidence_id, b.evidence_id]), store(a, b), 0, []) == Confidence.medium
-    assert score_confidence(hyp("deployment_code", [a.evidence_id, same.evidence_id]), store(a, same), 0, []) == Confidence.low
+    assert (
+        score_confidence(hyp("deployment_code", [a.evidence_id, b.evidence_id]), store(a, b), 0, [])
+        == Confidence.medium
+    )
+    assert (
+        score_confidence(
+            hyp("deployment_code", [a.evidence_id, same.evidence_id]), store(a, same), 0, []
+        )
+        == Confidence.low
+    )
 
 
 def test_timing_alone_is_low_and_flagged_tiers_do_not_count():
     timing = ev(EvidenceKind.change, tier=8)
     flagged = ev(EvidenceKind.metric, tier=2, flagged=True)
-    assert score_confidence(hyp("deployment_code", [timing.evidence_id]), store(timing), 0, []) == Confidence.low
-    assert score_confidence(hyp("deployment_code", [flagged.evidence_id]), store(flagged), 0, []) == Confidence.low
+    assert (
+        score_confidence(hyp("deployment_code", [timing.evidence_id]), store(timing), 0, [])
+        == Confidence.low
+    )
+    assert (
+        score_confidence(hyp("deployment_code", [flagged.evidence_id]), store(flagged), 0, [])
+        == Confidence.low
+    )
 
 
 def test_missing_required_source_is_low_whatever_the_strength():
@@ -610,39 +985,58 @@ def test_missing_required_source_is_low_whatever_the_strength():
 
 
 def test_required_sources():
-    alert, change, log, tracker = (ev(EvidenceKind.alert), ev(EvidenceKind.change), ev(EvidenceKind.log),
-                                   ev(EvidenceKind.error_group))
+    alert, change, log, tracker = (
+        ev(EvidenceKind.alert),
+        ev(EvidenceKind.change),
+        ev(EvidenceKind.log),
+        ev(EvidenceKind.error_group),
+    )
     assert missing_required_sources([alert, change, log]) == []
     assert missing_required_sources([alert, change, tracker]) == []
     assert missing_required_sources([log, ev(EvidenceKind.gap)]) == ["alert", "change history"]
-    assert missing_required_sources([alert, change, ev(EvidenceKind.metric)]) == ["logs or error tracker"]
+    assert missing_required_sources([alert, change, ev(EvidenceKind.metric)]) == [
+        "logs or error tracker"
+    ]
 
 
 def test_any_contradicting_observation_lowers_to_low_and_blocks_unless_guidance_gap_or_timing():
     split = ev(EvidenceKind.metric, tier=2)
-    untiered = ev(EvidenceKind.metric)                       # a plain record still counts
+    untiered = ev(EvidenceKind.metric)  # a plain record still counts
     other = hyp("dependency", [split.evidence_id])
     lead = hyp("deployment_config", [split.evidence_id], against=[untiered.evidence_id])
     assert score_confidence(lead, store(split, untiered), 0, []) == Confidence.low
-    assert IssueKind.contradicted in kinds(code_checks(established(lead, other), store(split, untiered), INC, 0, []))
+    assert IssueKind.contradicted in kinds(
+        code_checks(established(lead, other), store(split, untiered), INC, 0, [])
+    )
     for weak in (ev(EvidenceKind.gap), ev(EvidenceKind.runbook), ev(EvidenceKind.change, tier=8)):
         lead = hyp("deployment_config", [split.evidence_id], against=[weak.evidence_id])
         assert score_confidence(lead, store(split, weak), 0, []) == Confidence.high
-        assert IssueKind.contradicted not in kinds(code_checks(established(lead, other), store(split, weak), INC, 0, []))
+        assert IssueKind.contradicted not in kinds(
+            code_checks(established(lead, other), store(split, weak), INC, 0, [])
+        )
 
 
 def test_tier_assignment_from_facts():
-    assert assign_tier(EvidenceKind.test_result, ObservationFacts(fails_with_change_clears_without=True)) == 1
+    assert (
+        assign_tier(
+            EvidenceKind.test_result, ObservationFacts(fails_with_change_clears_without=True)
+        )
+        == 1
+    )
     assert assign_tier(EvidenceKind.metric, ObservationFacts(only_new_version_failing=True)) == 2
     assert assign_tier(EvidenceKind.trace, ObservationFacts(changed_key_on_failing_path=True)) == 3
     assert assign_tier(EvidenceKind.error_group, ObservationFacts(frames_in_changed_file=True)) == 4
-    assert assign_tier(EvidenceKind.error_group, ObservationFacts(first_seen_after_change=True)) == 5
+    assert (
+        assign_tier(EvidenceKind.error_group, ObservationFacts(first_seen_after_change=True)) == 5
+    )
     assert assign_tier(EvidenceKind.metric, ObservationFacts(failures_grow_with_rollout=True)) == 6
     assert assign_tier(EvidenceKind.change, ObservationFacts(rollback_and_recovery=True)) == 7
     assert assign_tier(EvidenceKind.change, ObservationFacts(linked_by_time=True)) == 8
     assert assign_tier(EvidenceKind.metric, ObservationFacts()) is None
     # strongest wins; a fact on the wrong kind, gaps and guidance give nothing
-    both = ObservationFacts(frames_in_changed_file=True, first_seen_after_change=True, linked_by_time=True)
+    both = ObservationFacts(
+        frames_in_changed_file=True, first_seen_after_change=True, linked_by_time=True
+    )
     assert assign_tier(EvidenceKind.error_group, both) == 4
     assert assign_tier(EvidenceKind.log, ObservationFacts(only_new_version_failing=True)) is None
     assert assign_tier(EvidenceKind.runbook, ObservationFacts(linked_by_time=True)) is None
@@ -651,24 +1045,44 @@ def test_tier_assignment_from_facts():
 
 def test_one_valid_citation_supports_a_claim():
     good, gap = ev(EvidenceKind.log), ev(EvidenceKind.gap)
-    d = established(hyp("deployment_config", [good.evidence_id, gap.evidence_id]), hyp("dependency", [good.evidence_id]))
+    d = established(
+        hyp("deployment_config", [good.evidence_id, gap.evidence_id]),
+        hyp("dependency", [good.evidence_id]),
+    )
     report = check_citations(d, store(good, gap), INC)
     assert report.supported_ratio == 1.0
 
 
-@pytest.mark.parametrize("weak", [ev(EvidenceKind.gap), ev(EvidenceKind.log, flagged=True),
-                                  ev(EvidenceKind.runbook), ev(EvidenceKind.past_incident)])
+@pytest.mark.parametrize(
+    "weak",
+    [
+        ev(EvidenceKind.gap),
+        ev(EvidenceKind.log, flagged=True),
+        ev(EvidenceKind.runbook),
+        ev(EvidenceKind.past_incident),
+    ],
+)
 def test_gaps_flagged_and_guidance_give_no_support(weak):
     good = ev(EvidenceKind.log, tier=3)
-    d = established(hyp("deployment_config", [good.evidence_id]), hyp("dependency", [weak.evidence_id]))
+    d = established(
+        hyp("deployment_config", [good.evidence_id]), hyp("dependency", [weak.evidence_id])
+    )
     assert check_citations(d, store(good, weak), INC).supported_ratio == 0.5
-    issues = [i for i in code_checks(d, store(good, weak), INC, 0, []) if i.kind == IssueKind.unsupported_claim]
-    assert [i.claim_index for i in issues] == [1] and issues[0].blocking    # an alternative's claim counts too
+    issues = [
+        i
+        for i in code_checks(d, store(good, weak), INC, 0, [])
+        if i.kind == IssueKind.unsupported_claim
+    ]
+    assert [i.claim_index for i in issues] == [1] and issues[
+        0
+    ].blocking  # an alternative's claim counts too
 
 
 def test_correlation_only_clears_at_the_medium_bar():
     code = ev(EvidenceKind.trace, tier=4)
-    d = established(hyp("deployment_code", [code.evidence_id]), hyp("dependency", [code.evidence_id]))
+    d = established(
+        hyp("deployment_code", [code.evidence_id]), hyp("dependency", [code.evidence_id])
+    )
     assert IssueKind.correlation_only not in kinds(code_checks(d, store(code), INC, 0, []))
 
 
@@ -679,20 +1093,32 @@ def test_scope_raised_for_action_without_a_cited_change_or_on_another_cause():
     other = hyp("capacity", [log.evidence_id])
     ok = established(hyp("deployment_config", [change.evidence_id]), other, action="config_revert")
     assert IssueKind.scope not in kinds(code_checks(ok, records, INC, 0, []))
-    no_change = established(hyp("deployment_config", [log.evidence_id]), other, action="config_revert")
+    no_change = established(
+        hyp("deployment_config", [log.evidence_id]), other, action="config_revert"
+    )
     assert IssueKind.scope in kinds(code_checks(no_change, records, INC, 0, []))
-    wrong_cause = established(hyp("dependency", [change.evidence_id]), other, action="config_revert")
+    wrong_cause = established(
+        hyp("dependency", [change.evidence_id]), other, action="config_revert"
+    )
     issues = code_checks(wrong_cause, records, INC, 0, [])
     assert IssueKind.scope in kinds(issues) and all(i.blocking for i in issues)
     no_action = established(hyp("dependency", [log.evidence_id]), other)
     assert IssueKind.scope not in kinds(code_checks(no_action, records, INC, 0, []))
 
 
-@pytest.mark.parametrize("scored,cap,final", [
-    (Confidence.high, Confidence.medium, Confidence.medium), (Confidence.medium, Confidence.high, Confidence.medium),
-    (Confidence.high, Confidence.low, Confidence.low), (Confidence.low, Confidence.high, Confidence.low)])
+@pytest.mark.parametrize(
+    "scored,cap,final",
+    [
+        (Confidence.high, Confidence.medium, Confidence.medium),
+        (Confidence.medium, Confidence.high, Confidence.medium),
+        (Confidence.high, Confidence.low, Confidence.low),
+        (Confidence.low, Confidence.high, Confidence.low),
+    ],
+)
 def test_combine_gives_the_lower_of_scored_and_cap(scored, cap, final):
-    assert combine(CriticVerdict(verdict="accept", confidence_cap=cap), [], scored).confidence == final
+    assert (
+        combine(CriticVerdict(verdict="accept", confidence_cap=cap), [], scored).confidence == final
+    )
 
 
 def test_combine_keeps_code_issues_past_the_issue_limit():
@@ -707,10 +1133,18 @@ def draft_saying(text):
     return established(hyp("deployment_config", [e1], stmt=text), hyp("dependency", [e1]))
 
 
-@pytest.mark.parametrize("text,code", [
-    ("the password: hunter2 leaked", "secret"), ("key AKIAABCDEFGHIJKLMNOP in the log", "secret"),
-    ("see https://evil.example/x for details", "link"), ("visit www.evil.example", "link"),
-    ("run kubectl rollout undo deploy/checkout", "command"), ("$ ls", "command"), ("then DROP TABLE incidents", "command")])
+@pytest.mark.parametrize(
+    "text,code",
+    [
+        ("the password: hunter2 leaked", "secret"),
+        ("key AKIAABCDEFGHIJKLMNOP in the log", "secret"),
+        ("see https://evil.example/x for details", "link"),
+        ("visit www.evil.example", "link"),
+        ("run kubectl rollout undo deploy/checkout", "command"),
+        ("$ ls", "command"),
+        ("then DROP TABLE incidents", "command"),
+    ],
+)
 def test_unsafe_model_output_fails_validation(text, code):
     with pytest.raises(UnsafeOutput) as e:
         check_output(draft_saying(text))
@@ -720,7 +1154,9 @@ def test_unsafe_model_output_fails_validation(text, code):
 def test_clean_output_passes_and_nested_fields_are_scanned():
     check_output(draft_saying("the timeout value changed in config"))
     e1 = uuid.uuid4()
-    nested = hyp("dependency", [e1]).model_copy(update={"claims": [Claim(text="at http://x.example", evidence_ids=[e1])]})
+    nested = hyp("dependency", [e1]).model_copy(
+        update={"claims": [Claim(text="at http://x.example", evidence_ids=[e1])]}
+    )
     with pytest.raises(UnsafeOutput):
         check_output(established(hyp("deployment_config", [e1]), nested))
 
@@ -732,20 +1168,38 @@ def test_mask_secrets_for_the_stored_copy():
 
 def test_fingerprint_stable_and_sensitive():
     e1 = uuid.uuid4()
-    a = DiagnosisDraft(outcome="established", leading_index=0, summary="one", ruled_out=["r"],
-                       hypotheses=[hyp("deployment_config", [e1]), hyp("dependency", [e1])])
-    b = DiagnosisDraft(outcome="established", leading_index=0, summary="reworded", ruled_out=["r"],
-                       hypotheses=[hyp("deployment_config", [e1]), hyp("dependency", [e1])])
-    assert fingerprint(a) == fingerprint(b)                  # rewording isn't a revision
-    c = DiagnosisDraft(outcome="established", leading_index=1, summary="one", ruled_out=["r"],
-                       hypotheses=[hyp("deployment_config", [e1]), hyp("dependency", [e1])])
+    a = DiagnosisDraft(
+        outcome="established",
+        leading_index=0,
+        summary="one",
+        ruled_out=["r"],
+        hypotheses=[hyp("deployment_config", [e1]), hyp("dependency", [e1])],
+    )
+    b = DiagnosisDraft(
+        outcome="established",
+        leading_index=0,
+        summary="reworded",
+        ruled_out=["r"],
+        hypotheses=[hyp("deployment_config", [e1]), hyp("dependency", [e1])],
+    )
+    assert fingerprint(a) == fingerprint(b)  # rewording isn't a revision
+    c = DiagnosisDraft(
+        outcome="established",
+        leading_index=1,
+        summary="one",
+        ruled_out=["r"],
+        hypotheses=[hyp("deployment_config", [e1]), hyp("dependency", [e1])],
+    )
     assert fingerprint(a) != fingerprint(c)
 
 
 def test_critic_cannot_accept_with_blocking_issue():
     with pytest.raises(ValidationError):
-        CriticVerdict(verdict="accept", confidence_cap=Confidence.high,
-                      issues=[{"kind": "unsupported_claim", "detail": "x", "blocking": True}])
+        CriticVerdict(
+            verdict="accept",
+            confidence_cap=Confidence.high,
+            issues=[{"kind": "unsupported_claim", "detail": "x", "blocking": True}],
+        )
 
 
 def test_revise_needs_something_to_fix():
@@ -756,10 +1210,14 @@ def test_revise_needs_something_to_fix():
 def test_evidence_needed_is_typed_and_bounded():
     e1 = uuid.uuid4()
     with pytest.raises(ValidationError):
-        HypothesisDraft.model_validate({**hyp("dependency", [e1]).model_dump(), "evidence_needed": ["check logs"]})
+        HypothesisDraft.model_validate(
+            {**hyp("dependency", [e1]).model_dump(), "evidence_needed": ["check logs"]}
+        )
     request = {"tool": "get_logs", "reason": "r", "params": {"level": "error"}}
     with pytest.raises(ValidationError):
-        HypothesisDraft.model_validate({**hyp("dependency", [e1]).model_dump(), "evidence_needed": [request] * 6})
+        HypothesisDraft.model_validate(
+            {**hyp("dependency", [e1]).model_dump(), "evidence_needed": [request] * 6}
+        )
 
 
 def test_source_link_required_unless_gap():
@@ -785,8 +1243,15 @@ def test_stored_fields_match_the_diagnoses_row():
     row = d.stored_fields()
     assert row["category"] == "deployment_config" and row["ruled_out"] == ["r"]
     assert row["claims"] == [{"text": "observed", "evidence_ids": [str(e1)]}]
-    inconclusive = DiagnosisDraft(outcome="inconclusive", summary="s", hypotheses=[hyp("dependency", [e1]), hyp("capacity", [e1])])
-    assert inconclusive.stored_fields()["category"] == "unknown" and inconclusive.stored_fields()["claims"] == []
+    inconclusive = DiagnosisDraft(
+        outcome="inconclusive",
+        summary="s",
+        hypotheses=[hyp("dependency", [e1]), hyp("capacity", [e1])],
+    )
+    assert (
+        inconclusive.stored_fields()["category"] == "unknown"
+        and inconclusive.stored_fields()["claims"] == []
+    )
 
 
 CONTEXT = SkillContext(incident_id=INC, service="checkout", environment="prod", started_at=T0)
@@ -813,19 +1278,33 @@ def test_knowledge_in_bounds_k():
 def test_patch_contracts():
     e1 = uuid.uuid4()
     params = PatchDraftParams(service="checkout", action_kind="config_revert", target_ref="abc")
-    edit = PatchFileEdit(path="config/app.yaml", new_content="a: 1\n", rationale="restores the value", evidence_ids=[e1])
-    assert edit.new_content == "a: 1\n"                      # file content isn't stripped
+    edit = PatchFileEdit(
+        path="config/app.yaml",
+        new_content="a: 1\n",
+        rationale="restores the value",
+        evidence_ids=[e1],
+    )
+    assert edit.new_content == "a: 1\n"  # file content isn't stripped
     assert PatchProposal(params=params, files=[edit], summary="revert the setting").files == [edit]
     with pytest.raises(ValidationError):
         PatchProposal(params=params, summary="revert the setting")
     rollback = params.model_copy(update={"action_kind": "release_rollback"})
     assert PatchProposal(params=rollback, summary="roll the release back").files == []
     with pytest.raises(ValidationError):
-        PatchFileEdit(path="/etc/passwd", new_content="x", rationale="ten or more", evidence_ids=[e1])
+        PatchFileEdit(
+            path="/etc/passwd", new_content="x", rationale="ten or more", evidence_ids=[e1]
+        )
     with pytest.raises(ValidationError):
         PatchFileEdit(path="a.yaml", new_content="x", rationale="short", evidence_ids=[e1])
-    good = established(hyp("deployment_config", [e1]), hyp("dependency", [e1]), action="config_revert")
-    assert PatchIn(context=CONTEXT, diagnosis_id=e1, diagnosis=good, evidence=[], candidate_no=3).candidate_no == 3
+    good = established(
+        hyp("deployment_config", [e1]), hyp("dependency", [e1]), action="config_revert"
+    )
+    assert (
+        PatchIn(
+            context=CONTEXT, diagnosis_id=e1, diagnosis=good, evidence=[], candidate_no=3
+        ).candidate_no
+        == 3
+    )
     with pytest.raises(ValidationError):
         PatchIn(context=CONTEXT, diagnosis_id=e1, diagnosis=good, evidence=[], candidate_no=4)
     no_action = established(hyp("deployment_config", [e1]), hyp("dependency", [e1]))
@@ -846,7 +1325,9 @@ def test_skill_result_has_exactly_one_of_output_or_failure():
         ReviewResult(confidence=Confidence.high)
 
 
-@pytest.mark.parametrize("tool,doc_type", [("search_runbooks", "runbook"), ("search_past_incidents", "past_incident")])
+@pytest.mark.parametrize(
+    "tool,doc_type", [("search_runbooks", "runbook"), ("search_past_incidents", "past_incident")]
+)
 def test_each_knowledge_tool_searches_its_own_document_type(tool, doc_type):
     """The tool picks the type. A model can't widen it: the schema has no doc_type field."""
     calls = []
@@ -855,6 +1336,7 @@ def test_each_knowledge_tool_searches_its_own_document_type(tool, doc_type):
         def search(self, query, **kw):
             calls.append((query, kw))
             return []
+
     params = REGISTRY[tool].params(service="checkout", query="5xx", k=3)
     search_knowledge(REGISTRY[tool], params, Index(), {"sre"})
     assert calls == [("5xx", dict(service="checkout", groups={"sre"}, k=3, doc_type=doc_type))]
