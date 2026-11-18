@@ -96,6 +96,7 @@ module = [
     "aisre.notify",
     "aisre.notify.*",
     "aisre.reliability.otlp",
+    "aisre.reliability.audit_jobs",
     "aisre.reliability.temporal_telemetry",
     "aisre.record",
     "aisre.record.*",

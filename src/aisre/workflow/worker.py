@@ -22,6 +22,10 @@ running beside the relay (aisre.notify.notifier). Telemetry (T1.19): `/metrics` 
 AISRE_METRICS_PORT, spans to OTEL_EXPORTER_OTLP_ENDPOINT, and every activity timed and traced
 by the interceptors in aisre.reliability.temporal_telemetry.
 
+Audit copy (T1.20): the copy and the weekly chain check run as timer jobs on the same
+BudgetJobWorkflow, started if they aren't running (aisre.reliability.audit_jobs). The store
+comes from the AISRE_AUDIT_STORE_* variables; without them only the chain is checked.
+
 Liveness: after every relay pass the worker touches ALIVE_FILE; `--check-alive` exits 0 if
 that happened within ALIVE_WITHIN, which is Compose's health check.
 
@@ -33,6 +37,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import os
 import signal
 import sys
 import tempfile
@@ -51,7 +56,9 @@ from aisre.gateway.jobs import BudgetJobActivities
 from aisre.gateway.ledger import PgBudgetLedger
 from aisre.notify.notifier import Notifier
 from aisre.record import make_engine
+from aisre.record.audit_copy import store_from_env
 from aisre.reliability import telemetry
+from aisre.reliability.audit_jobs import AuditJobActivities, ensure_audit_jobs
 from aisre.reliability.temporal_telemetry import interceptors
 from aisre.workflow import activities as act
 from aisre.workflow import scripted
@@ -121,8 +128,10 @@ async def run(settings: Settings, stop: asyncio.Event | None = None) -> None:
     try:
         chosen = investigation_activities(settings, engine, notifier)
         chosen += budget_job_activities(engine)
+        chosen += AuditJobActivities(engine, store_from_env(os.environ)).all()
         async with build_worker(client, chosen, interceptors()):
             await ensure_budget_jobs(client, act.INVESTIGATION_QUEUE)
+            await ensure_audit_jobs(client, act.INVESTIGATION_QUEUE)
             log.info(
                 "worker on %s, relay running, scripted skills %s",
                 act.INVESTIGATION_QUEUE,

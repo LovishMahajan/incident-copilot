@@ -8,6 +8,7 @@
     GET  /v1/incidents/{id}/actions            list[ActionView]; GET /v1/actions/{id}
     GET  /v1/incidents/{id}/timeline/stream    SSE (aisre.api.stream)
     GET  /v1/incidents/{id}/timeline/export    signed JSON (aisre.api.export)
+    GET  /v1/incidents/{id}/audit/export       signed JSON, from the write-once copy (T1.20)
     POST /v1/incidents/{id}/notes, /cancellation, /severity-confirmation, /closure,
          /reinvestigations                     aisre.api.commands (T1.6)
     GET  /livez, /readyz
@@ -30,6 +31,7 @@ record's work to the same pool. Errors are RFC 9457 problem details (aisre.api.p
 
 from __future__ import annotations
 
+import os
 from collections.abc import AsyncIterator, Awaitable, Callable
 from contextlib import asynccontextmanager
 from typing import Annotated
@@ -45,7 +47,7 @@ from starlette.exceptions import HTTPException
 from aisre.api import audit, observe
 from aisre.api.auth import Authenticator, Caller, current_caller
 from aisre.api.commands import Commands, parse_if_match
-from aisre.api.export import ExportSigner, timeline_document
+from aisre.api.export import ExportSigner, audit_document, timeline_document
 from aisre.api.intake import Intake
 from aisre.api.permissions import check_service, content_read, requires
 from aisre.api.problems import ApiError, field_errors, problem_response
@@ -68,6 +70,7 @@ from aisre.contracts import (
 )
 from aisre.record import commands as cmd
 from aisre.record import load_incident, make_engine, reads, timeline, uuid7
+from aisre.record.audit_copy import WriteOnceStore, store_from_env
 from aisre.reliability import telemetry
 from aisre.remediation.action import Perm
 
@@ -85,13 +88,16 @@ def create_app(
     engine: Engine | None = None,
     *,
     stream_timing: Timing | None = None,
+    audit_store: WriteOnceStore | None = None,
 ) -> FastAPI:
     """The API. Without a token verifier, refuses to build outside development and test
-    (aisre.api.auth)."""
+    (aisre.api.auth). The audit copy's store defaults to the AISRE_AUDIT_STORE_* variables."""
     settings = settings or Settings.from_env()
     authenticator = Authenticator(settings)
     signer = ExportSigner.from_env(settings.env)
+    store = audit_store if audit_store is not None else store_from_env(os.environ)
     audit.install_handler()
+    copy = audit.install_copy(store)
     db = engine or make_engine(settings.database_url)
 
     @asynccontextmanager
@@ -384,6 +390,33 @@ def create_app(
             doc = timeline_document(conn, incident_id, caller.org_id, caller.caller_id)
         content_read(request, caller, incident_id, "timeline_export")
         name = f"incident-{incident_id}-timeline.json"
+        return JSONResponse(
+            signer.sign(doc),
+            headers={
+                "Content-Disposition": f'attachment; filename="{name}"',
+                "X-Content-Type-Options": "nosniff",
+            },
+        )
+
+    @app.get("/v1/incidents/{incident_id}/audit/export", **requires(Perm.AUDIT_EXPORT))
+    def export_audit(request: Request, incident_id: UUID, caller: CallerDep) -> JSONResponse:
+        """ADR-50: the full audit export, read back from the write-once copy (T1.20)."""
+        with db.connect() as conn:
+            view = readable(
+                request, caller, load_incident(conn, incident_id, caller.org_id), incident_id
+            )
+        if not check_service(
+            request, caller, Perm.AUDIT_EXPORT, view.service, incident_id=incident_id
+        ):
+            raise ApiError(403, "forbidden", "Forbidden", "Your roles don't grant audit:export.")
+        if store is None or copy is None:
+            raise ApiError(
+                503, "audit_copy_unavailable", "Audit copy unavailable", "No store configured."
+            )
+        content_read(request, caller, incident_id, "audit_export")
+        copy.flush()  # this process's lines so far, the read just logged included
+        doc = audit_document(store, view, caller.caller_id)
+        name = f"incident-{incident_id}-audit.json"
         return JSONResponse(
             signer.sign(doc),
             headers={
