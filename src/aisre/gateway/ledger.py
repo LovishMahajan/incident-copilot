@@ -153,7 +153,7 @@ class PgBudgetLedger:
 
         return await self._tx(go)
 
-    async def unreconciled(self) -> list[str]:
+    async def pending_reconciliation(self) -> list[str]:
         return [str(r) for r in await self._tx(budget.unreconciled)]
 
     async def fleet_spend(self, now: float) -> tuple[int, int]:
