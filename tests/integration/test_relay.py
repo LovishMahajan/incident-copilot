@@ -1,0 +1,151 @@
+"""Artifact 13.5 T0.10: the outbox relay against the Compose PostgreSQL and Temporal server.
+
+The relay delivers a start and a signal, and a repeated start row is success, not an error.
+The Compose worker runs its own relay on the same table; rows go to whichever claims them
+first (SKIP LOCKED), so each test waits for its own rows to be delivered, by either.
+"""
+
+from __future__ import annotations
+
+import asyncio
+from datetime import UTC, datetime
+from uuid import UUID
+
+import pytest
+from sqlalchemy import select
+from temporalio.api.enums.v1 import EventType
+from temporalio.client import Client
+
+from aisre.contracts import IncidentCreate
+from aisre.record import SIGNAL_WORKFLOW, START_WORKFLOW, create_incident, enqueue, uuid7
+from aisre.record.tables import outbox
+from aisre.reliability import telemetry
+from aisre.workflow import activities as act
+from aisre.workflow.relay import Relay, backoff
+
+
+@pytest.fixture
+def temporal(temporal_address, settings):
+    return asyncio.run(
+        Client.connect(
+            temporal_address,
+            namespace=settings.temporal_namespace,
+            data_converter=act.DATA_CONVERTER,
+        )
+    )
+
+
+def new_incident(engine, org, service) -> UUID:
+    body = IncidentCreate(
+        service=service,
+        environment="production",
+        started_at=datetime.now(UTC),
+        title="Relay test",
+        source="engineer",
+    )
+    with engine.begin() as conn:
+        return create_incident(conn, org_id=org, caller_id="dev:test", body=body).incident_id
+
+
+def rows(engine, incident_id: UUID):
+    with engine.connect() as conn:
+        return conn.execute(
+            select(outbox).where(outbox.c.incident_id == incident_id).order_by(outbox.c.outbox_id)
+        ).all()
+
+
+async def relay_until_delivered(relay: Relay, engine, incident_id: UUID, tries: int = 40) -> int:
+    """Run passes until the incident's rows are delivered; return how many this relay did."""
+    ours = 0
+    for _ in range(tries):
+        ours += await relay.run_once()
+        if all(r.delivered_at for r in rows(engine, incident_id)):
+            return ours
+        await asyncio.sleep(0.25)
+    raise AssertionError(f"outbox rows for {incident_id} not delivered")
+
+
+def test_backoff_doubles_to_a_one_minute_cap():
+    assert [backoff(n).total_seconds() for n in (1, 2, 3, 6, 7, 20)] == [1, 2, 4, 32, 60, 60]
+
+
+def test_relay_starts_the_workflow_and_a_repeat_is_success(app_engine, catalogue, temporal):
+    org, service, _ = catalogue
+    incident_id = new_incident(app_engine, org, service)
+    with app_engine.begin() as conn:  # the same start, sent again
+        enqueue(conn, incident_id, START_WORKFLOW, {"incident_id": str(incident_id), "run": 1})
+    before = telemetry.REGISTRY.get_sample_value("aisre_event_available_seconds_count") or 0
+
+    async def go() -> int:
+        ours = await relay_until_delivered(Relay(app_engine, temporal), app_engine, incident_id)
+        desc = await temporal.get_workflow_handle(f"incident-{incident_id}").describe()
+        assert desc.workflow_type == "IncidentWorkflow"
+        assert desc.task_queue == act.INVESTIGATION_QUEUE
+        return ours
+
+    ours = asyncio.run(go())
+    delivered = rows(app_engine, incident_id)
+    assert len(delivered) == 2
+    assert all(r.last_error is None and r.attempts == 1 for r in delivered)
+    after = telemetry.REGISTRY.get_sample_value("aisre_event_available_seconds_count") or 0
+    assert after - before == ours  # one observation per row this relay delivered
+
+
+def test_relay_delivers_a_signal(app_engine, catalogue, temporal):
+    org, service, _ = catalogue
+    incident_id = new_incident(app_engine, org, service)
+    request_id = str(uuid7())
+    with app_engine.begin() as conn:
+        enqueue(
+            conn,
+            incident_id,
+            SIGNAL_WORKFLOW,
+            {
+                "signal": "cancellation_requested",
+                "arg": {"request_id": request_id, "requested_by": "dev:alice", "reason": "test"},
+            },
+        )
+
+    async def go() -> list[str]:
+        await relay_until_delivered(Relay(app_engine, temporal), app_engine, incident_id)
+        handle = temporal.get_workflow_handle(f"incident-{incident_id}")
+        return [
+            e.workflow_execution_signaled_event_attributes.signal_name
+            async for e in handle.fetch_history_events()
+            if e.event_type == EventType.EVENT_TYPE_WORKFLOW_EXECUTION_SIGNALED
+        ]
+
+    # At least once (Artifact 7.7): a retry after a lost reply may signal twice, and the
+    # workflow drops the repeat by its request_id.
+    names = asyncio.run(go())
+    assert names and set(names) == {"cancellation_requested"}, (
+        names,
+        rows(app_engine, incident_id),
+    )
+
+
+def test_a_signal_to_no_workflow_backs_off(app_engine, catalogue, temporal):
+    org, service, _ = catalogue
+    incident_id = new_incident(app_engine, org, service)
+    with app_engine.begin() as conn:
+        enqueue(
+            conn,
+            incident_id,
+            SIGNAL_WORKFLOW,
+            {"signal": "lead_decision", "arg": {"request_id": "r1", "kind": "close", "by": "x"}},
+            run=2,  # incident-<id>-r2 was never started
+        )
+
+    async def go() -> None:
+        relay = Relay(app_engine, temporal)
+        for _ in range(40):
+            await relay.run_once()
+            failed = [r for r in rows(app_engine, incident_id) if r.kind == SIGNAL_WORKFLOW][0]
+            if failed.attempts:
+                return
+            await asyncio.sleep(0.25)
+
+    asyncio.run(go())
+    failed = [r for r in rows(app_engine, incident_id) if r.kind == SIGNAL_WORKFLOW][0]
+    assert failed.delivered_at is None and failed.attempts >= 1
+    assert failed.last_error and failed.available_at > failed.created_at
