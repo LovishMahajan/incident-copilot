@@ -68,13 +68,19 @@ docker compose down -v           # stop and delete the data
 | Fake model provider | http://127.0.0.1:59200 (`POST /v1/messages`, any `x-api-key`) |
 | Fake monitoring source | http://127.0.0.1:59300 (`/v1/scenarios`) |
 
-**Development-only sign-in.** M0 has no identity system yet, so the API takes the caller's name from `X-Aisre-Dev-Caller` (and an optional organisation UUID from `X-Aisre-Dev-Org`). Anyone can claim any name, so the API refuses to start unless `AISRE_ENV` is `development` or `test`. Real tokens replace it at M1 (`src/aisre/api/auth.py`). Writes also need an `Idempotency-Key` of 8 to 128 characters:
+**Sign-in** (`src/aisre/api/auth.py`, T1.3). Every `/v1` call sends `Authorization: Bearer <token>`. The API verifies the token against the issuer's keys (`AISRE_OIDC_ISSUER`, `AISRE_OIDC_AUDIENCE`, `AISRE_OIDC_JWKS_URL`); in the stack that is the fake issuer, which mints any identity for local use. Roles come from the token's `groups`: `aisre:<role>` on every service, or `aisre:<role>:<service>` on one, with ADR-50's roles (`viewer`, `responder`, `approver`, `incident_lead`, `monitoring`, `platform_admin`). Writes also need an `Idempotency-Key` of 8 to 128 characters:
 
 ```
+token() { curl -s -X POST http://127.0.0.1:59100/token -d "{\"sub\": \"$1\", \"groups\": [\"$2\"]}" \
+  | uv run python -c 'import json, sys; print(json.load(sys.stdin)["access_token"])'; }
+MON=$(token monitoring aisre:monitoring)     # creates incidents only
+READ=$(token alice aisre:responder)          # reads, and creates
 curl -X POST http://127.0.0.1:8000/v1/incidents -H 'Content-Type: application/json' \
-  -H 'X-Aisre-Dev-Caller: alice' -H 'Idempotency-Key: demo-0000001' \
+  -H "Authorization: Bearer $MON" -H 'Idempotency-Key: demo-0000001' \
   --data @tests/fixtures/reference-incident/alert.json
 ```
+
+Tokens last 5 minutes; mint new ones when they expire. Without the three `AISRE_OIDC_*` settings the API falls back to the development-only `X-Aisre-Dev-Caller` header (with optional `X-Aisre-Dev-Org` and `X-Aisre-Dev-Groups`, default `aisre:responder`), and then refuses to start unless `AISRE_ENV` is `development` or `test`. With them set, that header is refused. The in-process integration tests use the header.
 
 The service and environment must be in the organisation's catalogue (`services`, `environments`); otherwise the answer is `404 unknown_service`. M0 has no catalogue route; `python -m aisre.api.dev_seed` adds one service and environment (default `orders-api`/`production`, the reference incident's) to the development organisation, and a rerun changes nothing:
 
@@ -97,23 +103,26 @@ The `integration` tests expect the Compose worker to run with scripted skills.
 
 ## M0 demo
 
-From a fresh clone, with Docker running and nothing else on the ports in `.env`. Each block is copied from the run recorded in [the M0 evidence record](docs/layers/layer-13-implementation-planning/milestones/m0.md).
+From a fresh clone, with Docker running and nothing else on the ports in `.env`. Each block is copied from the run recorded in [the M0 evidence record](docs/layers/layer-13-implementation-planning/milestones/m0.md), except sign-in: M0 named the caller with the development header, and from M1 the stack takes tokens (Sign-in, above), so the calls send `$MON` and `$READ`.
 
 ```
 uv sync --python 3.12
 cp .env.example .env
 docker compose up -d --build --wait     # exits 0 once every service is healthy
 docker compose exec api python -m aisre.api.dev_seed
+token() { curl -s -X POST http://127.0.0.1:59100/token -d "{\"sub\": \"$1\", \"groups\": [\"$2\"]}" \
+  | uv run python -c 'import json, sys; print(json.load(sys.stdin)["access_token"])'; }
+MON=$(token monitoring aisre:monitoring); READ=$(token alice aisre:responder)
 ```
 
 Post the reference alert, keep the incident ID, and read the timeline a few seconds later. It ends in `aisre.incident.handed_over.v1`:
 
 ```
 ID=$(curl -s -X POST http://127.0.0.1:8000/v1/incidents -H 'Content-Type: application/json' \
-  -H 'X-Aisre-Dev-Caller: monitoring' -H 'Idempotency-Key: demo-run-0001' \
+  -H "Authorization: Bearer $MON" -H 'Idempotency-Key: demo-run-0001' \
   --data @tests/fixtures/reference-incident/alert.json \
   | uv run python -c 'import json, sys; print(json.load(sys.stdin)["incident_id"])')
-curl -s "http://127.0.0.1:8000/v1/incidents/$ID/timeline" -H 'X-Aisre-Dev-Caller: monitoring'
+curl -s "http://127.0.0.1:8000/v1/incidents/$ID/timeline" -H "Authorization: Bearer $READ"
 ```
 
 The workflow is `incident-$ID`: open it in the Temporal UI (http://127.0.0.1:8233, namespace `default`), or ask Temporal from the command line (the admin-tools image has the `temporal` CLI) or through the UI's HTTP API. After the hand-over it stays running, waiting for a person to close the incident:
@@ -127,7 +136,7 @@ Post the same alert again, under a new key. It is attached to the open incident 
 
 ```
 curl -s -X POST http://127.0.0.1:8000/v1/incidents -H 'Content-Type: application/json' \
-  -H 'X-Aisre-Dev-Caller: monitoring' -H 'Idempotency-Key: demo-run-0002' \
+  -H "Authorization: Bearer $MON" -H 'Idempotency-Key: demo-run-0002' \
   --data @tests/fixtures/reference-incident/alert.json
 docker compose exec postgres psql -U postgres -d aisre -c 'SELECT count(*) FROM incidents'
 docker compose run --rm --no-deps --entrypoint temporal temporal-namespace workflow count
@@ -140,13 +149,13 @@ AISRE_SCRIPTED_STEP_SECONDS=3 docker compose up -d --wait worker
 ID2=$(sed 's/orders-api:OrdersApiHighErrorRate/orders-api:OrdersApiHighErrorRate:run2/' \
     tests/fixtures/reference-incident/alert.json \
   | curl -s -X POST http://127.0.0.1:8000/v1/incidents -H 'Content-Type: application/json' \
-    -H 'X-Aisre-Dev-Caller: monitoring' -H 'Idempotency-Key: demo-run-0003' --data @- \
+    -H "Authorization: Bearer $MON" -H 'Idempotency-Key: demo-run-0003' --data @- \
   | uv run python -c 'import json, sys; print(json.load(sys.stdin)["incident_id"])')
-until curl -s "http://127.0.0.1:8000/v1/incidents/$ID2" -H 'X-Aisre-Dev-Caller: monitoring' | grep -q '"status":"investigating"'; do sleep 0.2; done
+until curl -s "http://127.0.0.1:8000/v1/incidents/$ID2" -H "Authorization: Bearer $READ" | grep -q '"status":"investigating"'; do sleep 0.2; done
 docker compose kill -s SIGKILL worker
 docker compose start worker
-until curl -s "http://127.0.0.1:8000/v1/incidents/$ID2" -H 'X-Aisre-Dev-Caller: monitoring' | grep -q '"status":"handed_over"'; do sleep 2; done
-curl -s "http://127.0.0.1:8000/v1/incidents/$ID2/timeline" -H 'X-Aisre-Dev-Caller: monitoring'
+until curl -s "http://127.0.0.1:8000/v1/incidents/$ID2" -H "Authorization: Bearer $READ" | grep -q '"status":"handed_over"'; do sleep 2; done
+curl -s "http://127.0.0.1:8000/v1/incidents/$ID2/timeline" -H "Authorization: Bearer $READ"
 docker compose run --rm --no-deps --entrypoint temporal temporal-namespace workflow show -w "incident-$ID2"
 ```
 

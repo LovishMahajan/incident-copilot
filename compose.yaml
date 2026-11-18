@@ -175,6 +175,11 @@ services:
       AISRE_ENV: ${AISRE_ENV:-development}
       AISRE_DATABASE_URL: ${AISRE_DATABASE_URL}
       AISRE_LOG_LEVEL: ${AISRE_LOG_LEVEL:-INFO}
+      # Bearer tokens from the fake issuer (T1.3). With these set, the development caller
+      # header is refused.
+      AISRE_OIDC_ISSUER: ${AISRE_OIDC_ISSUER:-}
+      AISRE_OIDC_AUDIENCE: ${AISRE_OIDC_AUDIENCE:-}
+      AISRE_OIDC_JWKS_URL: ${AISRE_OIDC_JWKS_URL:-}
     command:
       ["uvicorn", "--factory", "aisre.api.app:create_app", "--host", "0.0.0.0", "--port", "8000"]
     ports:

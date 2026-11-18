@@ -3,6 +3,7 @@ ADR-50 matrix, the ToolGate and retrieval filters can be exercised."""
 
 from __future__ import annotations
 
+import json
 from datetime import datetime, timedelta, timezone
 
 import pytest
@@ -41,11 +42,137 @@ def refused(code, tool, params, skill="collect_evidence"):
 
 
 # ---------------------------------------------------------------- ST-19
-def test_st19_authentication_needs_the_api_and_identity_system():
-    pytest.skip(
-        "Needs a running system: no HTTP API or token verification exists in the reference modules, so missing, "
-        "expired, wrong-issuer, wrong-audience and altered tokens have nothing to reach"
+# The API with the fake issuer's keys (ops/fakes/token_issuer.py) and no reachable database:
+# every refusal must come before any data is read. With PostgreSQL, the same cases run in
+# tests/integration/test_api_auth.py.
+UNREACHABLE = "postgresql+psycopg://aisre_app@127.0.0.1:1/aisre?connect_timeout=1"
+PROBLEM_KEYS = {"type", "title", "status", "detail", "instance", "code", "request_id"}
+
+
+@pytest.fixture(scope="module")
+def token_api(token_issuer):
+    from fastapi.testclient import TestClient
+    from pydantic import SecretStr
+    from sqlalchemy import create_engine
+
+    from aisre.api.app import create_app
+    from aisre.config import Settings
+
+    issuer, jwks_url = token_issuer
+    settings = Settings(
+        env="test",
+        database_url=SecretStr(UNREACHABLE),
+        oidc_issuer=issuer.url,
+        oidc_audience=issuer.audience,
+        oidc_jwks_url=jwks_url,
     )
+    with TestClient(create_app(settings, create_engine(UNREACHABLE))) as c:
+        yield c
+
+
+def st19_tokens(issuer):
+    now = int(datetime.now(timezone.utc).timestamp())
+    good = issuer.token("alice", ["aisre:incident_lead"])
+    head, body, sig = good.split(".")
+    flipped = sig[:-2] + ("AA" if sig[-2:] != "AA" else "BA")
+    return {
+        "no token": None,
+        "expired": issuer.sign(issuer.claims("alice", ttl_seconds=60, now=now - 600)),
+        "wrong issuer": issuer.sign(issuer.claims("alice") | {"iss": "http://evil.test"}),
+        "wrong audience": issuer.sign(issuer.claims("alice") | {"aud": "other-api"}),
+        "altered signature": f"{head}.{body}.{flipped}",
+        "altered claims": f"{head}.{issuer.token('alice', ['aisre:platform_admin']).split('.')[1]}.{sig}",
+        "alg none": f"eyJhbGciOiJub25lIn0.{body}.c2ln",  # {"alg":"none"}
+    }
+
+
+ST19_REASONS = {
+    "no token": "missing_token",
+    "expired": "expired",
+    "wrong issuer": "wrong_issuer",
+    "wrong audience": "wrong_audience",
+    "altered signature": "bad_signature",
+    "altered claims": "bad_signature",
+    "alg none": "unsupported_alg",
+}
+
+
+@pytest.mark.parametrize("case", list(ST19_REASONS))
+@pytest.mark.parametrize(
+    "method,path",
+    [
+        ("GET", "/v1/incidents/00000000-0000-7000-8000-0000000000aa"),
+        ("GET", "/v1/incidents/00000000-0000-7000-8000-0000000000aa/timeline"),
+        ("POST", "/v1/incidents"),
+    ],
+)
+def test_st19_a_bad_token_is_refused_with_no_data_and_logged(
+    token_api, token_issuer, caplog, case, method, path
+):
+    token = st19_tokens(token_issuer[0])[case]
+    headers = {"Idempotency-Key": "st19-key-0001"}
+    if token is not None:
+        headers["Authorization"] = f"Bearer {token}"
+    with caplog.at_level("INFO", logger="aisre.audit"):
+        r = token_api.request(method, path, headers=headers, json={"service": "orders-api"})
+    assert r.status_code == 401, r.text
+    assert r.headers["content-type"] == "application/problem+json"
+    assert set(r.json()) <= PROBLEM_KEYS and r.json()["code"] == "unauthenticated"
+    assert r.headers["WWW-Authenticate"].startswith("Bearer")
+    events = [json.loads(m) for m in caplog.messages]
+    assert [(e["event"], e["reason"]) for e in events] == [
+        ("aisre.auth.failed", ST19_REASONS[case])
+    ]
+    assert events[0]["path"] == path and events[0]["request_id"] == r.headers["X-Request-ID"]
+    assert token is None or token not in caplog.text  # the token is never logged
+
+
+def test_st19_the_development_header_is_refused_once_tokens_are_configured(token_api, caplog):
+    with caplog.at_level("INFO", logger="aisre.audit"):
+        r = token_api.get(
+            "/v1/incidents/00000000-0000-7000-8000-0000000000aa",
+            headers={"X-Aisre-Dev-Caller": "alice", "X-Aisre-Dev-Groups": "aisre:incident_lead"},
+        )
+    assert r.status_code == 401
+    assert json.loads(caplog.messages[0])["reason"] == "dev_header_refused"
+
+
+def test_st19_the_development_header_is_refused_outside_development_and_test():
+    from pydantic import SecretStr
+    from sqlalchemy import create_engine
+
+    from aisre.api.app import create_app
+    from aisre.config import Settings
+
+    with pytest.raises(RuntimeError, match="development-only"):
+        create_app(
+            Settings(env="production", database_url=SecretStr(UNREACHABLE)),
+            create_engine(UNREACHABLE),
+        )
+
+
+def test_st19_an_unreachable_issuer_is_503_not_a_pass(caplog):
+    from fastapi.testclient import TestClient
+    from pydantic import SecretStr
+    from sqlalchemy import create_engine
+
+    from aisre.api.app import create_app
+    from aisre.config import Settings
+
+    settings = Settings(
+        env="test",
+        database_url=SecretStr(UNREACHABLE),
+        oidc_issuer="http://issuer.test",
+        oidc_audience="aisre-api",
+        oidc_jwks_url="http://127.0.0.1:1/jwks",
+    )
+    token = "eyJhbGciOiJSUzI1NiIsImtpZCI6ImsifQ.e30.c2ln"
+    with TestClient(create_app(settings, create_engine(UNREACHABLE))) as c:
+        r = c.get(
+            "/v1/incidents/00000000-0000-7000-8000-0000000000aa",
+            headers={"Authorization": f"Bearer {token}"},
+        )
+    assert r.status_code == 503 and r.json()["code"] == "sign_in_unavailable"
 
 
 # ---------------------------------------------------------------- ST-20

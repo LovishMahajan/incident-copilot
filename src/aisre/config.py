@@ -38,6 +38,9 @@ ENV_VARS: dict[str, str] = {
     "log_level": "AISRE_LOG_LEVEL",
     "scripted_skills": "AISRE_SCRIPTED_SKILLS",
     "scripted_step_seconds": "AISRE_SCRIPTED_STEP_SECONDS",
+    "oidc_issuer": "AISRE_OIDC_ISSUER",
+    "oidc_audience": "AISRE_OIDC_AUDIENCE",
+    "oidc_jwks_url": "AISRE_OIDC_JWKS_URL",
 }
 
 
@@ -62,6 +65,12 @@ class Settings(BaseModel):
     scripted_skills: bool = False
     # Demo pacing for the scripted skill steps, so a worker kill lands mid-run (T0.12).
     scripted_step_seconds: float = Field(default=0.0, ge=0, le=10)
+    # Bearer-token sign-in (T1.3, ADR-49): the identity system's `iss`, the API's audience and
+    # the issuer's JWK set. All three or none. With none, the API takes the development caller
+    # header, and only in development and test (aisre.api.auth).
+    oidc_issuer: str | None = Field(default=None, min_length=1)
+    oidc_audience: str | None = Field(default=None, min_length=1)
+    oidc_jwks_url: str | None = Field(default=None, pattern=r"^https?://")
 
     # Fixed: equal to aisre.workflow.activities.INVESTIGATION_QUEUE and DISPATCHER_QUEUE.
     investigation_task_queue: ClassVar[str] = "aisre-investigation"
@@ -72,6 +81,20 @@ class Settings(BaseModel):
         if self.scripted_skills and self.env == "production":
             raise ValueError("AISRE_SCRIPTED_SKILLS is for development and test, never production")
         return self
+
+    @model_validator(mode="after")
+    def oidc_all_or_none(self) -> Settings:
+        given = [self.oidc_issuer, self.oidc_audience, self.oidc_jwks_url]
+        if any(given) and not all(given):
+            raise ValueError("AISRE_OIDC_ISSUER, _AUDIENCE and _JWKS_URL go together")
+        if self.env == "production" and (self.oidc_jwks_url or "").startswith("http://"):
+            raise ValueError("AISRE_OIDC_JWKS_URL must be https in production")
+        return self
+
+    @property
+    def token_sign_in(self) -> bool:
+        """True when a token verifier is configured (the dev caller header is then refused)."""
+        return self.oidc_jwks_url is not None
 
     @classmethod
     def from_env(cls, environ: Mapping[str, str] | None = None) -> Settings:
