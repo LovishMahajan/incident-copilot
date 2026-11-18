@@ -1,0 +1,29 @@
+{
+  "version": "0.0.1",
+  "configurations": [
+    {
+      "name": "demo-viewer",
+      "runtimeExecutable": "sh",
+      "runtimeArgs": [
+        "-c",
+        "docker compose --env-file .env.example up -d --build --wait && docker compose --env-file .env.example exec -T api python -m aisre.api.dev_seed && exec docker compose --env-file .env.example logs -f --since 1s demo-viewer api worker"
+      ],
+      "port": 58080
+    },
+    {
+      "name": "temporal-ui",
+      "url": "http://127.0.0.1:8233",
+      "port": 8233
+    },
+    {
+      "name": "api",
+      "url": "http://127.0.0.1:8000",
+      "port": 8000
+    },
+    {
+      "name": "prometheus",
+      "url": "http://127.0.0.1:59090",
+      "port": 59090
+    }
+  ]
+}
