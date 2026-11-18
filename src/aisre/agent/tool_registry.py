@@ -18,15 +18,23 @@ from enum import Enum
 from typing import Annotated, Callable, Optional, Protocol
 from urllib.parse import unquote
 
-from pydantic import AfterValidator, AwareDatetime, BaseModel, ConfigDict, Field, ValidationError, model_validator
+from pydantic import (
+    AfterValidator,
+    AwareDatetime,
+    BaseModel,
+    ConfigDict,
+    Field,
+    ValidationError,
+    model_validator,
+)
 
 from aisre.agent.coordinator import Limits
 
 
 class ToolKind(str, Enum):
-    READ = "read"          # reads operational data; agent may call
-    PROPOSE = "propose"    # creates a draft record (e.g. a patch draft); agent may call
-    WRITE = "write"        # changes an external system; application only, never the agent
+    READ = "read"  # reads operational data; agent may call
+    PROPOSE = "propose"  # creates a draft record (e.g. a patch draft); agent may call
+    WRITE = "write"  # changes an external system; application only, never the agent
 
 
 class ToolRefused(Exception):
@@ -45,11 +53,12 @@ class _P(BaseModel):
 
 # ST-30: a query term never names a host. Provisional, like the output lists in validation.py.
 _ADDRESS = re.compile(
-    r"(?i)[a-z][a-z0-9+.-]*://|//[\w-]+\.[\w.-]+"                # a link or scheme-relative link
-    r"|\b\d{1,3}(?:\.\d{1,3}){3}\b|\b0x[0-9a-f]{8}\b"            # IPv4, dotted or as one hex number
+    r"(?i)[a-z][a-z0-9+.-]*://|//[\w-]+\.[\w.-]+"  # a link or scheme-relative link
+    r"|\b\d{1,3}(?:\.\d{1,3}){3}\b|\b0x[0-9a-f]{8}\b"  # IPv4, dotted or as one hex number
     r"|\[[0-9a-f.]*:[0-9a-f:.]*\]|(?<![\w:])::1?(?![\w:])|\bfe80:|\bf[cd][0-9a-f]{2}:"  # IPv6: bracketed, loopback, link-local, private
     r"|\blocalhost\b|\bmetadata\.google\b"
-    r"|\b[\w-]+(?:\.[\w-]+)*\.(?:internal|local|localdomain|intranet|corp|lan|svc)\b")
+    r"|\b[\w-]+(?:\.[\w-]+)*\.(?:internal|local|localdomain|intranet|corp|lan|svc)\b"
+)
 
 
 def _no_address(value: str) -> str:
@@ -80,7 +89,9 @@ class LogQuery(WindowParams):
 
 
 class MetricQuery(WindowParams):
-    metric: str = Field(pattern=r"^(http_5xx_rate|http_latency_p95|http_request_rate|error_rate_by_version)$")
+    metric: str = Field(
+        pattern=r"^(http_5xx_rate|http_latency_p95|http_request_rate|error_rate_by_version)$"
+    )
 
 
 class ChangeQuery(WindowParams):
@@ -126,43 +137,136 @@ class Tool:
     kind: ToolKind
     description: str
     params: type[BaseModel]
-    credential_scope: str                    # the narrow credential the adapter uses
-    max_window: Optional[timedelta]          # None for point-in-time tools
+    credential_scope: str  # the narrow credential the adapter uses
+    max_window: Optional[timedelta]  # None for point-in-time tools
     max_output_bytes: int
     max_calls_per_incident: int
-    handler: Optional[Callable] = None       # set by the platform at start-up
-    doc_type: Optional[str] = None           # the knowledge tools: retrieval.Document.doc_type to search
+    handler: Optional[Callable] = None  # set by the platform at start-up
+    doc_type: Optional[str] = None  # the knowledge tools: retrieval.Document.doc_type to search
 
 
 DEFAULT_LOOKBACK = timedelta(minutes=60)
 
-CLOCK_ALLOWANCE = timedelta(minutes=1)       # clock difference between a source and the platform
+CLOCK_ALLOWANCE = timedelta(minutes=1)  # clock difference between a source and the platform
 
-REGISTRY: dict[str, Tool] = {t.name: t for t in [
-    Tool("get_alert", ToolKind.READ, "The alert that opened the incident",
-         AlertQuery, "alerts:read:{service}", None, 16_000, 2),
-    Tool("get_logs", ToolKind.READ, "Error and warning log lines for the incident's service",
-         LogQuery, "logs:read:{service}", timedelta(hours=6), 256_000, 8),
-    Tool("get_metric", ToolKind.READ, "One named metric series for the incident's service",
-         MetricQuery, "metrics:read:{service}", timedelta(hours=24), 64_000, 10),
-    Tool("get_changes", ToolKind.READ, "Deployments and configuration changes for the service",
-         ChangeQuery, "changes:read:{service}", timedelta(hours=24), 64_000, 4),
-    Tool("get_traces", ToolKind.READ, "Failing request traces for the service",
-         TraceQuery, "traces:read:{service}", timedelta(hours=2), 128_000, 6),
-    Tool("get_error_groups", ToolKind.READ, "Grouped errors from the error tracker for the service",
-         ErrorGroupQuery, "errors:read:{service}", timedelta(hours=24), 64_000, 4),
-    Tool("get_dependency_health", ToolKind.READ, "Health of the service's dependencies at a time",
-         DependencyQuery, "catalog:read:{service}", None, 32_000, 4),
-    Tool("search_runbooks", ToolKind.READ, "Runbook passages matching a query",
-         KnowledgeQuery, "runbooks:read:{service}", None, 32_000, 3, doc_type="runbook"),
-    Tool("search_past_incidents", ToolKind.READ, "Past-incident passages matching a query",
-         KnowledgeQuery, "incidents:read:{service}", None, 32_000, 3, doc_type="past_incident"),
-    Tool("draft_patch", ToolKind.PROPOSE, "Create a draft patch from the allowed list; never applied",
-         PatchDraftParams, "review:propose:{service}", None, 64_000, 3),
-    # WRITE tools: registered for the dispatcher only. agent_tools() never returns them.
-    Tool("apply_change", ToolKind.WRITE, "Apply an approved change through the release process",
-         PatchDraftParams, "release:write:{service}", None, 16_000, 1),
-]}
+REGISTRY: dict[str, Tool] = {
+    t.name: t
+    for t in [
+        Tool(
+            "get_alert",
+            ToolKind.READ,
+            "The alert that opened the incident",
+            AlertQuery,
+            "alerts:read:{service}",
+            None,
+            16_000,
+            2,
+        ),
+        Tool(
+            "get_logs",
+            ToolKind.READ,
+            "Error and warning log lines for the incident's service",
+            LogQuery,
+            "logs:read:{service}",
+            timedelta(hours=6),
+            256_000,
+            8,
+        ),
+        Tool(
+            "get_metric",
+            ToolKind.READ,
+            "One named metric series for the incident's service",
+            MetricQuery,
+            "metrics:read:{service}",
+            timedelta(hours=24),
+            64_000,
+            10,
+        ),
+        Tool(
+            "get_changes",
+            ToolKind.READ,
+            "Deployments and configuration changes for the service",
+            ChangeQuery,
+            "changes:read:{service}",
+            timedelta(hours=24),
+            64_000,
+            4,
+        ),
+        Tool(
+            "get_traces",
+            ToolKind.READ,
+            "Failing request traces for the service",
+            TraceQuery,
+            "traces:read:{service}",
+            timedelta(hours=2),
+            128_000,
+            6,
+        ),
+        Tool(
+            "get_error_groups",
+            ToolKind.READ,
+            "Grouped errors from the error tracker for the service",
+            ErrorGroupQuery,
+            "errors:read:{service}",
+            timedelta(hours=24),
+            64_000,
+            4,
+        ),
+        Tool(
+            "get_dependency_health",
+            ToolKind.READ,
+            "Health of the service's dependencies at a time",
+            DependencyQuery,
+            "catalog:read:{service}",
+            None,
+            32_000,
+            4,
+        ),
+        Tool(
+            "search_runbooks",
+            ToolKind.READ,
+            "Runbook passages matching a query",
+            KnowledgeQuery,
+            "runbooks:read:{service}",
+            None,
+            32_000,
+            3,
+            doc_type="runbook",
+        ),
+        Tool(
+            "search_past_incidents",
+            ToolKind.READ,
+            "Past-incident passages matching a query",
+            KnowledgeQuery,
+            "incidents:read:{service}",
+            None,
+            32_000,
+            3,
+            doc_type="past_incident",
+        ),
+        Tool(
+            "draft_patch",
+            ToolKind.PROPOSE,
+            "Create a draft patch from the allowed list; never applied",
+            PatchDraftParams,
+            "review:propose:{service}",
+            None,
+            64_000,
+            3,
+        ),
+        # WRITE tools: registered for the dispatcher only. agent_tools() never returns them.
+        Tool(
+            "apply_change",
+            ToolKind.WRITE,
+            "Apply an approved change through the release process",
+            PatchDraftParams,
+            "release:write:{service}",
+            None,
+            16_000,
+            1,
+        ),
+    ]
+}
 
 
 _READ_TOOLS = frozenset(t.name for t in REGISTRY.values() if t.kind == ToolKind.READ)
@@ -186,14 +290,18 @@ def agent_tools(skill: str) -> list[Tool]:
 
 
 def tool_schema_for_model(skill: str) -> list[dict]:
-    return [{"name": t.name, "description": t.description,
-             "input_schema": t.params.model_json_schema()} for t in agent_tools(skill)]
+    return [
+        {"name": t.name, "description": t.description, "input_schema": t.params.model_json_schema()}
+        for t in agent_tools(skill)
+    ]
 
 
 def search_knowledge(tool: Tool, params: KnowledgeQuery, index, groups: set[str]) -> list:
     """Handler body for the two knowledge tools: `index` is a retrieval.IndexRevision. The tool, not
     the model, picks the document type, as a filter before ranking (Q10.56)."""
-    return index.search(params.query, service=params.service, groups=groups, k=params.k, doc_type=tool.doc_type)
+    return index.search(
+        params.query, service=params.service, groups=groups, k=params.k, doc_type=tool.doc_type
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -228,7 +336,7 @@ class ToolGate:
     incident_start: datetime
     now: datetime
     max_total_calls: int = Limits().max_tool_calls
-    store: ToolCallStore = field(default_factory=MemoryToolCalls)   # the incident's tool call log
+    store: ToolCallStore = field(default_factory=MemoryToolCalls)  # the incident's tool call log
 
     @property
     def log(self) -> list[dict]:
@@ -243,7 +351,9 @@ class ToolGate:
         if tool is None:
             raise ToolRefused("unknown_tool", name)
         if tool.kind == ToolKind.WRITE:
-            raise ToolRefused("write_forbidden", f"{name} changes external systems; the agent cannot call it")
+            raise ToolRefused(
+                "write_forbidden", f"{name} changes external systems; the agent cannot call it"
+            )
         if name not in SKILL_TOOLS.get(skill, frozenset()):
             raise ToolRefused("tool_not_allowed", f"{name} is not on the {skill} skill's list")
         raw = dict(raw_params)
@@ -255,10 +365,12 @@ class ToolGate:
         except ValidationError as e:
             raise ToolRefused("invalid_params", e.errors()[0]["msg"]) from None
         if getattr(params, "service", self.service) != self.service:
-            raise ToolRefused("out_of_scope", f"service {params.service} is not this incident's service")
+            raise ToolRefused(
+                "out_of_scope", f"service {params.service} is not this incident's service"
+            )
         if tool.max_window is not None and params.end - params.start > tool.max_window:
             raise ToolRefused("window_too_large", f"max {tool.max_window} for {name}")
-        at = getattr(params, "at", None)                 # a point-in-time tool has one instant
+        at = getattr(params, "at", None)  # a point-in-time tool has one instant
         latest = at if at is not None else getattr(params, "end", None)
         earliest = at if at is not None else getattr(params, "start", None)
         if latest is not None and latest > self.now + CLOCK_ALLOWANCE:
@@ -268,18 +380,40 @@ class ToolGate:
         if len(self.log) >= self.max_total_calls:
             raise ToolRefused("call_budget", f"{self.max_total_calls} tool calls per incident")
         if self._times(tool=name) >= tool.max_calls_per_incident:
-            raise ToolRefused("tool_budget", f"{tool.max_calls_per_incident} calls of {name} per incident")
-        call_hash = hashlib.sha256(json.dumps(
-            {"tool": name, "params": params.model_dump(mode="json")}, sort_keys=True).encode()).hexdigest()
+            raise ToolRefused(
+                "tool_budget", f"{tool.max_calls_per_incident} calls of {name} per incident"
+            )
+        call_hash = hashlib.sha256(
+            json.dumps(
+                {"tool": name, "params": params.model_dump(mode="json")}, sort_keys=True
+            ).encode()
+        ).hexdigest()
         if self._times(hash=call_hash) >= 2:
             raise ToolRefused("repeated_call", "same tool and parameters already called twice")
         return tool, params, call_hash
 
-    def record(self, name: str, call_hash: str, new_evidence: int, *, skill: str = "collect_evidence",
-               params: Optional[dict] = None, evidence_ids: tuple[str, ...] = ()) -> None:
+    def record(
+        self,
+        name: str,
+        call_hash: str,
+        new_evidence: int,
+        *,
+        skill: str = "collect_evidence",
+        params: Optional[dict] = None,
+        evidence_ids: tuple[str, ...] = (),
+    ) -> None:
         """One tool_calls row, written after the call ran. `evidence_ids` is its stored result."""
-        self.store.add(self.incident_id, {"tool": name, "hash": call_hash, "new_evidence": new_evidence, "skill": skill,
-                                          "params": params or {}, "evidence_ids": list(evidence_ids)})
+        self.store.add(
+            self.incident_id,
+            {
+                "tool": name,
+                "hash": call_hash,
+                "new_evidence": new_evidence,
+                "skill": skill,
+                "params": params or {},
+                "evidence_ids": list(evidence_ids),
+            },
+        )
 
     def is_repeat(self, call_hash: str) -> bool:
         return self._times(hash=call_hash) >= 1

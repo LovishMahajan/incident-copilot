@@ -22,11 +22,22 @@ from typing import Any, Awaitable, Callable, Optional
 
 from pydantic import BaseModel, ValidationError
 
-from aisre.gateway.adapters import HttpResponse, sha256
 from aisre.agent.coordinator import Limits
-from aisre.gateway.gateway_contracts import (MAX_INPUT_TOKENS_PER_CALL, MAX_OUTPUT_TOKENS_PER_CALL, RETRYABLE, Capability,
-                               ModelRequest, ModelResult, ResultStatus, StopReason, TextBlock, ToolProposal,
-                               Usage, estimate_tokens)
+from aisre.gateway.adapters import HttpResponse, sha256
+from aisre.gateway.gateway_contracts import (
+    MAX_INPUT_TOKENS_PER_CALL,
+    MAX_OUTPUT_TOKENS_PER_CALL,
+    RETRYABLE,
+    Capability,
+    ModelRequest,
+    ModelResult,
+    ResultStatus,
+    StopReason,
+    TextBlock,
+    ToolProposal,
+    Usage,
+    estimate_tokens,
+)
 
 
 # ---------------------------------------------------------------------------
@@ -35,6 +46,7 @@ from aisre.gateway.gateway_contracts import (MAX_INPUT_TOKENS_PER_CALL, MAX_OUTP
 @dataclass(frozen=True)
 class Price:
     """Money in millionths of the currency unit per million tokens. Values come from configuration."""
+
     input_per_mtok: int
     output_per_mtok: int
     cache_read_per_mtok: int
@@ -49,9 +61,12 @@ CLAUDE_PRICES = {
 
 
 def cost_micros(u: Usage, p: Price) -> int:
-    return (u.input_tokens * p.input_per_mtok + u.output_tokens * p.output_per_mtok
-            + u.cache_read_input_tokens * p.cache_read_per_mtok
-            + u.cache_write_input_tokens * p.cache_write_per_mtok) // 1_000_000
+    return (
+        u.input_tokens * p.input_per_mtok
+        + u.output_tokens * p.output_per_mtok
+        + u.cache_read_input_tokens * p.cache_read_per_mtok
+        + u.cache_write_input_tokens * p.cache_write_per_mtok
+    ) // 1_000_000
 
 
 # ---------------------------------------------------------------------------
@@ -61,11 +76,11 @@ class BudgetExceeded(Exception):
     pass
 
 
-LIMITS = Limits()                              # the one configuration object (ADR-52)
+LIMITS = Limits()  # the one configuration object (ADR-52)
 
-MONTHLY_CEILING_MICROS = 500_000_000           # $500, ADR-56 (provisional)
-DAILY_LIMIT_MICROS = MONTHLY_CEILING_MICROS // 30   # $16.67, ADR-56 (provisional)
-UNRECONCILED_ALERT_ABOVE = 20                  # same threshold as AisreUnreconciledUsage (Artifact 12)
+MONTHLY_CEILING_MICROS = 500_000_000  # $500, ADR-56 (provisional)
+DAILY_LIMIT_MICROS = MONTHLY_CEILING_MICROS // 30  # $16.67, ADR-56 (provisional)
+UNRECONCILED_ALERT_ABOVE = 20  # same threshold as AisreUnreconciledUsage (Artifact 12)
 
 
 @dataclass
@@ -73,7 +88,7 @@ class IncidentBudget:
     max_calls: int = LIMITS.max_model_calls
     max_input_tokens: int = LIMITS.max_input_tokens
     max_output_tokens: int = LIMITS.max_output_tokens
-    max_cost_micros: int = LIMITS.max_cost_micros   # $2.00, ADR-56 (provisional)
+    max_cost_micros: int = LIMITS.max_cost_micros  # $2.00, ADR-56 (provisional)
     calls: int = 0
     reserved_cost: int = 0
     spent_cost: int = 0
@@ -90,7 +105,7 @@ class Reservation:
     input_tokens: int
     output_tokens: int
     expires_at: float = float("inf")
-    sent_at: Optional[float] = None            # write-once, just before the call leaves the process (ADR-61)
+    sent_at: Optional[float] = None  # write-once, just before the call leaves the process (ADR-61)
     charged_at: float = 0.0
 
     @property
@@ -103,6 +118,7 @@ class FleetBudget:
     """Spend across all incidents, by UTC day and month (ADR-55, ADR-56). At 100% of either,
     `evidence_only` is true: new investigations make no model calls, and running ones stop after
     their current step."""
+
     daily_limit: int = DAILY_LIMIT_MICROS
     monthly_limit: int = MONTHLY_CEILING_MICROS
     daily_alert_pct: tuple[int, ...] = (80, 100)
@@ -121,9 +137,13 @@ class FleetBudget:
         self.daily[day] = self.daily.get(day, 0) + cost
         self.monthly[month] = self.monthly.get(month, 0) + cost
         self._alert("daily", day, self.daily[day], self.daily_limit, self.daily_alert_pct)
-        self._alert("monthly", month, self.monthly[month], self.monthly_limit, self.monthly_alert_pct)
+        self._alert(
+            "monthly", month, self.monthly[month], self.monthly_limit, self.monthly_alert_pct
+        )
 
-    def _alert(self, scope: str, period: str, spent: int, limit: int, levels: tuple[int, ...]) -> None:
+    def _alert(
+        self, scope: str, period: str, spent: int, limit: int, levels: tuple[int, ...]
+    ) -> None:
         for pct in levels:
             name = f"{scope}_spend_{pct}:{period}"
             if spent * 100 >= limit * pct and name not in self.alerts:
@@ -131,7 +151,10 @@ class FleetBudget:
 
     def evidence_only(self, now: float) -> bool:
         day, month = self._periods(now)
-        return self.daily.get(day, 0) >= self.daily_limit or self.monthly.get(month, 0) >= self.monthly_limit
+        return (
+            self.daily.get(day, 0) >= self.daily_limit
+            or self.monthly.get(month, 0) >= self.monthly_limit
+        )
 
 
 class BudgetLedger:
@@ -139,13 +162,17 @@ class BudgetLedger:
     implementation does the same arithmetic under a row lock in one transaction. `completed` stands
     in for the lookup of model_attempts by input_sha256, so it outlives a worker (ADR-52)."""
 
-    def __init__(self, default: Callable[[], IncidentBudget] = IncidentBudget,
-                 fleet: Optional[FleetBudget] = None, clock: Callable[[], float] = time.time):
+    def __init__(
+        self,
+        default: Callable[[], IncidentBudget] = IncidentBudget,
+        fleet: Optional[FleetBudget] = None,
+        clock: Callable[[], float] = time.time,
+    ):
         self.budgets: dict[str, IncidentBudget] = {}
         self.default = default
         self.fleet = fleet or FleetBudget()
         self.clock = clock
-        self.open: dict[str, Reservation] = {}          # status = 'reserved'
+        self.open: dict[str, Reservation] = {}  # status = 'reserved'
         self.unreconciled: dict[str, Reservation] = {}  # charged in full, awaiting provider records
         self.completed: dict[tuple[str, str], ModelResult] = {}
         self._lock = asyncio.Lock()
@@ -153,19 +180,29 @@ class BudgetLedger:
     def get(self, incident_id: str) -> IncidentBudget:
         return self.budgets.setdefault(incident_id, self.default())
 
-    async def reserve(self, rid: str, incident_id: str, in_tok: int, out_tok: int, cost: int,
-                      expires_at: float = float("inf")) -> Reservation:
+    async def reserve(
+        self,
+        rid: str,
+        incident_id: str,
+        in_tok: int,
+        out_tok: int,
+        cost: int,
+        expires_at: float = float("inf"),
+    ) -> Reservation:
         async with self._lock:
             b = self.get(incident_id)
             if b.calls + 1 > b.max_calls:
                 raise BudgetExceeded("model call cap")
-            if b.input_tokens + in_tok > b.max_input_tokens or b.output_tokens + out_tok > b.max_output_tokens:
+            if (
+                b.input_tokens + in_tok > b.max_input_tokens
+                or b.output_tokens + out_tok > b.max_output_tokens
+            ):
                 raise BudgetExceeded("token cap")
             if b.spent_cost + b.reserved_cost + cost > b.max_cost_micros:
                 raise BudgetExceeded("spend cap")
             b.calls += 1
             b.reserved_cost += cost
-            b.input_tokens += in_tok           # held at the estimate until settled
+            b.input_tokens += in_tok  # held at the estimate until settled
             b.output_tokens += out_tok
             r = Reservation(rid, incident_id, cost, in_tok, out_tok, expires_at)
             self.open[rid] = r
@@ -173,7 +210,7 @@ class BudgetLedger:
 
     async def settle(self, r: Reservation, usage: Usage, actual_cost: int) -> None:
         async with self._lock:
-            if self.open.pop(r.reservation_id, None) is not None:   # expiry may have got there first
+            if self.open.pop(r.reservation_id, None) is not None:  # expiry may have got there first
                 self._settle(r, usage, actual_cost)
 
     def _settle(self, r: Reservation, usage: Usage, actual_cost: int) -> None:
@@ -194,7 +231,12 @@ class BudgetLedger:
 
     @staticmethod
     def _correct_tokens(b: IncidentBudget, r: Reservation, usage: Usage) -> None:
-        b.input_tokens += usage.input_tokens + usage.cache_read_input_tokens + usage.cache_write_input_tokens - r.input_tokens
+        b.input_tokens += (
+            usage.input_tokens
+            + usage.cache_read_input_tokens
+            + usage.cache_write_input_tokens
+            - r.input_tokens
+        )
         b.output_tokens += usage.output_tokens - r.output_tokens
 
     async def release_unsent(self, r: Reservation) -> None:
@@ -236,7 +278,7 @@ class BudgetLedger:
                 self._correct_tokens(b, r, usage)
                 b.pending_reconcile.remove(rid)
                 self.fleet.charge(actual - r.cost, r.charged_at)
-            if len(self.unreconciled) > UNRECONCILED_ALERT_ABOVE:   # frequent missing usage (10.8)
+            if len(self.unreconciled) > UNRECONCILED_ALERT_ABOVE:  # frequent missing usage (10.8)
                 self.fleet.alerts.append(f"missing_usage:{len(self.unreconciled)}")
             return list(self.unreconciled)
 
@@ -245,15 +287,26 @@ class BudgetLedger:
 # Circuit breaker (10.7, ADR-61, provisional)
 # ---------------------------------------------------------------------------
 # Provider unavailable, as opposed to a request that was wrong or refused.
-BREAKER_FAILURES = {ResultStatus.TIMEOUT, ResultStatus.RATE_LIMITED, ResultStatus.PROVIDER_ERROR,
-                    ResultStatus.INCOMPLETE}
+BREAKER_FAILURES = {
+    ResultStatus.TIMEOUT,
+    ResultStatus.RATE_LIMITED,
+    ResultStatus.PROVIDER_ERROR,
+    ResultStatus.INCOMPLETE,
+}
 
 
 class CircuitBreaker:
     """One per provider: a gateway wraps one adapter. Opens at a share of failures among at least
     `min_calls` sent calls in the window, then stays open for `open_s`."""
 
-    def __init__(self, clock: Callable[[], float], failure_ratio: float, min_calls: int, window_s: float, open_s: float):
+    def __init__(
+        self,
+        clock: Callable[[], float],
+        failure_ratio: float,
+        min_calls: int,
+        window_s: float,
+        open_s: float,
+    ):
         self.clock, self.failure_ratio, self.min_calls = clock, failure_ratio, min_calls
         self.window_s, self.open_s = window_s, open_s
         self.calls: deque[tuple[float, bool]] = deque()
@@ -282,29 +335,46 @@ Transport = Callable[[str, dict[str, Any], float], Awaitable[tuple[HttpResponse,
 
 @dataclass(frozen=True)
 class GatewayConfig:
-    max_attempts: int = 3                      # per step, including the first (Artifact 4)
-    global_concurrency: int = 8                # across all incidents, per provider (10.6)
+    max_attempts: int = 3  # per step, including the first (Artifact 4)
+    global_concurrency: int = 8  # across all incidents, per provider (10.6)
     per_incident_concurrency: int = 2
     backoff_s: tuple[float, ...] = (2.0, 4.0)
-    allow_cross_provider_fallback: bool = False   # Q10.39: off
-    breaker_failure_ratio: float = 0.5         # ADR-61, provisional
+    allow_cross_provider_fallback: bool = False  # Q10.39: off
+    breaker_failure_ratio: float = 0.5  # ADR-61, provisional
     breaker_min_calls: int = 10
     breaker_window_s: float = 60.0
     breaker_open_s: float = 30.0
-    reservation_grace_s: float = 60.0          # expires_at = deadline + this, after any call has ended
+    reservation_grace_s: float = 60.0  # expires_at = deadline + this, after any call has ended
 
 
 class ModelGateway:
-    def __init__(self, adapter, transport: Transport, ledger: BudgetLedger, prices: dict[str, Price],
-                 schemas: dict[str, type[BaseModel]], config: GatewayConfig = GatewayConfig(),
-                 sleep: Callable[[float], Awaitable[None]] = asyncio.sleep,
-                 clock: Callable[[], float] = time.time):
-        self.adapter, self.transport, self.ledger, self.prices = adapter, transport, ledger, prices   # by pinned model
+    def __init__(
+        self,
+        adapter,
+        transport: Transport,
+        ledger: BudgetLedger,
+        prices: dict[str, Price],
+        schemas: dict[str, type[BaseModel]],
+        config: GatewayConfig = GatewayConfig(),
+        sleep: Callable[[float], Awaitable[None]] = asyncio.sleep,
+        clock: Callable[[], float] = time.time,
+    ):
+        self.adapter, self.transport, self.ledger, self.prices = (
+            adapter,
+            transport,
+            ledger,
+            prices,
+        )  # by pinned model
         self.schemas, self.cfg, self.sleep, self.clock = schemas, config, sleep, clock
         self.global_slots = asyncio.Semaphore(config.global_concurrency)
         self.incident_slots: dict[str, asyncio.Semaphore] = {}
-        self.breaker = CircuitBreaker(clock, config.breaker_failure_ratio, config.breaker_min_calls,
-                                      config.breaker_window_s, config.breaker_open_s)
+        self.breaker = CircuitBreaker(
+            clock,
+            config.breaker_failure_ratio,
+            config.breaker_min_calls,
+            config.breaker_window_s,
+            config.breaker_open_s,
+        )
         self.attempt_log: list[ModelResult] = []
 
     def _unavailable(self, req: ModelRequest) -> Optional[str]:
@@ -321,44 +391,65 @@ class ModelGateway:
 
     async def call(self, req: ModelRequest) -> ModelResult:
         refused = self._unavailable(req)
-        if refused:                                                    # Q10.22: refuse, don't degrade silently
+        if refused:  # Q10.22: refuse, don't degrade silently
             return self._final(req, 0, ResultStatus.CAPABILITY_UNSUPPORTED, refused)
 
-        input_sha256 = sha256(self.adapter.build(req))                 # the step's input, as the skill asked
+        input_sha256 = sha256(self.adapter.build(req))  # the step's input, as the skill asked
         reuse_key = (req.incident_id, input_sha256)
         recorded = self.ledger.completed.get(reuse_key)
-        if recorded is not None:                                       # ADR-61: no new reservation, no call
+        if recorded is not None:  # ADR-61: no new reservation, no call
             return recorded.model_copy(update={"request_id": req.request_id})
-        if self.ledger.fleet.evidence_only(self.clock()):              # ADR-55: refused here, never mid-step
+        if self.ledger.fleet.evidence_only(self.clock()):  # ADR-55: refused here, never mid-step
             return self._final(req, 0, ResultStatus.BUDGET_REFUSED, "fleet spend limit reached")
 
         attempt, current, last, truncation_retried = req.step_attempts_used, req, None, False
         while attempt < self.cfg.max_attempts:
             attempt += 1
-            if self.clock() >= req.deadline_epoch_s:                   # Q10.32
-                return self._final(req, attempt, ResultStatus.DEADLINE_PASSED, "investigation deadline passed")
-            if not self.breaker.allow():                               # unsent and unreserved; no point retrying
-                return self._final(req, attempt, ResultStatus.PROVIDER_ERROR, "circuit breaker open")
+            if self.clock() >= req.deadline_epoch_s:  # Q10.32
+                return self._final(
+                    req, attempt, ResultStatus.DEADLINE_PASSED, "investigation deadline passed"
+                )
+            if not self.breaker.allow():  # unsent and unreserved; no point retrying
+                return self._final(
+                    req, attempt, ResultStatus.PROVIDER_ERROR, "circuit breaker open"
+                )
             last = await self._attempt(current, attempt, input_sha256)
             if last.status == ResultStatus.OK:
                 self.ledger.completed[reuse_key] = last
                 return last
-            if last.stop_reason == StopReason.CONTEXT_EXCEEDED:        # the skill reassembles a smaller input
+            if (
+                last.stop_reason == StopReason.CONTEXT_EXCEEDED
+            ):  # the skill reassembles a smaller input
                 return last
             if last.status == ResultStatus.TRUNCATED:
                 if truncation_retried or current.max_output_tokens >= MAX_OUTPUT_TOKENS_PER_CALL:
                     return last
                 # One larger retry for an output that hit the limit; the budget still applies.
                 truncation_retried = True
-                current = current.model_copy(update={
-                    "max_output_tokens": min(MAX_OUTPUT_TOKENS_PER_CALL, current.max_output_tokens * 2)})
+                current = current.model_copy(
+                    update={
+                        "max_output_tokens": min(
+                            MAX_OUTPUT_TOKENS_PER_CALL, current.max_output_tokens * 2
+                        )
+                    }
+                )
                 continue
-            if last.status not in RETRYABLE:                           # auth, bad request, refusal, budget...
+            if last.status not in RETRYABLE:  # auth, bad request, refusal, budget...
                 return last
-            if last.status == ResultStatus.INVALID_OUTPUT:             # tell the model what was wrong
-                current = current.model_copy(update={"context": list(current.context) + [{
-                    "ref": f"validation:{attempt}", "kind": "validation_error",
-                    "text": "Your previous answer failed validation: " + "; ".join(last.validation_errors[:5])}]})
+            if last.status == ResultStatus.INVALID_OUTPUT:  # tell the model what was wrong
+                current = current.model_copy(
+                    update={
+                        "context": list(current.context)
+                        + [
+                            {
+                                "ref": f"validation:{attempt}",
+                                "kind": "validation_error",
+                                "text": "Your previous answer failed validation: "
+                                + "; ".join(last.validation_errors[:5]),
+                            }
+                        ]
+                    }
+                )
             if attempt < self.cfg.max_attempts:
                 wait = self.cfg.backoff_s[min(attempt - 1, len(self.cfg.backoff_s) - 1)]
                 if self.clock() + wait >= req.deadline_epoch_s:
@@ -369,52 +460,88 @@ class ModelGateway:
     async def _attempt(self, req: ModelRequest, attempt: int, input_sha256: str) -> ModelResult:
         body = self.adapter.build(req)
         in_est = estimate_tokens(json.dumps(body))
-        if in_est > MAX_INPUT_TOKENS_PER_CALL:                          # ADR-61: refused before reservation
-            return self._final(req, attempt, ResultStatus.BUDGET_REFUSED,
-                               f"estimated input {in_est} tokens exceeds {MAX_INPUT_TOKENS_PER_CALL}")
+        if in_est > MAX_INPUT_TOKENS_PER_CALL:  # ADR-61: refused before reservation
+            return self._final(
+                req,
+                attempt,
+                ResultStatus.BUDGET_REFUSED,
+                f"estimated input {in_est} tokens exceeds {MAX_INPUT_TOKENS_PER_CALL}",
+            )
         price = self.prices.get(body["model"])
-        if price is None:                                               # never send a call we can't charge for
-            return self._final(req, attempt, ResultStatus.BAD_REQUEST, f'no configured price for {body["model"]}')
-        reserve_cost = cost_micros(Usage(input_tokens=in_est, output_tokens=req.max_output_tokens), price)
+        if price is None:  # never send a call we can't charge for
+            return self._final(
+                req, attempt, ResultStatus.BAD_REQUEST, f"no configured price for {body['model']}"
+            )
+        reserve_cost = cost_micros(
+            Usage(input_tokens=in_est, output_tokens=req.max_output_tokens), price
+        )
         try:
-            res = await self.ledger.reserve(str(uuid.uuid4()), req.incident_id, in_est, req.max_output_tokens,
-                                            reserve_cost, req.deadline_epoch_s + self.cfg.reservation_grace_s)
+            res = await self.ledger.reserve(
+                str(uuid.uuid4()),
+                req.incident_id,
+                in_est,
+                req.max_output_tokens,
+                reserve_cost,
+                req.deadline_epoch_s + self.cfg.reservation_grace_s,
+            )
         except BudgetExceeded as e:
             return self._final(req, attempt, ResultStatus.BUDGET_REFUSED, str(e))
 
-        slots = self.incident_slots.setdefault(req.incident_id, asyncio.Semaphore(self.cfg.per_incident_concurrency))
+        slots = self.incident_slots.setdefault(
+            req.incident_id, asyncio.Semaphore(self.cfg.per_incident_concurrency)
+        )
         remaining = req.deadline_epoch_s - self.clock()
         try:
             await asyncio.wait_for(self._acquire(slots), timeout=max(0.0, remaining))
         except asyncio.TimeoutError:
-            await self.ledger.release_unsent(res)                       # never sent: safe to release
-            return self._final(req, attempt, ResultStatus.DEADLINE_PASSED, "no capacity before deadline")
+            await self.ledger.release_unsent(res)  # never sent: safe to release
+            return self._final(
+                req, attempt, ResultStatus.DEADLINE_PASSED, "no capacity before deadline"
+            )
         started = self.clock()
         try:
-            timeout = min(req.call_timeout_s, max(0.1, req.deadline_epoch_s - self.clock()))   # Q10.33
+            timeout = min(
+                req.call_timeout_s, max(0.1, req.deadline_epoch_s - self.clock())
+            )  # Q10.33
             res.sent_at = self.clock()
             try:
                 resp, completed = await asyncio.wait_for(
-                    self.transport(self.adapter.provider, body, timeout), timeout=timeout)
+                    self.transport(self.adapter.provider, body, timeout), timeout=timeout
+                )
             except asyncio.TimeoutError:
                 self.breaker.record(True)
-                await self.ledger.settle(res, Usage(reported=False), res.cost)   # may have consumed tokens
-                return self._final(req, attempt, ResultStatus.TIMEOUT, f"no response in {timeout:.0f}s",
-                                   usage=Usage(reported=False), cost=res.cost, input_sha256=input_sha256,
-                                   latency_ms=int((self.clock() - started) * 1000))
+                await self.ledger.settle(
+                    res, Usage(reported=False), res.cost
+                )  # may have consumed tokens
+                return self._final(
+                    req,
+                    attempt,
+                    ResultStatus.TIMEOUT,
+                    f"no response in {timeout:.0f}s",
+                    usage=Usage(reported=False),
+                    cost=res.cost,
+                    input_sha256=input_sha256,
+                    latency_ms=int((self.clock() - started) * 1000),
+                )
         finally:
             slots.release()
             self.global_slots.release()
 
-        result = self.adapter.parse(req, attempt, resp, int((self.clock() - started) * 1000), completed)
+        result = self.adapter.parse(
+            req, attempt, resp, int((self.clock() - started) * 1000), completed
+        )
         self.breaker.record(result.status in BREAKER_FAILURES)
         actual = cost_micros(result.usage, price) if result.usage.reported else res.cost
         await self.ledger.settle(res, result.usage, actual)
         result = result.model_copy(update={"cost_micros": actual, "input_sha256": input_sha256})
-        proposals = result.stop_reason == StopReason.TOOL_USE and any(isinstance(b, ToolProposal) for b in result.content)
-        if result.status == ResultStatus.OK and req.output_schema_name and not proposals:   # proposals go to the gate
+        proposals = result.stop_reason == StopReason.TOOL_USE and any(
+            isinstance(b, ToolProposal) for b in result.content
+        )
+        if (
+            result.status == ResultStatus.OK and req.output_schema_name and not proposals
+        ):  # proposals go to the gate
             result = self._validate(req, result)
-        self.attempt_log.append(result)          # every attempt is recorded (model_attempts, Artifact 7)
+        self.attempt_log.append(result)  # every attempt is recorded (model_attempts, Artifact 7)
         return result
 
     async def _acquire(self, slots: asyncio.Semaphore) -> None:
@@ -432,20 +559,46 @@ class ModelGateway:
         try:
             data = json.loads(text)
         except json.JSONDecodeError as e:
-            return result.model_copy(update={"status": ResultStatus.INVALID_OUTPUT,
-                                             "validation_errors": [f"not valid JSON: {e.msg} at {e.pos}"]})
+            return result.model_copy(
+                update={
+                    "status": ResultStatus.INVALID_OUTPUT,
+                    "validation_errors": [f"not valid JSON: {e.msg} at {e.pos}"],
+                }
+            )
         try:
             parsed = model.model_validate(data)
         except ValidationError as e:
-            return result.model_copy(update={"status": ResultStatus.INVALID_OUTPUT,
-                                             "validation_errors": [f'{".".join(map(str, x["loc"]))}: {x["msg"]}'
-                                                                   for x in e.errors()]})
+            return result.model_copy(
+                update={
+                    "status": ResultStatus.INVALID_OUTPUT,
+                    "validation_errors": [
+                        f"{'.'.join(map(str, x['loc']))}: {x['msg']}" for x in e.errors()
+                    ],
+                }
+            )
         return result.model_copy(update={"parsed": parsed.model_dump(mode="json")})
 
-    def _final(self, req: ModelRequest, attempt: int, status: ResultStatus, error: str, usage: Usage = Usage(),
-               cost: int = 0, input_sha256: Optional[str] = None, latency_ms: int = 0) -> ModelResult:
-        r = ModelResult(request_id=req.request_id, attempt=attempt, status=status,
-                        stop_reason=StopReason.UNKNOWN, error=error, usage=usage, cost_micros=cost,
-                        input_sha256=input_sha256, latency_ms=latency_ms)
+    def _final(
+        self,
+        req: ModelRequest,
+        attempt: int,
+        status: ResultStatus,
+        error: str,
+        usage: Usage = Usage(),
+        cost: int = 0,
+        input_sha256: Optional[str] = None,
+        latency_ms: int = 0,
+    ) -> ModelResult:
+        r = ModelResult(
+            request_id=req.request_id,
+            attempt=attempt,
+            status=status,
+            stop_reason=StopReason.UNKNOWN,
+            error=error,
+            usage=usage,
+            cost_micros=cost,
+            input_sha256=input_sha256,
+            latency_ms=latency_ms,
+        )
         self.attempt_log.append(r)
         return r

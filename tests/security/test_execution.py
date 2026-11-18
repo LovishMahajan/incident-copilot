@@ -5,16 +5,33 @@ point runs; a new Dispatcher then picks up over the same ledger, as a restarted 
 from __future__ import annotations
 
 import asyncio
-
-import pytest
-
-from aisre.workflow import workflow as wf
-from aisre.remediation.action import ApprovalError
 from datetime import timedelta
 
-from aisre.remediation.dispatcher import Dispatcher, LedgerEntry, LedgerState, Outcome, ReleaseInProgress
+import pytest
+from support import (
+    AFTER,
+    BASE,
+    KEYS,
+    POLICY,
+    SOON,
+    T0,
+    FakeRelease,
+    decide,
+    make_action,
+    people,
+    rig,
+)
+
 from aisre.reliability.fence import ActionRecord, FenceState, reconcile_after_restore
-from support import AFTER, BASE, KEYS, POLICY, SOON, T0, FakeRelease, decide, make_action, people, rig
+from aisre.remediation.action import ApprovalError
+from aisre.remediation.dispatcher import (
+    Dispatcher,
+    LedgerEntry,
+    LedgerState,
+    Outcome,
+    ReleaseInProgress,
+)
+from aisre.workflow import workflow as wf
 from aisre.workflow.workflow import ApprovalSignal, IncidentWorkflow
 
 
@@ -29,7 +46,16 @@ def approved(**kw):
 
 def restarted(r, later=timedelta(minutes=2)):
     """A new process over the same ledger. By default past the in-flight window: the first call is dead."""
-    return Dispatcher(r.store, r.release, r.ledger, KEYS, people(), POLICY, lambda: SOON + later, fence=FenceState())
+    return Dispatcher(
+        r.store,
+        r.release,
+        r.ledger,
+        KEYS,
+        people(),
+        POLICY,
+        lambda: SOON + later,
+        fence=FenceState(),
+    )
 
 
 def applied_rows(r, key):
@@ -46,15 +72,19 @@ def test_st37_second_dispatch_after_success_gets_the_first_result():
 
 
 def test_st37_two_dispatches_started_together_send_one_write():
-    class Yields(FakeRelease):                          # both calls are past their pre-checks before either records intent
+    class Yields(FakeRelease):  # both calls are past their pre-checks before either records intent
         async def current_state(self, deployment):
             await asyncio.sleep(0)
             return await super().current_state(deployment)
+
     a, ds = approved()
     r = rig((a, ds), release=Yields())
 
     async def both():
-        return await asyncio.gather(r.dispatcher.execute(a.action_id), r.dispatcher.execute(a.action_id))
+        return await asyncio.gather(
+            r.dispatcher.execute(a.action_id), r.dispatcher.execute(a.action_id)
+        )
+
     results = asyncio.run(both())
     assert len(r.release.calls) == 1 and len(applied_rows(r, a.action_id)) == 1
     assert sorted(x.outcome.value for x in results) == ["applied", "refused"]
@@ -81,10 +111,11 @@ def test_st37_a_repeat_during_a_live_apply_cannot_record_not_applied():
         r = rig((a, ds), release=release)
         first = asyncio.create_task(r.dispatcher.execute(a.action_id))
         await release.sent.wait()
-        await r.dispatcher.execute(a.action_id)        # the repeat
+        await r.dispatcher.execute(a.action_id)  # the repeat
         release.go.set()
         await asyncio.gather(first, return_exceptions=True)
         return r
+
     r = asyncio.run(scenario())
     assert r.release.revision == AFTER
     assert r.ledger.get(a.action_id).state != LedgerState.NOT_APPLIED
@@ -103,21 +134,26 @@ def repeat_during_apply(repeat):
         state, blocked = r.ledger.get(a.action_id).state, r.ledger.unresolved(a.target.deployment)
         release.go.set()
         return r, a, seen, state, blocked, await first
+
     return asyncio.run(scenario())
 
 
 def test_st37_the_repeat_leaves_the_row_started_and_the_block_on_and_the_first_call_finishes():
     async def again(r, a):
         return await r.dispatcher.execute(a.action_id)
+
     r, a, seen, state, blocked, first = repeat_during_apply(again)
     assert seen.outcome == Outcome.UNKNOWN and state == LedgerState.STARTED and blocked
-    assert first.outcome == Outcome.APPLIED and r.ledger.get(a.action_id).state == LedgerState.APPLIED
+    assert (
+        first.outcome == Outcome.APPLIED and r.ledger.get(a.action_id).state == LedgerState.APPLIED
+    )
     assert len(r.release.calls) == 1 and not r.ledger.unresolved(a.target.deployment)
 
 
 def test_st37_a_repeat_from_another_process_inside_the_window_is_held_the_same_way():
     async def elsewhere(r, a):
         return await restarted(r, later=timedelta(seconds=10)).execute(a.action_id)
+
     _, _, seen, state, blocked, first = repeat_during_apply(elsewhere)
     assert seen.outcome == Outcome.UNKNOWN and state == LedgerState.STARTED and blocked
     assert first.outcome == Outcome.APPLIED
@@ -127,48 +163,83 @@ def test_st37_reconcile_inside_the_window_waits():
     async def look(r, a):
         with pytest.raises(ReleaseInProgress):
             await r.dispatcher.reconcile(a.action_id)
+
     assert repeat_during_apply(look)[3] == LedgerState.STARTED
 
 
 def test_st37_a_first_call_that_outlives_the_window_never_raises_and_a_conflict_needs_a_person():
     async def late_look(r, a):
-        return await restarted(r).execute(a.action_id)       # past the window, the row is taken for dead
+        return await restarted(r).execute(a.action_id)  # past the window, the row is taken for dead
+
     r, a, seen, state, _, first = repeat_during_apply(late_look)
-    assert seen.outcome == Outcome.NOT_APPLIED and state == LedgerState.NOT_APPLIED    # what the look could see
+    assert (
+        seen.outcome == Outcome.NOT_APPLIED and state == LedgerState.NOT_APPLIED
+    )  # what the look could see
     assert r.release.revision == AFTER
-    assert first.outcome == Outcome.UNKNOWN and "a person must check" in first.reason  # the change landed: said aloud
+    assert (
+        first.outcome == Outcome.UNKNOWN and "a person must check" in first.reason
+    )  # the change landed: said aloud
 
 
 def test_st37_a_late_apply_puts_the_block_back_and_only_a_person_clears_it():
     """ADR-69: reconciliation settled the key as not_applied, then the first call landed. No attempt row can
     follow not_applied, so the block is its own record."""
+
     async def late_look(r, a):
         return await restarted(r).execute(a.action_id)
+
     r, a, _, _, _, _ = repeat_during_apply(late_look)
-    assert r.ledger.get(a.action_id).state == LedgerState.NOT_APPLIED                  # the attempt rows can't say it
-    assert [(b.execution_key, b.reason) for b in r.ledger.unresolved(a.target.deployment)] == [(a.action_id, "late_apply")]
+    assert (
+        r.ledger.get(a.action_id).state == LedgerState.NOT_APPLIED
+    )  # the attempt rows can't say it
+    assert [(b.execution_key, b.reason) for b in r.ledger.unresolved(a.target.deployment)] == [
+        (a.action_id, "late_apply")
+    ]
     other = make_action(base_revision=AFTER, expected_after_revision="0badf00d")
     r.store.add(other, [decide(other, "priya")])
     d = restarted(r)
     refused = asyncio.run(d.execute(other.action_id))
-    assert refused.outcome == Outcome.REFUSED and "unresolved change" in refused.reason and len(r.release.calls) == 1
-    asyncio.run(d.reconcile(a.action_id))                                              # no later look lifts it
+    assert (
+        refused.outcome == Outcome.REFUSED
+        and "unresolved change" in refused.reason
+        and len(r.release.calls) == 1
+    )
+    asyncio.run(d.reconcile(a.action_id))  # no later look lifts it
     assert r.ledger.unresolved(a.target.deployment)
     with pytest.raises(ApprovalError) as e:
-        d.resolve_outcome(a.action_id, subject="priya", outcome="applied", observed_revision=AFTER,
-                          reason="Checked the target by hand", auth_time=SOON, mfa=True)
+        d.resolve_outcome(
+            a.action_id,
+            subject="priya",
+            outcome="applied",
+            observed_revision=AFTER,
+            reason="Checked the target by hand",
+            auth_time=SOON,
+            mfa=True,
+        )
     assert e.value.code == "forbidden" and r.ledger.unresolved(a.target.deployment)
-    resolved = d.resolve_outcome(a.action_id, subject="sam", outcome="applied", observed_revision=AFTER,
-                                 reason="Checked the target by hand", auth_time=SOON, mfa=True)
+    resolved = d.resolve_outcome(
+        a.action_id,
+        subject="sam",
+        outcome="applied",
+        observed_revision=AFTER,
+        reason="Checked the target by hand",
+        auth_time=SOON,
+        mfa=True,
+    )
     assert resolved.outcome == Outcome.APPLIED and r.ledger.unresolved(a.target.deployment) == []
-    assert r.ledger.blocks[-1].resolution.subject == "sam" and len(r.ledger.rows[a.action_id]) == 2   # rows stay final
+    assert (
+        r.ledger.blocks[-1].resolution.subject == "sam" and len(r.ledger.rows[a.action_id]) == 2
+    )  # rows stay final
     assert asyncio.run(d.execute(other.action_id)).outcome == Outcome.APPLIED
 
 
 def test_st37_control_a_call_that_lands_in_time_leaves_no_block():
     a, ds = approved()
     r = rig((a, ds))
-    assert r.run(a.action_id).outcome == Outcome.APPLIED and r.ledger.unresolved(a.target.deployment) == []
+    assert (
+        r.run(a.action_id).outcome == Outcome.APPLIED
+        and r.ledger.unresolved(a.target.deployment) == []
+    )
     assert [b.reason for b in r.ledger.blocks] == ["unresolved"] and r.ledger.blocks[0].cleared
 
 
@@ -176,11 +247,14 @@ def test_st37_a_first_call_overtaken_by_reconciliation_reports_what_stands():
     async def late_unknown(r, a):
         r.release.in_progress_key = a.action_id
         with pytest.raises(ReleaseInProgress):
-            await restarted(r).reconcile(a.action_id)        # row moves to unknown, then the look stops
+            await restarted(r).reconcile(a.action_id)  # row moves to unknown, then the look stops
         r.release.in_progress_key = None
+
     r, a, _, state, _, first = repeat_during_apply(late_unknown)
     assert state == LedgerState.UNKNOWN and first.outcome == Outcome.UNKNOWN
-    assert r.ledger.get(a.action_id).state == LedgerState.UNKNOWN            # reconciliation settles it, not this call
+    assert (
+        r.ledger.get(a.action_id).state == LedgerState.UNKNOWN
+    )  # reconciliation settles it, not this call
 
 
 def test_st37_ledger_refuses_a_second_applied_row():
@@ -189,8 +263,16 @@ def test_st37_ledger_refuses_a_second_applied_row():
     r.run(a.action_id)
     entry = r.ledger.get(a.action_id)
     with pytest.raises(RuntimeError):
-        r.ledger.put(LedgerEntry(entry.execution_key, entry.action_digest, entry.deployment, entry.approval_id, 2,
-                                 LedgerState.APPLIED))
+        r.ledger.put(
+            LedgerEntry(
+                entry.execution_key,
+                entry.action_digest,
+                entry.deployment,
+                entry.approval_id,
+                2,
+                LedgerState.APPLIED,
+            )
+        )
 
 
 def test_st37_two_approvers_on_one_action_are_one_execution():
@@ -205,7 +287,9 @@ def test_st37_repeated_approval_signals_are_ignored(monkeypatch):
     w = IncidentWorkflow()
     w.awaited = ("a1", "d" * 64)
     w.approval_decided(ApprovalSignal("ap-1", "a1", "approved", "d" * 64, "priya"))
-    w.approval_decided(ApprovalSignal("ap-1", "a1", "revoked", "d" * 64, "priya"))     # same ID: duplicate delivery
+    w.approval_decided(
+        ApprovalSignal("ap-1", "a1", "revoked", "d" * 64, "priya")
+    )  # same ID: duplicate delivery
     assert w._valid_approvals() == 1
 
 
@@ -249,9 +333,13 @@ def test_st38_killed_before_sending_reconciles_to_not_applied_and_stays_final():
     crash(r, a.action_id)
     d = restarted(r)
     assert asyncio.run(d.execute(a.action_id)).outcome == Outcome.NOT_APPLIED
-    r.release.__class__ = FakeRelease                  # the release process is healthy now
+    r.release.__class__ = FakeRelease  # the release process is healthy now
     again = asyncio.run(d.execute(a.action_id))
-    assert again.outcome == Outcome.NOT_APPLIED and "new action" in again.reason and r.release.calls == []
+    assert (
+        again.outcome == Outcome.NOT_APPLIED
+        and "new action" in again.reason
+        and r.release.calls == []
+    )
 
 
 def test_st38_killed_after_apply_before_confirmation_goes_on_as_applied_with_no_resend():
@@ -283,9 +371,16 @@ def test_st38_unknown_stops_and_blocks_the_deployment_until_a_person_clears_it()
     r.store.add(other, [decide(other, "priya")])
     r.release.__class__ = FakeRelease
     assert asyncio.run(d.execute(other.action_id)).outcome == Outcome.REFUSED
-    assert len(r.release.calls) == 1                   # only the crashed one
-    resolved = d.resolve_outcome(a.action_id, subject="sam", outcome="not_applied", observed_revision="deadbeef",
-                                 reason="Checked the target by hand", auth_time=SOON, mfa=True)
+    assert len(r.release.calls) == 1  # only the crashed one
+    resolved = d.resolve_outcome(
+        a.action_id,
+        subject="sam",
+        outcome="not_applied",
+        observed_revision="deadbeef",
+        reason="Checked the target by hand",
+        auth_time=SOON,
+        mfa=True,
+    )
     assert resolved.outcome == Outcome.NOT_APPLIED
     assert asyncio.run(d.execute(other.action_id)).outcome == Outcome.APPLIED
 
@@ -296,8 +391,15 @@ def test_st38_only_an_incident_lead_can_clear_an_unknown_outcome(subject):
     d = restarted(r)
     asyncio.run(d.execute(a.action_id))
     with pytest.raises(ApprovalError) as e:
-        d.resolve_outcome(a.action_id, subject=subject, outcome="applied", observed_revision="deadbeef",
-                          reason="Checked the target by hand", auth_time=SOON, mfa=True)
+        d.resolve_outcome(
+            a.action_id,
+            subject=subject,
+            outcome="applied",
+            observed_revision="deadbeef",
+            reason="Checked the target by hand",
+            auth_time=SOON,
+            mfa=True,
+        )
     assert e.value.code == "forbidden"
 
 
@@ -305,8 +407,13 @@ def test_st38_a_restart_inside_the_window_cannot_call_the_first_attempt_dead():
     a, ds = approved()
     r = rig((a, ds), release=DiesBeforeSending())
     crash(r, a.action_id)
-    assert asyncio.run(restarted(r, later=timedelta(seconds=10)).execute(a.action_id)).outcome == Outcome.UNKNOWN
-    assert r.ledger.get(a.action_id).state == LedgerState.STARTED and r.ledger.unresolved(a.target.deployment)
+    assert (
+        asyncio.run(restarted(r, later=timedelta(seconds=10)).execute(a.action_id)).outcome
+        == Outcome.UNKNOWN
+    )
+    assert r.ledger.get(a.action_id).state == LedgerState.STARTED and r.ledger.unresolved(
+        a.target.deployment
+    )
 
 
 def test_st38_release_still_running_at_restart_is_waited_for_not_resent():
@@ -320,9 +427,11 @@ def test_st38_release_still_running_at_restart_is_waited_for_not_resent():
 
 
 def test_st38_retry_with_the_same_key_while_applying_is_not_implemented():
-    pytest.skip("ST-38 allows a retry with the same key while the action is `applying`. Dispatcher has no such path: "
-                "it stops at not_applied, which is the safe side. Real worker kills and Temporal replay need a running "
-                "system; workflow-level handling is in test_workflow.py (test_dispatcher_activity_failure_reconciles)")
+    pytest.skip(
+        "ST-38 allows a retry with the same key while the action is `applying`. Dispatcher has no such path: "
+        "it stops at not_applied, which is the safe side. Real worker kills and Temporal replay need a running "
+        "system; workflow-level handling is in test_workflow.py (test_dispatcher_activity_failure_reconciles)"
+    )
 
 
 def test_st38_restored_database_asks_the_target_not_its_own_ledger():
@@ -366,6 +475,7 @@ def test_st40_unreadable_target_after_apply_is_unknown():
             if self.calls:
                 raise ConnectionError("gone")
             return await super().current_state(deployment)
+
     a, ds = approved()
     r = rig((a, ds), release=Blind())
     assert r.run(a.action_id).outcome == Outcome.UNKNOWN
@@ -383,5 +493,7 @@ def test_st40_control_an_honest_release_is_applied():
 
 
 def test_st40_release_reconciliation_job_is_not_implemented():
-    pytest.skip("The daily comparison of change history with execution_attempts and its security alert (provisional "
-                "control) don't exist in any module, so an unmatched change raises nothing today")
+    pytest.skip(
+        "The daily comparison of change history with execution_attempts and its security alert (provisional "
+        "control) don't exist in any module, so an unmatched change raises nothing today"
+    )

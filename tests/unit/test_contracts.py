@@ -23,7 +23,9 @@ from aisre import contracts as c
 ROOT = Path(__file__).parents[2]
 
 SCHEMA = re.sub(r"--.*$", "", (ROOT / "db/schema.sql").read_text(), flags=re.M)
-ARTIFACT = (ROOT / "docs/layers/layer-07-data-apis-events/artifact-07-data-and-interface-specification.md").read_text()
+ARTIFACT = (
+    ROOT / "docs/layers/layer-07-data-apis-events/artifact-07-data-and-interface-specification.md"
+).read_text()
 
 NOW = datetime(2026, 11, 2, 9, 0, tzinfo=timezone.utc)
 SHA = "a" * 64
@@ -49,8 +51,11 @@ def table_columns(table: str) -> dict[str, bool]:
 
 
 def contract_enums() -> dict[str, type[enum.Enum]]:
-    return {name: obj for name, obj in vars(c).items()
-            if inspect.isclass(obj) and issubclass(obj, enum.Enum) and obj.__module__ == c.__name__}
+    return {
+        name: obj
+        for name, obj in vars(c).items()
+        if inspect.isclass(obj) and issubclass(obj, enum.Enum) and obj.__module__ == c.__name__
+    }
 
 
 def type_name(name: str) -> str:
@@ -70,7 +75,7 @@ def nullable(field) -> bool:
 def test_the_parser_reads_the_schema_and_ignores_comments():
     enums = schema_enums()
     assert len(enums) == 19
-    assert enums["action_kind"][-1] == "rollback"     # its line has a quoted comment
+    assert enums["action_kind"][-1] == "rollback"  # its line has a quoted comment
     assert enums["incident_status"][4] == "testing"
 
 
@@ -110,8 +115,11 @@ def test_claims_and_categories_match_layer_9():
 # Naming: views against tables, CloudEvent against its view
 # ---------------------------------------------------------------------------
 VIEWS = [
-    (c.IncidentView, "incidents", {"service", "environment", "current_diagnosis_id",
-                                   "open_action_ids", "budget"}),
+    (
+        c.IncidentView,
+        "incidents",
+        {"service", "environment", "current_diagnosis_id", "open_action_ids", "budget"},
+    ),
     (c.BudgetView, "incident_budgets", set()),
     (c.EvidenceRecord, "evidence", set()),
     (c.Hypothesis, "hypotheses", {"evidence"}),
@@ -134,8 +142,9 @@ def test_view_fields_are_schema_columns_with_the_same_nullability(model, table, 
 
 
 def test_cloudevent_fields_are_the_columns_of_the_mapping_view():
-    select = re.search(r"CREATE VIEW timeline_cloudevents.*?AS\s+SELECT (.*?)\s+FROM",
-                       SCHEMA, flags=re.S).group(1)
+    select = re.search(
+        r"CREATE VIEW timeline_cloudevents.*?AS\s+SELECT (.*?)\s+FROM", SCHEMA, flags=re.S
+    ).group(1)
     names = {re.split(r"\s+AS\s+|\.", part.strip())[-1].strip('"') for part in select.split(",")}
     assert names == set(c.CloudEvent.model_fields)
 
@@ -170,23 +179,40 @@ def test_every_event_type_in_the_artifact_has_a_payload_model():
 
 
 def test_every_payload_model_is_registered_once():
-    models = {obj for name, obj in vars(c).items() if name.endswith("Data") and inspect.isclass(obj)}
+    models = {
+        obj for name, obj in vars(c).items() if name.endswith("Data") and inspect.isclass(obj)
+    }
     assert models == set(c.EVENT_DATA.values())
     assert len(c.EVENT_DATA) == len(models)
 
 
 def event(type_, data):
     incident_id = uuid4()
-    return dict(id=uuid4(), source="/aisre/api/approval-service", type=type_,
-                subject=f"incidents/{incident_id}", time=NOW, incidentid=incident_id,
-                sequence=1, orgid=uuid4(), actor="user:priya@org",
-                correlationid=incident_id, data=data)
+    return dict(
+        id=uuid4(),
+        source="/aisre/api/approval-service",
+        type=type_,
+        subject=f"incidents/{incident_id}",
+        time=NOW,
+        incidentid=incident_id,
+        sequence=1,
+        orgid=uuid4(),
+        actor="user:priya@org",
+        correlationid=incident_id,
+        data=data,
+    )
 
 
 def granted(**overrides):
-    return {"approval_id": str(uuid4()), "action_id": str(uuid4()), "action_digest": SHA,
-            "patch_sha256": SHA, "decided_by": "user:priya@org",
-            "valid_until": "2026-11-01T09:57:13Z", **overrides}
+    return {
+        "approval_id": str(uuid4()),
+        "action_id": str(uuid4()),
+        "action_digest": SHA,
+        "patch_sha256": SHA,
+        "decided_by": "user:priya@org",
+        "valid_until": "2026-11-01T09:57:13Z",
+        **overrides,
+    }
 
 
 def test_cloudevent_validates_data_against_its_type():
@@ -208,22 +234,30 @@ def test_granted_needs_the_action_digest_and_allows_an_action_without_a_patch():
 
 @pytest.mark.parametrize("result", ["verified", "failed", "inconclusive"])
 def test_verification_completed_uses_the_layer_11_results(result):
-    data = c.VerificationCompletedData(verification_id=uuid4(), action_id=uuid4(),
-                                       result=result, hold_seconds=600)
+    data = c.VerificationCompletedData(
+        verification_id=uuid4(), action_id=uuid4(), result=result, hold_seconds=600
+    )
     assert data.result.value == result
 
 
 @pytest.mark.parametrize("result", ["recovered", "not_recovered"])
 def test_verification_completed_refuses_the_old_results(result):
     with pytest.raises(ValidationError):
-        c.VerificationCompletedData(verification_id=uuid4(), action_id=uuid4(),
-                                    result=result, hold_seconds=600)
+        c.VerificationCompletedData(
+            verification_id=uuid4(), action_id=uuid4(), result=result, hold_seconds=600
+        )
 
 
 def test_execution_completed_cannot_report_started():
     with pytest.raises(ValidationError):
-        c.ExecutionCompletedData(attempt_id=uuid4(), action_id=uuid4(), execution_key="k",
-                                 attempt_no=1, outcome="started", external_ref=None)
+        c.ExecutionCompletedData(
+            attempt_id=uuid4(),
+            action_id=uuid4(),
+            execution_key="k",
+            attempt_no=1,
+            outcome="started",
+            external_ref=None,
+        )
 
 
 def test_a_refused_execution_has_no_attempt():
@@ -242,8 +276,15 @@ def test_content_removed_payload_is_what_purge_document_returns():
 
 
 def outcome_resolved(**overrides):
-    return dict(attempt_id=uuid4(), action_id=uuid4(), execution_key="k", outcome="not_applied",
-                observed_revision="r1", reason="Checked the target", **overrides)
+    return dict(
+        attempt_id=uuid4(),
+        action_id=uuid4(),
+        execution_key="k",
+        outcome="not_applied",
+        observed_revision="r1",
+        reason="Checked the target",
+        **overrides,
+    )
 
 
 def test_outcome_resolved_is_an_execution_event_so_the_dispatcher_may_write_it():
@@ -279,12 +320,28 @@ def test_action_view_requires_the_expected_revision():
 
 
 def evidence(**overrides):
-    fields = dict(evidence_id=uuid4(), incident_id=uuid4(), kind="log", source_system="loki",
-                  tool="logs.search", collected_by="evidence-collector", query=None,
-                  window_start=None, window_end=None, collected_at=NOW, source_as_of=None,
-                  source_link=None, summary="500s rising", attributes={}, artifact_id=None,
-                  content_sha256=SHA, is_partial=False, flagged_injection=False,
-                  gap_reason=None, strength_tier=3)
+    fields = dict(
+        evidence_id=uuid4(),
+        incident_id=uuid4(),
+        kind="log",
+        source_system="loki",
+        tool="logs.search",
+        collected_by="evidence-collector",
+        query=None,
+        window_start=None,
+        window_end=None,
+        collected_at=NOW,
+        source_as_of=None,
+        source_link=None,
+        summary="500s rising",
+        attributes={},
+        artifact_id=None,
+        content_sha256=SHA,
+        is_partial=False,
+        flagged_injection=False,
+        gap_reason=None,
+        strength_tier=3,
+    )
     return c.EvidenceRecord(**{**fields, **overrides})
 
 
@@ -308,7 +365,9 @@ def test_evidence_window_cannot_run_backwards():
 
 
 def test_evidence_shows_content_removal_as_a_pair():
-    assert evidence(content_removed_at=NOW, content_removed_reason="legal request").content_removed_at
+    assert evidence(
+        content_removed_at=NOW, content_removed_reason="legal request"
+    ).content_removed_at
     with pytest.raises(ValidationError):
         evidence(content_removed_at=NOW)
     with pytest.raises(ValidationError):
@@ -316,10 +375,19 @@ def test_evidence_shows_content_removal_as_a_pair():
 
 
 def hypothesis(**overrides):
-    fields = dict(hypothesis_id=uuid4(), ordinal=1, statement="Bad config", category="deployment_config",
-                  claims=[{"text": "Errors follow the change", "evidence_ids": [uuid4()]}],
-                  confirm_test="Revert it", refute_test="Errors predate it", status="open",
-                  confidence="medium", status_reason=None, evidence=[])
+    fields = dict(
+        hypothesis_id=uuid4(),
+        ordinal=1,
+        statement="Bad config",
+        category="deployment_config",
+        claims=[{"text": "Errors follow the change", "evidence_ids": [uuid4()]}],
+        confirm_test="Revert it",
+        refute_test="Errors predate it",
+        status="open",
+        confidence="medium",
+        status_reason=None,
+        evidence=[],
+    )
     return c.Hypothesis(**{**fields, **overrides})
 
 
@@ -337,18 +405,36 @@ def test_hypothesis_ordinal_counts_within_the_incident_not_the_diagnosis():
 
 def diagnosis(**overrides):
     first, second = hypothesis(), hypothesis(ordinal=2)
-    fields = dict(diagnosis_id=uuid4(), incident_id=uuid4(), revision=1, outcome="established",
-                  leading_hypothesis_id=first.hypothesis_id, category="deployment_config",
-                  confidence="medium", summary="Config change broke checkout", claims=[],
-                  hypotheses=[first, second], ruled_out=["Capacity is normal"],
-                  missing_evidence=[], stop_reason=None, reviewed=True, review_notes=None,
-                  produced_by="diagnosis-engine", final_outcome=None, final_confidence=None)
+    fields = dict(
+        diagnosis_id=uuid4(),
+        incident_id=uuid4(),
+        revision=1,
+        outcome="established",
+        leading_hypothesis_id=first.hypothesis_id,
+        category="deployment_config",
+        confidence="medium",
+        summary="Config change broke checkout",
+        claims=[],
+        hypotheses=[first, second],
+        ruled_out=["Capacity is normal"],
+        missing_evidence=[],
+        stop_reason=None,
+        reviewed=True,
+        review_notes=None,
+        produced_by="diagnosis-engine",
+        final_outcome=None,
+        final_confidence=None,
+    )
     return c.Diagnosis(**{**fields, **overrides})
 
 
 def test_diagnosis_carries_the_stored_fields():
     d = diagnosis()
-    assert (d.reviewed, d.produced_by, d.ruled_out) == (True, "diagnosis-engine", ["Capacity is normal"])
+    assert (d.reviewed, d.produced_by, d.ruled_out) == (
+        True,
+        "diagnosis-engine",
+        ["Capacity is normal"],
+    )
 
 
 def test_established_diagnosis_needs_a_leading_hypothesis_it_lists():
@@ -363,18 +449,38 @@ def test_established_diagnosis_needs_a_leading_hypothesis_it_lists():
 def test_a_diagnosis_capped_to_low_reads_as_inconclusive():
     """ADR-69: scored medium, capped to low at review. The diagnoser's values stay; the final ones are shown."""
     d = diagnosis(final_outcome="inconclusive", final_confidence="low")
-    assert (d.outcome.value, d.confidence.value, d.final_outcome.value, d.final_confidence.value) == (
-        "established", "medium", "inconclusive", "low")
-    assert diagnosis(final_outcome="established", final_confidence="high").final_outcome.value == "established"
+    assert (
+        d.outcome.value,
+        d.confidence.value,
+        d.final_outcome.value,
+        d.final_confidence.value,
+    ) == ("established", "medium", "inconclusive", "low")
+    assert (
+        diagnosis(final_outcome="established", final_confidence="high").final_outcome.value
+        == "established"
+    )
 
 
-@pytest.mark.parametrize("change", [
-    {"final_outcome": "inconclusive"}, {"final_confidence": "low"},                    # a pair, or neither
-    {"final_outcome": "established", "final_confidence": "low"},                       # ADR-53
-    {"final_outcome": "inconclusive", "final_confidence": "low", "reviewed": False},   # written at review
-    {"final_outcome": "established", "final_confidence": "high", "outcome": "inconclusive",
-     "leading_hypothesis_id": None, "confidence": "low"},                              # a review can't establish
-])
+@pytest.mark.parametrize(
+    "change",
+    [
+        {"final_outcome": "inconclusive"},
+        {"final_confidence": "low"},  # a pair, or neither
+        {"final_outcome": "established", "final_confidence": "low"},  # ADR-53
+        {
+            "final_outcome": "inconclusive",
+            "final_confidence": "low",
+            "reviewed": False,
+        },  # written at review
+        {
+            "final_outcome": "established",
+            "final_confidence": "high",
+            "outcome": "inconclusive",
+            "leading_hypothesis_id": None,
+            "confidence": "low",
+        },  # a review can't establish
+    ],
+)
 def test_final_outcome_and_confidence_follow_the_schema_checks(change):
     with pytest.raises(ValidationError):
         diagnosis(**change)
@@ -387,14 +493,29 @@ def test_low_confidence_is_never_established():
 
 
 def action(**overrides):
-    fields = dict(action_id=uuid4(), incident_id=uuid4(), diagnosis_id=uuid4(), parent_action_id=None,
-                  kind="config_revert", target_service="checkout", target_environment="production",
-                  target_deployment="checkout-prod-eu1", base_revision="abc123",
-                  expected_after_revision="def456", description="Revert",
-                  expected_effect="Errors fall", risk="Low", undo_plan="Re-apply",
-                  recovery_criteria=[{"metric": "http_5xx_rate", "comparison": "<=", "threshold": 0.01}],
-                  hold_seconds=600, action_digest=SHA, status="awaiting_approval", version=2,
-                  patch=None, latest_test=None)
+    fields = dict(
+        action_id=uuid4(),
+        incident_id=uuid4(),
+        diagnosis_id=uuid4(),
+        parent_action_id=None,
+        kind="config_revert",
+        target_service="checkout",
+        target_environment="production",
+        target_deployment="checkout-prod-eu1",
+        base_revision="abc123",
+        expected_after_revision="def456",
+        description="Revert",
+        expected_effect="Errors fall",
+        risk="Low",
+        undo_plan="Re-apply",
+        recovery_criteria=[{"metric": "http_5xx_rate", "comparison": "<=", "threshold": 0.01}],
+        hold_seconds=600,
+        action_digest=SHA,
+        status="awaiting_approval",
+        version=2,
+        patch=None,
+        latest_test=None,
+    )
     return c.ActionView(**{**fields, **overrides})
 
 
@@ -425,8 +546,16 @@ def test_action_keeps_slugs_not_ids():
 
 
 def patch(**overrides):
-    fields = dict(patch_id=uuid4(), base_revision="abc123", patch_sha256=SHA, files_changed=1,
-                  lines_added=1, lines_removed=1, diff_artifact_id=uuid4(), review_ref=None)
+    fields = dict(
+        patch_id=uuid4(),
+        base_revision="abc123",
+        patch_sha256=SHA,
+        files_changed=1,
+        lines_added=1,
+        lines_removed=1,
+        diff_artifact_id=uuid4(),
+        review_ref=None,
+    )
     return c.PatchView(**{**fields, **overrides})
 
 
@@ -437,14 +566,23 @@ def test_patch_fingerprint_is_patch_sha256():
 
 
 def test_run(outcome):
-    return c.TestRunView(test_run_id=uuid4(), patch_sha256=SHA, reproduced=True, outcome=outcome,
-                         output_artifact_id=None, started_at=NOW, finished_at=NOW)
+    return c.TestRunView(
+        test_run_id=uuid4(),
+        patch_sha256=SHA,
+        reproduced=True,
+        outcome=outcome,
+        output_artifact_id=None,
+        started_at=NOW,
+        finished_at=NOW,
+    )
 
 
 test_run.__test__ = False
 
 
-@pytest.mark.parametrize("outcome", ["passed", "failed", "not_reproduced", "inconclusive", "crashed", "timeout"])
+@pytest.mark.parametrize(
+    "outcome", ["passed", "failed", "not_reproduced", "inconclusive", "crashed", "timeout"]
+)
 def test_test_run_accepts_the_six_outcomes(outcome):
     assert test_run(outcome).outcome.value == outcome
 
@@ -455,9 +593,17 @@ def test_test_run_refuses_the_old_error_outcome():
 
 
 def artifact(kind):
-    return c.ArtifactView(artifact_id=uuid4(), incident_id=uuid4(), kind=kind, media_type="text/plain",
-                          size_bytes=1, content_sha256=SHA, redacted=True, created_at=NOW,
-                          content_url="/v1/artifacts/1/content")
+    return c.ArtifactView(
+        artifact_id=uuid4(),
+        incident_id=uuid4(),
+        kind=kind,
+        media_type="text/plain",
+        size_bytes=1,
+        content_sha256=SHA,
+        redacted=True,
+        created_at=NOW,
+        content_url="/v1/artifacts/1/content",
+    )
 
 
 def test_artifact_kind_is_typed():
@@ -512,17 +658,31 @@ def test_outcome_resolution_settles_to_applied_or_not_applied_only():
 
 
 def decision(**overrides):
-    fields = dict(approval_id=uuid4(), action_id=uuid4(), decision="approved", decided_by="user:priya",
-                  decided_by_role="approver", action_digest=SHA, patch_sha256=None,
-                  target_service="checkout", target_environment="production", decided_at=NOW,
-                  valid_until=NOW + timedelta(minutes=15), reason=None, signing_key_id="k1",
-                  revokes_approval_id=None, conditional=False, conditional_on_approval_id=None)
+    fields = dict(
+        approval_id=uuid4(),
+        action_id=uuid4(),
+        decision="approved",
+        decided_by="user:priya",
+        decided_by_role="approver",
+        action_digest=SHA,
+        patch_sha256=None,
+        target_service="checkout",
+        target_environment="production",
+        decided_at=NOW,
+        valid_until=NOW + timedelta(minutes=15),
+        reason=None,
+        signing_key_id="k1",
+        revokes_approval_id=None,
+        conditional=False,
+        conditional_on_approval_id=None,
+    )
     return c.ApprovalDecisionView(**{**fields, **overrides})
 
 
 def test_revoked_decision_points_at_the_approval_it_withdraws():
-    revoked = decision(decision="revoked", valid_until=None, reason="Wrong target",
-                       revokes_approval_id=uuid4())
+    revoked = decision(
+        decision="revoked", valid_until=None, reason="Wrong target", revokes_approval_id=uuid4()
+    )
     assert revoked.decision is c.ApprovalDecision.revoked
     with pytest.raises(ValidationError):
         decision(decision="revoked", valid_until=None, reason="Wrong target")
@@ -546,8 +706,13 @@ def test_conditional_approval_names_the_fix_approval():
     with pytest.raises(ValidationError):
         decision(conditional_on_approval_id=uuid4())
     with pytest.raises(ValidationError):
-        decision(decision="rejected", valid_until=None, reason="No", conditional=True,
-                 conditional_on_approval_id=uuid4())
+        decision(
+            decision="rejected",
+            valid_until=None,
+            reason="No",
+            conditional=True,
+            conditional_on_approval_id=uuid4(),
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -567,8 +732,16 @@ def test_named_bodies():
 
 
 def test_no_body_carries_a_version():
-    bodies = [c.ApprovalCreate, c.RejectionCreate, c.RevocationCreate, c.OutcomeResolutionCreate,
-              c.SeverityConfirmationCreate, c.ClosureCreate, c.ReinvestigationCreate, c.NoteCreate]
+    bodies = [
+        c.ApprovalCreate,
+        c.RejectionCreate,
+        c.RevocationCreate,
+        c.OutcomeResolutionCreate,
+        c.SeverityConfirmationCreate,
+        c.ClosureCreate,
+        c.ReinvestigationCreate,
+        c.NoteCreate,
+    ]
     assert not [b for b in bodies for name in b.model_fields if "version" in name]
 
 
@@ -581,5 +754,7 @@ def test_page_is_typed_and_ends_with_a_null_cursor():
 
 
 def test_timeline_page_continues_from_a_sequence():
-    page = c.Page[c.CloudEvent](items=[event("aisre.approval.granted.v1", granted())], next_after_seq=1)
+    page = c.Page[c.CloudEvent](
+        items=[event("aisre.approval.granted.v1", granted())], next_after_seq=1
+    )
     assert page.next_after_seq == 1

@@ -9,13 +9,27 @@ import subprocess
 from pathlib import Path
 
 import pytest
+from support import T0, FakeProvider, draft_json, gateway, provider_reply, request
 
+from aisre.agent.tool_registry import (
+    REGISTRY,
+    SKILL_TOOLS,
+    ToolGate,
+    ToolKind,
+    ToolRefused,
+    agent_tools,
+    tool_schema_for_model,
+)
 from aisre.remediation import dispatcher
 from aisre.remediation.action import MATRIX, Perm, Role
 from aisre.remediation.patch import _protected
-from aisre.remediation.sandbox import SandboxSpec, SpecRejected, launch_args, run_sandbox, validate_args
-from support import T0, FakeProvider, draft_json, gateway, provider_reply, request
-from aisre.agent.tool_registry import REGISTRY, SKILL_TOOLS, ToolGate, ToolKind, ToolRefused, agent_tools, tool_schema_for_model
+from aisre.remediation.sandbox import (
+    SandboxSpec,
+    SpecRejected,
+    launch_args,
+    run_sandbox,
+    validate_args,
+)
 
 
 def spliced(*extra):
@@ -46,31 +60,52 @@ def test_st16_parent_environment_does_not_reach_the_launch_arguments(monkeypatch
 
     def run(args, **kw):
         return subprocess.CompletedProcess(args, 0, "", "")
+
     run_sandbox(SandboxSpec(), "r1", "0" * 64, "a1b2c3d4", popen=popen, run=run)
     assert "canary-prod-credential" not in " ".join(seen["args"])
 
 
-@pytest.mark.parametrize("env", ["--env=DATABASE_URL=postgres://prod", "--env=API_TOKEN=x", "--env=DB_PASSWORD=x",
-                                 "--env=AWS_ACCESS_KEY_ID=x", "--env=MY_SECRET=x", "--env=SIGNING_KEY=x"])
+@pytest.mark.parametrize(
+    "env",
+    [
+        "--env=DATABASE_URL=postgres://prod",
+        "--env=API_TOKEN=x",
+        "--env=DB_PASSWORD=x",
+        "--env=AWS_ACCESS_KEY_ID=x",
+        "--env=MY_SECRET=x",
+        "--env=SIGNING_KEY=x",
+    ],
+)
 def test_st16_credential_variables_are_refused(env):
     with pytest.raises(SpecRejected):
         validate_args(spliced(env))
 
 
-@pytest.mark.parametrize("extra", [("-e", "DATABASE_URL=postgres://prod"), ("--env", "AWS_SECRET_ACCESS_KEY=x"),
-                                   ("--env-file=/run/secrets/prod.env",)])
+@pytest.mark.parametrize(
+    "extra",
+    [
+        ("-e", "DATABASE_URL=postgres://prod"),
+        ("--env", "AWS_SECRET_ACCESS_KEY=x"),
+        ("--env-file=/run/secrets/prod.env",),
+    ],
+)
 def test_st16_credential_variables_are_refused_in_every_spelling(extra):
     with pytest.raises(SpecRejected):
         validate_args(spliced(*extra))
 
 
 def test_st16_generated_code_cannot_edit_secret_files_or_the_launcher():
-    assert all(_protected(p) for p in ("deploy/.env", "secrets.yaml", "sandbox/launcher.py", "harness/run.py"))
+    assert all(
+        _protected(p)
+        for p in ("deploy/.env", "secrets.yaml", "sandbox/launcher.py", "harness/run.py")
+    )
 
 
 def test_st16_real_read_of_env_files_and_mounts_needs_a_sandbox():
-    pytest.skip("Needs a running gVisor sandbox: runsc is not installed, and only generated code running inside one "
-                "can show that it finds no credentials and reaches no production host")
+    pytest.skip(
+        "Needs a running gVisor sandbox: runsc is not installed, and only generated code running inside one "
+        "can show that it finds no credentials and reaches no production host"
+    )
 
 
 # ---------------------------------------------------------------- ST-17
@@ -101,8 +136,10 @@ def test_st17_platform_credentials_are_not_in_any_prompt(monkeypatch):
 
 
 def test_st17_prompts_across_a_real_investigation_need_the_evidence_adapters():
-    pytest.skip("The evidence adapters that hold the credentials and redact extracts don't exist (collect_evidence is "
-                "NotImplementedError), so tool results and whole-investigation prompts can't be captured and searched")
+    pytest.skip(
+        "The evidence adapters that hold the credentials and redact extracts don't exist (collect_evidence is "
+        "NotImplementedError), so tool results and whole-investigation prompts can't be captured and searched"
+    )
 
 
 # ---------------------------------------------------------------- ST-18
@@ -112,7 +149,13 @@ def test_st18_only_the_dispatcher_identity_may_execute():
 
 @pytest.mark.parametrize("role", [Role.SYSTEM_WORKFLOW, Role.SYSTEM_DISPATCHER])
 def test_st18_platform_identities_hold_no_approval_or_key_rights(role):
-    assert not MATRIX[role] & {Perm.APPROVE, Perm.REJECT, Perm.REVOKE_OWN, Perm.MANAGE_KEYS, Perm.EDIT_POLICY}
+    assert not MATRIX[role] & {
+        Perm.APPROVE,
+        Perm.REJECT,
+        Perm.REVOKE_OWN,
+        Perm.MANAGE_KEYS,
+        Perm.EDIT_POLICY,
+    }
 
 
 @pytest.mark.parametrize("skill", sorted(SKILL_TOOLS))
@@ -125,11 +168,18 @@ def test_st18_worker_tools_cannot_call_apply(skill):
 
 def test_st18_the_dispatcher_module_cannot_reach_the_signing_key():
     tree = ast.parse(Path(dispatcher.__file__).read_text())
-    imported = {a.name for n in ast.walk(tree) if isinstance(n, (ast.Import, ast.ImportFrom)) for a in n.names}
+    imported = {
+        a.name
+        for n in ast.walk(tree)
+        if isinstance(n, (ast.Import, ast.ImportFrom))
+        for a in n.names
+    }
     assert not imported & {"Signer", "Ed25519PrivateKey", "record_decision"}
 
 
 def test_st18_review_secrets_and_live_database_roles_need_real_systems():
-    pytest.skip("Merging with the draft-pull-request credential, reading the secrets manager and calling the release "
-                "process as a worker need those real systems. Database-role rights are proved by schema-tests.sql "
-                "(see README), which needs PostgreSQL")
+    pytest.skip(
+        "Merging with the draft-pull-request credential, reading the secrets manager and calling the release "
+        "process as a worker need those real systems. Database-role rights are proved by schema-tests.sql "
+        "(see README), which needs PostgreSQL"
+    )

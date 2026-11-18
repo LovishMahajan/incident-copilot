@@ -7,12 +7,12 @@ import uuid
 
 import pytest
 from pydantic import ValidationError
-
-from aisre.remediation.action import record_decision
-from aisre.workflow.activities import DispatchIn
-from aisre.contracts import ApprovalCreate, RejectionCreate, RevocationCreate
-from aisre.remediation.dispatcher import Outcome
 from support import FakeRelease, MemoryStore, decide, make_action, make_patch, rig
+
+from aisre.contracts import ApprovalCreate, RejectionCreate, RevocationCreate
+from aisre.remediation.action import record_decision
+from aisre.remediation.dispatcher import Outcome
+from aisre.workflow.activities import DispatchIn
 
 
 # ---------------------------------------------------------------- ST-13
@@ -31,16 +31,20 @@ def test_st13_changed_fingerprint_on_the_action_voids_its_approval():
 
 def test_st13_bytes_swapped_in_the_artifact_store_stop_execution():
     a = make_action()
-    store = MemoryStore().add(a, [decide(a, "priya")], content=b"timeout_ms: 1  # swapped after approval")
+    store = MemoryStore().add(
+        a, [decide(a, "priya")], content=b"timeout_ms: 1  # swapped after approval"
+    )
     r = rig(store=store)
     res = r.run(a.action_id)
     assert res.outcome == Outcome.REFUSED and r.release.calls == []
-    assert res.void_approval                                   # what was approved isn't what is stored
+    assert res.void_approval  # what was approved isn't what is stored
 
 
 def test_st13_control_the_stored_bytes_that_hash_to_the_approval_run():
     a = make_action()
-    r = rig(store=MemoryStore().add(a, [decide(a, "priya")], content=make_patch().canonical_bytes()))
+    r = rig(
+        store=MemoryStore().add(a, [decide(a, "priya")], content=make_patch().canonical_bytes())
+    )
     assert r.run(a.action_id).outcome == Outcome.APPLIED
 
 
@@ -49,11 +53,14 @@ def test_st13_unreadable_patch_content_stops_execution(failure):
     class Broken(MemoryStore):
         def patch_content(self, patch_sha256):
             raise failure
+
     a = make_action()
     r = rig(store=Broken().add(a, [decide(a, "priya")]))
     res = r.run(a.action_id)
-    assert res.outcome == Outcome.REFUSED and r.release.calls == [] and "can't be read" in res.reason
-    assert not res.void_approval                               # an outage proves nothing about the bytes
+    assert (
+        res.outcome == Outcome.REFUSED and r.release.calls == [] and "can't be read" in res.reason
+    )
+    assert not res.void_approval  # an outage proves nothing about the bytes
 
 
 def test_st13_a_fix_with_no_patch_at_all_stops_execution():
@@ -63,13 +70,32 @@ def test_st13_a_fix_with_no_patch_at_all_stops_execution():
 
 
 # ---------------------------------------------------------------- ST-14
-@pytest.mark.parametrize("extra", [{"patch": "x"}, {"patch_sha256": "f" * 64}, {"target": "checkout-prod-us1"},
-                                   {"target_service": "payments"}, {"files": []}, {"base_revision": "ffffffff"}])
-@pytest.mark.parametrize("contract,body", [
-    (ApprovalCreate, {"action_digest": "a" * 64}),
-    (RejectionCreate, {"action_digest": "a" * 64, "reason": "Wrong target entirely"}),
-    (RevocationCreate, {"approval_id": str(uuid.uuid4()), "action_digest": "a" * 64, "reason": "Wrong target entirely"}),
-])
+@pytest.mark.parametrize(
+    "extra",
+    [
+        {"patch": "x"},
+        {"patch_sha256": "f" * 64},
+        {"target": "checkout-prod-us1"},
+        {"target_service": "payments"},
+        {"files": []},
+        {"base_revision": "ffffffff"},
+    ],
+)
+@pytest.mark.parametrize(
+    "contract,body",
+    [
+        (ApprovalCreate, {"action_digest": "a" * 64}),
+        (RejectionCreate, {"action_digest": "a" * 64, "reason": "Wrong target entirely"}),
+        (
+            RevocationCreate,
+            {
+                "approval_id": str(uuid.uuid4()),
+                "action_digest": "a" * 64,
+                "reason": "Wrong target entirely",
+            },
+        ),
+    ],
+)
 def test_st14_decision_request_carrying_a_patch_or_target_is_rejected_whole(contract, body, extra):
     contract.model_validate(body)
     with pytest.raises(ValidationError):
@@ -90,8 +116,15 @@ def test_st14_dispatcher_sends_only_what_trusted_storage_holds():
     a = make_action()
     r = rig((a, [decide(a, "priya")]))
     r.run(a.action_id)
-    assert r.release.calls == [dict(deployment=a.target.deployment, key=a.action_id, base=a.base_revision,
-                                    patch=a.patch_sha256, to=a.expected_after_revision)]
+    assert r.release.calls == [
+        dict(
+            deployment=a.target.deployment,
+            key=a.action_id,
+            base=a.base_revision,
+            patch=a.patch_sha256,
+            to=a.expected_after_revision,
+        )
+    ]
 
 
 # ---------------------------------------------------------------- ST-15
@@ -107,6 +140,7 @@ def test_st15_move_between_check_and_write_is_caught_by_the_release_compare_and_
         async def apply(self, *args):
             self.revision = "c0ffee00"
             return await super().apply(*args)
+
     a = make_action()
     r = rig((a, [decide(a, "priya")]), release=MovesAfterCheck())
     assert r.run(a.action_id).outcome == Outcome.NOT_APPLIED and r.release.applied_keys == {}

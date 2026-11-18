@@ -320,7 +320,8 @@ class EvidenceRecord(Strict):
     gap_reason: str | None
     strength_tier: int | None = Field(ge=1, le=8, description="Assigned by code (ADR-53)")
     content_removed_at: datetime | None = Field(
-        default=None, description="Set by a legal or safety deletion (Q10.55)")
+        default=None, description="Set by a legal or safety deletion (Q10.55)"
+    )
     content_removed_reason: str | None = None
 
     @model_validator(mode="after")
@@ -379,8 +380,11 @@ class Diagnosis(Strict):
     review_notes: str | None
     produced_by: str = Field(description="Component and model attempt")
     final_outcome: DiagnosisOutcome | None = Field(
-        description="Set once, at review (ADR-69). Show this, not `outcome`: capped to low reads as inconclusive")
-    final_confidence: Confidence | None = Field(description="The lower of the scored level and the critic's cap (ADR-53)")
+        description="Set once, at review (ADR-69). Show this, not `outcome`: capped to low reads as inconclusive"
+    )
+    final_confidence: Confidence | None = Field(
+        description="The lower of the scored level and the critic's cap (ADR-53)"
+    )
 
     @model_validator(mode="after")
     def leading_matches_outcome(self) -> Diagnosis:
@@ -389,14 +393,21 @@ class Diagnosis(Strict):
         if self.final_outcome is not None and not self.reviewed:
             raise ValueError("only a reviewed diagnosis has a final outcome")
         if self.final_outcome == DiagnosisOutcome.established and (
-                self.outcome != DiagnosisOutcome.established or self.final_confidence == Confidence.low):
-            raise ValueError("final established needs an established diagnosis above low confidence (ADR-53)")
+            self.outcome != DiagnosisOutcome.established or self.final_confidence == Confidence.low
+        ):
+            raise ValueError(
+                "final established needs an established diagnosis above low confidence (ADR-53)"
+            )
         established = self.outcome == DiagnosisOutcome.established
         if established != (self.leading_hypothesis_id is not None):
-            raise ValueError("an established diagnosis needs a leading hypothesis; an inconclusive one has none")
+            raise ValueError(
+                "an established diagnosis needs a leading hypothesis; an inconclusive one has none"
+            )
         if established and self.confidence == Confidence.low:
             raise ValueError("low confidence is never established (ADR-53)")
-        if self.leading_hypothesis_id and self.leading_hypothesis_id not in {h.hypothesis_id for h in self.hypotheses}:
+        if self.leading_hypothesis_id and self.leading_hypothesis_id not in {
+            h.hypothesis_id for h in self.hypotheses
+        }:
             raise ValueError("leading hypothesis must be one of the listed hypotheses")
         return self
 
@@ -425,7 +436,9 @@ class ActionView(Strict):
     undo_plan: ShortText
     recovery_criteria: list[RecoveryCriterion] = Field(min_length=1)
     hold_seconds: int = Field(ge=60, description="How long recovery must hold (provisional: 600)")
-    action_digest: Sha256 | None = Field(description="What an approval names (ADR-49); set when testing ends")
+    action_digest: Sha256 | None = Field(
+        description="What an approval names (ADR-49); set when testing ends"
+    )
     status: ActionStatus
     version: int
     patch: PatchView | None
@@ -435,7 +448,12 @@ class ActionView(Strict):
     def rollback_and_digest(self) -> ActionView:
         if (self.kind == ActionKind.rollback) != (self.parent_action_id is not None):
             raise ValueError("rollbacks, and only rollbacks, carry parent_action_id")
-        before_digest = {ActionStatus.proposed, ActionStatus.testing, ActionStatus.test_failed, ActionStatus.withdrawn}
+        before_digest = {
+            ActionStatus.proposed,
+            ActionStatus.testing,
+            ActionStatus.test_failed,
+            ActionStatus.withdrawn,
+        }
         if self.status not in before_digest and self.action_digest is None:
             raise ValueError(f"an action in {self.status.value} needs its action_digest")
         return self
@@ -877,8 +895,10 @@ class ExecutionCompletedData(Strict):
     execution_key: str
     attempt_no: int
     outcome: Literal[
-        ExecutionOutcome.applied, ExecutionOutcome.not_applied,
-        ExecutionOutcome.unknown, ExecutionOutcome.failed,
+        ExecutionOutcome.applied,
+        ExecutionOutcome.not_applied,
+        ExecutionOutcome.unknown,
+        ExecutionOutcome.failed,
     ]
     external_ref: str | None
     reconciliation: bool = False

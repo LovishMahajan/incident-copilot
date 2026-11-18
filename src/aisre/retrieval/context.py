@@ -20,25 +20,34 @@ from aisre.gateway.gateway_contracts import escape_data, estimate_tokens
 
 @dataclass(frozen=True)
 class Item:
-    ref: str                     # evidence:<uuid> | runbook:<chunk_id> | fact:<name> | gap:<uuid>
-    kind: str                    # fact | contradiction | gap | evidence | runbook
+    ref: str  # evidence:<uuid> | runbook:<chunk_id> | fact:<name> | gap:<uuid>
+    kind: str  # fact | contradiction | gap | evidence | runbook
     text: str
-    priority: int                # lower = more important
+    priority: int  # lower = more important
     sha256: str = ""
-    refs: tuple[str, ...] = ()   # for merged items: every source they stand for
+    refs: tuple[str, ...] = ()  # for merged items: every source they stand for
 
 
 # Order in which evidence kinds compete for context space (10.11). Not strength tiers: strength
 # belongs to an observation, not a kind (ADR-53).
-CONTEXT_KIND_ORDER = {"test_result": 10, "trace": 11, "error_group": 11, "metric": 12, "change": 13,
-                     "log": 14, "dependency": 13, "alert": 15, "past_incident": 30}
+CONTEXT_KIND_ORDER = {
+    "test_result": 10,
+    "trace": 11,
+    "error_group": 11,
+    "metric": 12,
+    "change": 13,
+    "log": 14,
+    "dependency": 13,
+    "alert": 15,
+    "past_incident": 30,
+}
 
 
 @dataclass
 class Manifest:
     prompt_id: str
     prompt_version: str
-    prompt_sha256: str           # SHA-256 of the prompt text (ADR-63)
+    prompt_sha256: str  # SHA-256 of the prompt text (ADR-63)
     index_revision: Optional[str]
     budget_tokens: int
     used_tokens: int = 0
@@ -46,7 +55,9 @@ class Manifest:
     excluded: list[dict] = field(default_factory=list)
 
     def sha256(self) -> str:
-        return hashlib.sha256(json.dumps(self.__dict__, sort_keys=True, default=str).encode()).hexdigest()
+        return hashlib.sha256(
+            json.dumps(self.__dict__, sort_keys=True, default=str).encode()
+        ).hexdigest()
 
 
 def merge_repeated_logs(evidence: list[dict]) -> list[dict]:
@@ -62,16 +73,31 @@ def merge_repeated_logs(evidence: list[dict]) -> list[dict]:
     merged = []
     for _tpl, items in groups.items():
         first = items[0]
-        refs = tuple(f'evidence:{i["evidence_id"]}' for i in items)
-        merged.append({**first, "summary": f'{first["summary"]} (seen {len(items)} times; sources: {", ".join(refs)})',
-                       "refs": refs})
+        refs = tuple(f"evidence:{i['evidence_id']}" for i in items)
+        merged.append(
+            {
+                **first,
+                "summary": f"{first['summary']} (seen {len(items)} times; sources: {', '.join(refs)})",
+                "refs": refs,
+            }
+        )
     return other + merged
 
 
-def assemble(*, prompt_id: str, prompt_version: str, prompt_sha256: str, facts: dict[str, str],
-             evidence: list[dict], contradictions: list[tuple[str, str, str]], runbook_hits: list,
-             index_revision: Optional[str], budget_tokens: int = 12_000, max_item_tokens: int = 600,
-             must_include: set[str] = frozenset()) -> tuple[list[dict], Manifest]:
+def assemble(
+    *,
+    prompt_id: str,
+    prompt_version: str,
+    prompt_sha256: str,
+    facts: dict[str, str],
+    evidence: list[dict],
+    contradictions: list[tuple[str, str, str]],
+    runbook_hits: list,
+    index_revision: Optional[str],
+    budget_tokens: int = 12_000,
+    max_item_tokens: int = 600,
+    must_include: set[str] = frozenset(),
+) -> tuple[list[dict], Manifest]:
     """Returns (context items for ModelRequest.context, manifest).
 
     Order of priority (Q10.57, Q10.61):
@@ -89,22 +115,46 @@ def assemble(*, prompt_id: str, prompt_version: str, prompt_sha256: str, facts: 
     for name, value in facts.items():
         items.append(Item(f"fact:{name}", "fact", f"{name}: {value}", 0))
     for a, b, note in contradictions:
-        items.append(Item(f"contradiction:{a}|{b}", "contradiction",
-                          f"These sources disagree: {a} vs {b}. {note}", 1, refs=(a, b)))
+        items.append(
+            Item(
+                f"contradiction:{a}|{b}",
+                "contradiction",
+                f"These sources disagree: {a} vs {b}. {note}",
+                1,
+                refs=(a, b),
+            )
+        )
     merged = merge_repeated_logs(evidence)
     for e in merged:
-        ref = f'evidence:{e["evidence_id"]}'
+        ref = f"evidence:{e['evidence_id']}"
         refs = tuple(e.get("refs", (ref,)))
         if e["kind"] == "gap":
-            items.append(Item(f'gap:{e["evidence_id"]}', "gap", f'MISSING: {e["summary"]}', 2, e.get("sha256", "")))
+            items.append(
+                Item(
+                    f"gap:{e['evidence_id']}",
+                    "gap",
+                    f"MISSING: {e['summary']}",
+                    2,
+                    e.get("sha256", ""),
+                )
+            )
             continue
         pr = 3 if ref in must_include else CONTEXT_KIND_ORDER.get(e["kind"], 20)
-        label = f'[{e["kind"]} from {e.get("source_system", "?")}, window {e.get("window", "?")}]'
-        items.append(Item(ref, "evidence", f'{label} {e["summary"]}', pr, e.get("sha256", ""), refs))
+        label = f"[{e['kind']} from {e.get('source_system', '?')}, window {e.get('window', '?')}]"
+        items.append(
+            Item(ref, "evidence", f"{label} {e['summary']}", pr, e.get("sha256", ""), refs)
+        )
     for rank, h in enumerate(runbook_hits[:3]):
         stale = ", stale" if h.stale else ""
-        items.append(Item(f"runbook:{h.chunk_id}", "runbook",
-                          f'[runbook {" > ".join(h.heading_path)}, version {h.doc_version}{stale}] {h.text}', 40 + rank, h.sha256))
+        items.append(
+            Item(
+                f"runbook:{h.chunk_id}",
+                "runbook",
+                f"[runbook {' > '.join(h.heading_path)}, version {h.doc_version}{stale}] {h.text}",
+                40 + rank,
+                h.sha256,
+            )
+        )
 
     # Stable order: priority, then recency is already reflected in input order, then ref
     items.sort(key=lambda i: (i.priority, i.ref))
@@ -114,20 +164,31 @@ def assemble(*, prompt_id: str, prompt_version: str, prompt_sha256: str, facts: 
         text = it.text
         cost = estimate_tokens(escape_data(text))
         if cost > max_item_tokens and it.priority >= 3:
-            marker = f" … [truncated; full record: {it.ref}]"                 # reference kept (Q10.62)
-            text = text[:(max_item_tokens - estimate_tokens("")) * 3 - len(marker)] + marker
+            marker = f" … [truncated; full record: {it.ref}]"  # reference kept (Q10.62)
+            text = text[: (max_item_tokens - estimate_tokens("")) * 3 - len(marker)] + marker
             cost = estimate_tokens(escape_data(text))
         always = it.priority <= 3
         if man.used_tokens + cost > budget_tokens and not always:
             man.excluded.append({"ref": it.ref, "reason": "token budget", "tokens": cost})
             continue
         man.used_tokens += cost
-        out.append({"ref": it.ref, "kind": it.kind, "text": text, "refs": list(it.refs) or [it.ref]})
-        man.included.append({"ref": it.ref, "kind": it.kind, "sha256": it.sha256, "tokens": cost,
-                             "truncated": text != it.text})
+        out.append(
+            {"ref": it.ref, "kind": it.kind, "text": text, "refs": list(it.refs) or [it.ref]}
+        )
+        man.included.append(
+            {
+                "ref": it.ref,
+                "kind": it.kind,
+                "sha256": it.sha256,
+                "tokens": cost,
+                "truncated": text != it.text,
+            }
+        )
     if man.used_tokens > budget_tokens:
         # Only 'always' items remain over budget: the caller must narrow the evidence, not drop them.
-        raise ValueError(f"required context ({man.used_tokens} tokens) exceeds budget ({budget_tokens})")
+        raise ValueError(
+            f"required context ({man.used_tokens} tokens) exceeds budget ({budget_tokens})"
+        )
     return out, man
 
 
@@ -136,12 +197,12 @@ def assemble(*, prompt_id: str, prompt_version: str, prompt_sha256: str, facts: 
 # ---------------------------------------------------------------------------
 @dataclass(frozen=True)
 class PromptVersion:
-    prompt_id: str               # "diagnose"
-    version: int                 # 7
+    prompt_id: str  # "diagnose"
+    version: int  # 7
     text: str
-    output_schema_name: str      # "DiagnosisDraft"
-    model_alias: str             # "default" -> pinned model ID in configuration
-    evaluated_on: str            # evaluation run that approved it
+    output_schema_name: str  # "DiagnosisDraft"
+    model_alias: str  # "default" -> pinned model ID in configuration
+    evaluated_on: str  # evaluation run that approved it
 
     @property
     def ref(self) -> str:
@@ -162,9 +223,13 @@ class PromptRegistry:
     configuration: `activations` lists each prompt's activated versions, oldest first, and the last
     is live. Rollback activates the previous one. Old versions stay readable for replay."""
 
-    def __init__(self, root: Optional[Path] = None, activations: Optional[dict[str, list[int]]] = None) -> None:
+    def __init__(
+        self, root: Optional[Path] = None, activations: Optional[dict[str, list[int]]] = None
+    ) -> None:
         self._p: dict[str, PromptVersion] = {}
-        self.activations: dict[str, list[int]] = {k: list(v) for k, v in (activations or {}).items()}
+        self.activations: dict[str, list[int]] = {
+            k: list(v) for k, v in (activations or {}).items()
+        }
         if root is not None:
             self.load(Path(root))
 
@@ -175,8 +240,16 @@ class PromptRegistry:
                 continue
             head, _, text = path.read_text().partition("\n---\n")
             meta = dict(line.split(": ", 1) for line in head.splitlines() if line.strip())
-            self.add(PromptVersion(path.parent.name, int(m.group(1)), text, meta["output_schema_name"],
-                                   meta["model_alias"], meta["evaluated_on"]))
+            self.add(
+                PromptVersion(
+                    path.parent.name,
+                    int(m.group(1)),
+                    text,
+                    meta["output_schema_name"],
+                    meta["model_alias"],
+                    meta["evaluated_on"],
+                )
+            )
 
     @property
     def active(self) -> dict[str, int]:
@@ -203,4 +276,4 @@ class PromptRegistry:
         return self._p[f"{prompt_id}@{self.active[prompt_id]}"]
 
     def get(self, ref: str) -> PromptVersion:
-        return self._p[ref]                        # old versions stay readable for replay
+        return self._p[ref]  # old versions stay readable for replay

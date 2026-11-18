@@ -8,12 +8,13 @@ from datetime import timedelta
 from pathlib import Path
 
 import pytest
-
-from aisre.verification import verification
-from aisre.remediation.action import ApprovalError, MATRIX, Perm, Role
-from aisre.remediation.dispatcher import Outcome
-from aisre.workflow.states import ActionState as A, InvalidTransition, check_action
 from support import AFTER, BASE, T0, FakeRelease, decide, make_action, make_rollback, rig, rows
+
+from aisre.remediation.action import MATRIX, ApprovalError, Perm, Role
+from aisre.remediation.dispatcher import Outcome
+from aisre.verification import verification
+from aisre.workflow.states import ActionState as A
+from aisre.workflow.states import InvalidTransition, check_action
 from aisre.workflow.workflow import IncidentWorkflow
 
 
@@ -23,7 +24,9 @@ def pair():
 
 
 def conditional(fix, rb, **kw):
-    return rows(fix, "priya", rollback=rb, rollback_digest=rb.digest, rollback_approval_id="rb-ok", **kw)[1]
+    return rows(
+        fix, "priya", rollback=rb, rollback_digest=rb.digest, rollback_approval_id="rb-ok", **kw
+    )[1]
 
 
 def at_parent_revision(rb, ds, verdict, now=None, revision=AFTER):
@@ -58,7 +61,12 @@ def test_st39_conditional_approval_needs_a_failed_parent(verdict):
 def test_st39_conditional_approval_is_refused_after_its_valid_until():
     fix, rb = pair()
     d = conditional(fix, rb)
-    late = T0 + timedelta(minutes=15) + timedelta(seconds=fix.hold_seconds) + timedelta(minutes=15, seconds=1)
+    late = (
+        T0
+        + timedelta(minutes=15)
+        + timedelta(seconds=fix.hold_seconds)
+        + timedelta(minutes=15, seconds=1)
+    )
     refused(at_parent_revision(rb, [d], "failed", now=late), rb)
 
 
@@ -101,16 +109,32 @@ def test_st39_a_plain_approval_cannot_run_a_rollback_of_a_fix_that_did_not_fail(
 
 def test_st39_control_a_fresh_plain_approval_after_a_failed_verdict_runs():
     _, rb = pair()
-    assert at_parent_revision(rb, [decide(rb, "priya")], "failed").run(rb.action_id).outcome == Outcome.APPLIED
+    assert (
+        at_parent_revision(rb, [decide(rb, "priya")], "failed").run(rb.action_id).outcome
+        == Outcome.APPLIED
+    )
 
 
 def test_st39_the_verifier_has_no_path_to_the_dispatcher():
     tree = ast.parse(Path(verification.__file__).read_text())
-    modules = {n.module for n in ast.walk(tree) if isinstance(n, ast.ImportFrom)} | \
-              {f"{n.module}.{a.name}" for n in ast.walk(tree) if isinstance(n, ast.ImportFrom) for a in n.names} | \
-              {a.name for n in ast.walk(tree) if isinstance(n, ast.Import) for a in n.names}
-    assert not modules & {"aisre.remediation.dispatcher", "aisre.workflow.activities", "aisre.workflow.workflow"}
-    assert modules & {"aisre.remediation.action"}      # it does import action, so this check reads real imports
+    modules = (
+        {n.module for n in ast.walk(tree) if isinstance(n, ast.ImportFrom)}
+        | {
+            f"{n.module}.{a.name}"
+            for n in ast.walk(tree)
+            if isinstance(n, ast.ImportFrom)
+            for a in n.names
+        }
+        | {a.name for n in ast.walk(tree) if isinstance(n, ast.Import) for a in n.names}
+    )
+    assert not modules & {
+        "aisre.remediation.dispatcher",
+        "aisre.workflow.activities",
+        "aisre.workflow.workflow",
+    }
+    assert modules & {
+        "aisre.remediation.action"
+    }  # it does import action, so this check reads real imports
 
 
 def test_st39_no_person_or_worker_role_can_execute():
@@ -120,8 +144,12 @@ def test_st39_no_person_or_worker_role_can_execute():
 def test_st39_only_a_failed_verdict_calls_the_workflows_rollback():
     source = inspect.getsource(IncidentWorkflow._lifecycle)
     tree = ast.parse("class _:\n" + source)
-    guards = [n for n in ast.walk(tree) if isinstance(n, ast.If)
-              and any(isinstance(c, ast.Attribute) and c.attr == "_roll_back" for c in ast.walk(n))]
+    guards = [
+        n
+        for n in ast.walk(tree)
+        if isinstance(n, ast.If)
+        and any(isinstance(c, ast.Attribute) and c.attr == "_roll_back" for c in ast.walk(n))
+    ]
     calls = [c for c in ast.walk(tree) if isinstance(c, ast.Attribute) and c.attr == "_roll_back"]
     assert len(calls) == 1
     tests = [ast.unparse(n.test) for n in guards]
@@ -129,5 +157,7 @@ def test_st39_only_a_failed_verdict_calls_the_workflows_rollback():
 
 
 def test_st39_api_route_needs_the_api():
-    pytest.skip("Needs a running API: no route exists to show a rollback request through it is refused. The workflow "
-                "paths run on Temporal in test_workflow.py (test_inconclusive_verification_hands_over_without_rollback)")
+    pytest.skip(
+        "Needs a running API: no route exists to show a rollback request through it is refused. The workflow "
+        "paths run on Temporal in test_workflow.py (test_inconclusive_verification_hands_over_without_rollback)"
+    )
