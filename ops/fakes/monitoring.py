@@ -1,0 +1,112 @@
+"""LOCAL USE ONLY (Artifact 13.5 T1.1): a fake monitoring source, serving synthetic scenarios.
+
+The read-only systems the Evidence Collector's adapters will query (T1.10): metrics, logs,
+traces, changes and the service catalogue. Each scenario is a folder of fixture files, in the
+reference incident's layout (tests/fixtures/reference-incident/). The answer key is never
+served: it is what an investigation must find, not something monitoring knows.
+
+    GET /v1/scenarios                         names of the scenario folders
+    GET /v1/scenarios/<name>/alert            alert.json
+    GET /v1/scenarios/<name>/metrics          metrics.csv as a list of rows
+    GET /v1/scenarios/<name>/logs             logs.ndjson as a list of records
+    GET /v1/scenarios/<name>/traces           trace.json
+    GET /v1/scenarios/<name>/changes          release.json, plus config-diff.txt as `config_diff`
+    GET /v1/scenarios/<name>/catalog          service-catalog.json
+    GET /healthz
+
+Optional `start` and `end` (ISO 8601, UTC) filter metrics by `minute_utc` and logs by `ts`.
+FAKE_MONITORING_FIXTURES names the folder holding the scenarios (default: tests/fixtures in
+this repository); FAKE_MONITORING_PORT the port (default 8080). Standard library only.
+"""
+
+from __future__ import annotations
+
+import csv
+import json
+import os
+import sys
+import threading
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from pathlib import Path
+from typing import Any
+from urllib.parse import parse_qs, urlsplit
+
+FIXTURES = Path(__file__).parents[2] / "tests/fixtures"
+
+
+def _comment_free(path: Path) -> list[str]:
+    return [ln for ln in path.read_text().splitlines() if ln.strip() and not ln.startswith("#")]
+
+
+def _in_window(stamp: str, start: str | None, end: str | None) -> bool:
+    return (start is None or stamp >= start) and (end is None or stamp <= end)
+
+
+def read(root: Path, scenario: str, kind: str, query: dict[str, str]) -> Any:
+    """The answer for one scenario and kind. Raises FileNotFoundError or KeyError."""
+    names = {p.parent.name for p in root.glob("*/alert.json")}
+    if scenario not in names:
+        raise FileNotFoundError(scenario)
+    d = root / scenario
+    start, end = query.get("start"), query.get("end")
+    if kind == "metrics":
+        rows = csv.DictReader(_comment_free(d / "metrics.csv"))
+        return [r for r in rows if _in_window(r["minute_utc"], start, end)]
+    if kind == "logs":
+        records = [json.loads(ln) for ln in _comment_free(d / "logs.ndjson")]
+        return [r for r in records if _in_window(r["ts"], start, end)]
+    if kind == "changes":
+        diff = d / "config-diff.txt"
+        changes = json.loads((d / "release.json").read_text())
+        return changes | {"config_diff": diff.read_text() if diff.exists() else None}
+    files = {"alert": "alert.json", "traces": "trace.json", "catalog": "service-catalog.json"}
+    return json.loads((d / files[kind]).read_text())
+
+
+def handler_for(root: Path) -> type[BaseHTTPRequestHandler]:
+    class Handler(BaseHTTPRequestHandler):
+        def log_message(self, format: str, *args: Any) -> None:
+            sys.stderr.write(f"fake-monitoring {self.command} {self.path.split('?')[0]}\n")
+
+        def reply(self, status: int, body: Any) -> None:
+            data = json.dumps(body).encode()
+            self.send_response(status)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(data)))
+            self.end_headers()
+            self.wfile.write(data)
+
+        def do_GET(self) -> None:
+            url = urlsplit(self.path)
+            parts = url.path.strip("/").split("/")
+            query = {k: v[0] for k, v in parse_qs(url.query).items()}
+            if parts == ["healthz"]:
+                return self.reply(200, {"status": "ok"})
+            if parts == ["v1", "scenarios"]:
+                return self.reply(200, sorted(p.parent.name for p in root.glob("*/alert.json")))
+            if len(parts) == 4 and parts[:2] == ["v1", "scenarios"]:
+                try:
+                    return self.reply(200, read(root, parts[2], parts[3], query))
+                except (FileNotFoundError, KeyError):
+                    pass
+            self.reply(404, {"error": "not_found"})
+
+    return Handler
+
+
+def serve(root: Path = FIXTURES, port: int = 0, host: str = "127.0.0.1") -> ThreadingHTTPServer:
+    """Start serving on a daemon thread; `server.server_address` has the port."""
+    server = ThreadingHTTPServer((host, port), handler_for(root))
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    return server
+
+
+def main() -> None:
+    port = int(os.environ.get("FAKE_MONITORING_PORT", "8080"))
+    root = Path(os.environ.get("FAKE_MONITORING_FIXTURES") or FIXTURES)
+    print(f"fake monitoring source on :{port}, scenarios in {root} (local use only)", flush=True)
+    ThreadingHTTPServer(("0.0.0.0", port), handler_for(root)).serve_forever()
+
+
+if __name__ == "__main__":
+    main()

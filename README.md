@@ -8,7 +8,7 @@ An AI incident copilot for SRE teams. It investigates an alert through a Tempora
 | --- | --- |
 | `src/aisre/` | The `aisre` package: contracts, workflow, agent, gateway, retrieval, remediation, verification, reliability, evaluation |
 | `db/` | `schema.sql` and `schema-tests.sql` for PostgreSQL; `migrations/` (Alembic) |
-| `ops/` | `alerts.yml` |
+| `ops/` | `alerts.yml`; `compose/` (Compose configuration); `fakes/` (local-only stand-ins: token issuer, model provider, monitoring source) |
 | `tests/unit/` | Unit tests |
 | `tests/integration/` | Tests against PostgreSQL and Temporal; skipped when those aren't reachable |
 | `tests/security/` | Security tests ST-01 to ST-40. See its [README](tests/security/README.md) |
@@ -47,7 +47,7 @@ psql -U postgres -d aisre -v ON_ERROR_STOP=1 -f db/schema-tests.sql
 
 ## Run the local stack
 
-Needs Docker with Compose. `compose.yaml` runs PostgreSQL 17.12, Temporal 1.32.2 (schema set up by `temporal-sql-tool`, in its own databases on the same PostgreSQL), the Temporal UI 2.58.1, the migration job, the API and the worker with its outbox relay. Ports are bound to 127.0.0.1; change them in `.env` if one is taken.
+Needs Docker with Compose. `compose.yaml` runs PostgreSQL 17.12, Temporal 1.32.2 (schema set up by `temporal-sql-tool`, in its own databases on the same PostgreSQL), the Temporal UI 2.58.1, the migration job, the API and the worker with its outbox relay. From M1 it adds an object store (MinIO, with a one-shot job that creates the bucket), an OpenTelemetry collector and Prometheus 3.16 (which loads `ops/alerts.yml`), and three fakes from `ops/fakes/` for local use only: a token issuer, a model provider answering in the Anthropic Messages API shape from scripted fixtures, and a monitoring source serving `tests/fixtures`. None needs a key. Ports are bound to 127.0.0.1; change them in `.env` if one is taken.
 
 ```
 cp .env.example .env
@@ -61,6 +61,12 @@ docker compose down -v           # stop and delete the data
 | Temporal UI | http://127.0.0.1:8233 |
 | Temporal frontend | 127.0.0.1:7233 |
 | PostgreSQL | 127.0.0.1:55432, database `aisre` |
+| Object store (MinIO S3 API, console) | http://127.0.0.1:59000, http://127.0.0.1:59001; bucket `aisre-artifacts` |
+| Prometheus | http://127.0.0.1:59090 |
+| OpenTelemetry collector (OTLP gRPC, HTTP) | 127.0.0.1:54317, 127.0.0.1:54318 |
+| Fake token issuer | http://127.0.0.1:59100 (`/jwks`, `POST /token`) |
+| Fake model provider | http://127.0.0.1:59200 (`POST /v1/messages`, any `x-api-key`) |
+| Fake monitoring source | http://127.0.0.1:59300 (`/v1/scenarios`) |
 
 **Development-only sign-in.** M0 has no identity system yet, so the API takes the caller's name from `X-Aisre-Dev-Caller` (and an optional organisation UUID from `X-Aisre-Dev-Org`). Anyone can claim any name, so the API refuses to start unless `AISRE_ENV` is `development` or `test`. Real tokens replace it at M1 (`src/aisre/api/auth.py`). Writes also need an `Idempotency-Key` of 8 to 128 characters:
 

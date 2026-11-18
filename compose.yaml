@@ -1,4 +1,5 @@
-# Artifact 13.3: the local stack (ADR-14, ADR-51). M0 services only.
+# Artifact 13.3: the local stack (ADR-14, ADR-51). M0 services, plus M1's (T1.1): an
+# S3-compatible object store, the telemetry stack and three local fakes.
 #
 #   cp .env.example .env          # fake values only
 #   docker compose up -d --build  # waits on health checks: PostgreSQL, Temporal, migrations, app
@@ -10,9 +11,31 @@
 # under the aisre_app role. Temporal keeps its own two databases on the same PostgreSQL
 # instance (ADR-51). Every published port is bound to 127.0.0.1.
 #
+# M1 (T1.1), none of it needing a key or a network beyond this machine:
+#   minio, minio-bucket   object store for bulky artifacts (ADR-57); the job creates the bucket
+#   otel-collector        OTLP in; metrics out to Prometheus (Artifact 12.2)
+#   prometheus            scrapes the collector and loads ops/alerts.yml (Artifact 12.3)
+#   token-issuer          FAKE identity system: signs short-lived tokens; the API verifies
+#                         them against its JWKS (T1.3, ops/fakes/token_issuer.py)
+#   fake-provider         FAKE model provider in the Anthropic Messages API shape, scripted
+#                         from ops/fakes/provider-scripts (ops/fakes/model_provider.py)
+#   fake-monitoring       FAKE monitoring source serving tests/fixtures scenarios
+#                         (ops/fakes/monitoring.py)
+# The fakes are for local use only: anyone who reaches the issuer can mint any identity.
+#
 # Images are pinned by tag, checked on Docker Hub on 2026-11-18. Artifact 13.3 asks for
 # digests; tags are what this pass verified, and digests replace them before M0 closes.
+# MinIO no longer publishes images to Docker Hub or anonymously to Quay (checked 2026-11-18),
+# so the object store is MinIO from Bitnami's frozen legacy repository, the last pullable
+# build. It is local only; replacing it (RustFS, SeaweedFS or a hosted store) is an open item.
 name: aisre
+
+x-fake: &fake
+  image: python:3.12.14-slim
+  user: "65534:65534"
+  volumes:
+    - ./ops/fakes:/opt/fakes:ro
+  restart: unless-stopped
 
 x-app: &app
   build: .
@@ -26,6 +49,9 @@ x-app: &app
     temporal-namespace:
       condition: service_completed_successfully
     migrate:
+      condition: service_completed_successfully
+    # The object store's bucket exists before anything can write an artifact (T1.1).
+    minio-bucket:
       condition: service_completed_successfully
 
 services:
@@ -181,5 +207,116 @@ services:
       timeout: 5s
       retries: 12
 
+
+  minio:
+    image: bitnamilegacy/minio:2025.7.23-debian-12-r5
+    entrypoint: ["minio"]
+    command: ["server", "/bitnami/minio/data", "--address", ":9000", "--console-address", ":9001"]
+    environment:
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER:?copy .env.example to .env}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:?copy .env.example to .env}
+    volumes:
+      - objects:/bitnami/minio/data
+    ports:
+      - "127.0.0.1:${AISRE_MINIO_PORT:-59000}:9000"
+      - "127.0.0.1:${AISRE_MINIO_CONSOLE_PORT:-59001}:9001"
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "-o", "/dev/null", "http://127.0.0.1:9000/minio/health/live"]
+      interval: 3s
+      timeout: 5s
+      retries: 20
+
+  minio-bucket:
+    image: bitnamilegacy/minio:2025.7.23-debian-12-r5
+    depends_on:
+      minio:
+        condition: service_healthy
+    environment:
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD}
+      BUCKET: ${AISRE_OBJECT_STORE_BUCKET:-aisre-artifacts}
+      MC_CONFIG_DIR: /tmp/mc
+    entrypoint: ["sh", "-euc"]
+    # Idempotent: an existing bucket is left as it is. Versioning keeps overwritten objects.
+    command:
+      - |
+        mc alias set local http://minio:9000 "$$MINIO_ROOT_USER" "$$MINIO_ROOT_PASSWORD" >/dev/null
+        mc mb --ignore-existing "local/$$BUCKET"
+        mc version enable "local/$$BUCKET"
+    restart: "no"
+
+  otel-collector:
+    image: otel/opentelemetry-collector-contrib:0.165.0
+    command: ["--config=/etc/otelcol/config.yaml"]
+    volumes:
+      - ./ops/compose/otel-collector.yaml:/etc/otelcol/config.yaml:ro
+    ports:
+      - "127.0.0.1:${AISRE_OTLP_GRPC_PORT:-54317}:4317"
+      - "127.0.0.1:${AISRE_OTLP_HTTP_PORT:-54318}:4318"
+    # No health check here: the image has no shell or HTTP client. Prometheus's `up` for
+    # job otel-collector shows whether it answers, and its own health_check extension
+    # listens on 13133 inside the network.
+
+  prometheus:
+    image: prom/prometheus:v3.16.0
+    depends_on:
+      otel-collector:
+        condition: service_started
+    volumes:
+      - ./ops/compose/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - ./ops/alerts.yml:/etc/prometheus/alerts.yml:ro
+      - promdata:/prometheus
+    ports:
+      - "127.0.0.1:${AISRE_PROMETHEUS_PORT:-59090}:9090"
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1:9090/-/ready"]
+      interval: 3s
+      timeout: 5s
+      retries: 20
+
+  token-issuer:
+    # Needs `cryptography`, so it runs on the application image.
+    build: .
+    image: aisre-app:dev
+    command: ["python", "/opt/fakes/token_issuer.py"]
+    environment:
+      AISRE_ENV: ${AISRE_ENV:-development}
+      FAKE_ISSUER_URL: ${AISRE_OIDC_ISSUER:-http://token-issuer:8080}
+      FAKE_ISSUER_AUDIENCE: ${AISRE_OIDC_AUDIENCE:-aisre-api}
+    volumes:
+      - ./ops/fakes:/opt/fakes:ro
+    ports:
+      - "127.0.0.1:${AISRE_ISSUER_PORT:-59100}:8080"
+    healthcheck: &fake-health
+      test:
+        - CMD
+        - python
+        - -c
+        - "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8080/healthz', timeout=3)"
+      interval: 3s
+      timeout: 5s
+      retries: 20
+
+  fake-provider:
+    <<: *fake
+    command: ["python", "/opt/fakes/model_provider.py"]
+    ports:
+      - "127.0.0.1:${AISRE_FAKE_PROVIDER_PORT:-59200}:8080"
+    healthcheck: *fake-health
+
+  fake-monitoring:
+    <<: *fake
+    command: ["python", "/opt/fakes/monitoring.py"]
+    environment:
+      FAKE_MONITORING_FIXTURES: /fixtures
+    volumes:
+      - ./ops/fakes:/opt/fakes:ro
+      - ./tests/fixtures:/fixtures:ro
+    ports:
+      - "127.0.0.1:${AISRE_FAKE_MONITORING_PORT:-59300}:8080"
+    healthcheck: *fake-health
+
 volumes:
   pgdata:
+  objects:
+  promdata:

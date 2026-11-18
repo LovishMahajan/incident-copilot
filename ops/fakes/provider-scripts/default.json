@@ -1,0 +1,7 @@
+{
+  "match": "",
+  "response": {
+    "content": [{"type": "text", "text": "Scripted answer from the fake model provider (local use only)."}],
+    "stop_reason": "end_turn"
+  }
+}
