@@ -31,7 +31,6 @@ record's work to the same pool. Errors are RFC 9457 problem details (aisre.api.p
 
 from __future__ import annotations
 
-import os
 from collections.abc import AsyncIterator, Awaitable, Callable
 from contextlib import asynccontextmanager
 from typing import Annotated
@@ -70,7 +69,7 @@ from aisre.contracts import (
 )
 from aisre.record import commands as cmd
 from aisre.record import load_incident, make_engine, reads, timeline, uuid7
-from aisre.record.audit_copy import WriteOnceStore, store_from_env
+from aisre.record.audit_copy import WriteOnceStore, store_from_settings
 from aisre.reliability import telemetry
 from aisre.remediation.action import Perm
 
@@ -91,19 +90,19 @@ def create_app(
     audit_store: WriteOnceStore | None = None,
 ) -> FastAPI:
     """The API. Without a token verifier, refuses to build outside development and test
-    (aisre.api.auth). The audit copy's store defaults to the AISRE_AUDIT_STORE_* variables."""
+    (aisre.api.auth). The audit copy's store defaults to the AISRE_AUDIT_STORE_* settings."""
     settings = settings or Settings.from_env()
     authenticator = Authenticator(settings)
-    signer = ExportSigner.from_env(settings.env)
-    store = audit_store if audit_store is not None else store_from_env(os.environ)
+    signer = ExportSigner.from_settings(settings)
+    store = audit_store if audit_store is not None else store_from_settings(settings)
     audit.install_handler()
     copy = audit.install_copy(store)
     db = engine or make_engine(settings.database_url)
 
     @asynccontextmanager
     async def lifespan(_: FastAPI) -> AsyncIterator[None]:
-        telemetry.setup_tracing("aisre-api")
-        metrics = telemetry.serve_metrics()  # AISRE_METRICS_PORT, when set (T1.19)
+        telemetry.setup_tracing("aisre-api", settings.otlp_endpoint)
+        metrics = telemetry.serve_metrics(settings.metrics_port)  # when set (T1.19)
         yield
         if metrics is not None:
             metrics.shutdown()

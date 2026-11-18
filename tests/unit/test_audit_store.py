@@ -12,10 +12,12 @@ from http.server import BaseHTTPRequestHandler, HTTPServer
 from urllib.parse import parse_qs, unquote, urlsplit
 
 import pytest
+from pydantic import ValidationError
 from temporalio.testing import WorkflowEnvironment
 from temporalio.worker import Worker
 
 from aisre.api import audit
+from aisre.config import Settings
 from aisre.record.audit_copy import (
     AlreadyWritten,
     Fault,
@@ -23,7 +25,7 @@ from aisre.record.audit_copy import (
     S3Config,
     S3Store,
     read_log_lines,
-    store_from_env,
+    store_from_settings,
 )
 from aisre.reliability import telemetry
 from aisre.reliability.audit_jobs import (
@@ -128,9 +130,21 @@ def test_s3_store_asks_for_compliance_lock_when_configured(s3):
 
 
 def test_the_store_comes_from_the_environment_or_not_at_all():
-    assert store_from_env({}) is None
-    with pytest.raises(RuntimeError, match="AISRE_AUDIT_STORE_BUCKET"):
-        store_from_env({"AISRE_AUDIT_STORE_URL": "http://minio:9000"})
+    assert store_from_settings(Settings.from_env({})) is None
+    with pytest.raises(ValidationError, match="AISRE_AUDIT_STORE_BUCKET"):
+        Settings.from_env({"AISRE_AUDIT_STORE_URL": "http://minio:9000"})
+    store = store_from_settings(
+        Settings.from_env(
+            {
+                "AISRE_AUDIT_STORE_URL": "http://minio:9000",
+                "AISRE_AUDIT_STORE_BUCKET": "aisre-audit",
+                "AISRE_AUDIT_STORE_ACCESS_KEY": "fake-key",
+                "AISRE_AUDIT_STORE_SECRET_KEY": "fake-secret",
+                "AISRE_AUDIT_STORE_LOCK_DAYS": "1",
+            }
+        )
+    )
+    assert store is not None and store.c.bucket == "aisre-audit" and store.c.lock_days == 1
 
 
 def test_audit_lines_reach_the_copy_by_incident_and_sign_in():

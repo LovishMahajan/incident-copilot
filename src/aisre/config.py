@@ -10,6 +10,10 @@ Database URLs carry passwords, so they are `SecretStr`: they don't appear in a r
 Each process reads only the URL for its own role (ADR-51): API and worker `aisre_app`, the
 dispatcher `aisre_dispatcher`, the migration job `aisre_owner`.
 
+Every setting the processes read is here, under its environment variable's name, including
+OpenTelemetry's own `OTEL_EXPORTER_OTLP_ENDPOINT`; the CLI's `AISRE_API_URL` and `AISRE_TOKEN`
+belong to a person's shell, not a process, and stay in aisre.cli.
+
 Task queue names are not settings. Workflow code routes activities by them, so changing one
 is a code change in `aisre.workflow.activities`; they are repeated here, without importing
 `temporalio`, because `aisre.api` reads this module and must never reach `temporalio`
@@ -20,9 +24,9 @@ from __future__ import annotations
 
 import os
 from collections.abc import Mapping
-from typing import ClassVar, Literal
+from typing import Any, ClassVar, Literal
 
-from pydantic import BaseModel, ConfigDict, Field, SecretStr, model_validator
+from pydantic import BaseModel, ConfigDict, Field, Json, SecretStr, model_validator
 
 Environment = Literal["development", "test", "production"]
 LogLevel = Literal["DEBUG", "INFO", "WARNING", "ERROR"]
@@ -41,6 +45,19 @@ ENV_VARS: dict[str, str] = {
     "oidc_issuer": "AISRE_OIDC_ISSUER",
     "oidc_audience": "AISRE_OIDC_AUDIENCE",
     "oidc_jwks_url": "AISRE_OIDC_JWKS_URL",
+    "evidence_sources": "AISRE_EVIDENCE_SOURCES",
+    "object_store_url": "AISRE_OBJECT_STORE_URL",
+    "object_store_bucket": "AISRE_OBJECT_STORE_BUCKET",
+    "object_store_access_key": "AISRE_OBJECT_STORE_ACCESS_KEY",
+    "object_store_secret_key": "AISRE_OBJECT_STORE_SECRET_KEY",
+    "audit_store_url": "AISRE_AUDIT_STORE_URL",
+    "audit_store_bucket": "AISRE_AUDIT_STORE_BUCKET",
+    "audit_store_access_key": "AISRE_AUDIT_STORE_ACCESS_KEY",
+    "audit_store_secret_key": "AISRE_AUDIT_STORE_SECRET_KEY",
+    "audit_store_lock_days": "AISRE_AUDIT_STORE_LOCK_DAYS",
+    "export_signing_key": "AISRE_EXPORT_SIGNING_KEY",
+    "otlp_endpoint": "OTEL_EXPORTER_OTLP_ENDPOINT",
+    "metrics_port": "AISRE_METRICS_PORT",
 }
 
 
@@ -71,6 +88,26 @@ class Settings(BaseModel):
     oidc_issuer: str | None = Field(default=None, min_length=1)
     oidc_audience: str | None = Field(default=None, min_length=1)
     oidc_jwks_url: str | None = Field(default=None, pattern=r"^https?://")
+    # Evidence (T1.10, T1.17): JSON for aisre.evidence.sources.SourceSet.from_config, naming the
+    # adapter answering each READ tool. Unset: no real Evidence Collector or Knowledge Retriever.
+    evidence_sources: Json[dict[str, Any]] | None = None
+    # Evidence snapshots in the object store (ADR-57). All four or none.
+    object_store_url: str | None = Field(default=None, pattern=r"^https?://")
+    object_store_bucket: str | None = Field(default=None, min_length=1)
+    object_store_access_key: str | None = Field(default=None, min_length=1)
+    object_store_secret_key: SecretStr | None = None
+    # The write-once audit copy (T1.20). With the URL set, bucket and both keys are required;
+    # lock_days sets S3 Object Lock retention, COMPLIANCE mode, on every object.
+    audit_store_url: str | None = Field(default=None, pattern=r"^https?://")
+    audit_store_bucket: str | None = Field(default=None, min_length=1)
+    audit_store_access_key: str | None = Field(default=None, min_length=1)
+    audit_store_secret_key: SecretStr | None = None
+    audit_store_lock_days: int | None = Field(default=None, ge=1)
+    # Ed25519 seed, base64, that signs exports. Required in production (aisre.api.export).
+    export_signing_key: SecretStr | None = None
+    # Telemetry (T1.19): the collector's OTLP/HTTP endpoint and the /metrics port. Unset: off.
+    otlp_endpoint: str | None = Field(default=None, pattern=r"^https?://")
+    metrics_port: int | None = Field(default=None, ge=0, le=65535)
 
     # Fixed: equal to aisre.workflow.activities.INVESTIGATION_QUEUE and DISPATCHER_QUEUE.
     investigation_task_queue: ClassVar[str] = "aisre-investigation"
@@ -89,6 +126,28 @@ class Settings(BaseModel):
             raise ValueError("AISRE_OIDC_ISSUER, _AUDIENCE and _JWKS_URL go together")
         if self.env == "production" and (self.oidc_jwks_url or "").startswith("http://"):
             raise ValueError("AISRE_OIDC_JWKS_URL must be https in production")
+        return self
+
+    @model_validator(mode="after")
+    def stores_complete(self) -> Settings:
+        objects = [
+            self.object_store_url,
+            self.object_store_bucket,
+            self.object_store_access_key,
+            self.object_store_secret_key,
+        ]
+        if any(objects) and not all(objects):
+            raise ValueError(
+                "AISRE_OBJECT_STORE_URL, _BUCKET, _ACCESS_KEY and _SECRET_KEY go together"
+            )
+        if self.audit_store_url:
+            missing = [
+                ENV_VARS[f]
+                for f in ("audit_store_bucket", "audit_store_access_key", "audit_store_secret_key")
+                if not getattr(self, f)
+            ]
+            if missing:
+                raise ValueError(f"audit store: set {', '.join(missing)}")
         return self
 
     @property
