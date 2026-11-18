@@ -80,7 +80,7 @@ curl -X POST http://127.0.0.1:8000/v1/incidents -H 'Content-Type: application/js
   --data @tests/fixtures/reference-incident/alert.json
 ```
 
-Tokens last 5 minutes; mint new ones when they expire. Without the three `AISRE_OIDC_*` settings the API falls back to the development-only `X-Aisre-Dev-Caller` header (with optional `X-Aisre-Dev-Org` and `X-Aisre-Dev-Groups`, default `aisre:responder`), and then refuses to start unless `AISRE_ENV` is `development` or `test`. With them set, that header is refused. The in-process integration tests use the header.
+Each route checks ADR-50's matrix on the incident's service (T1.4): Monitoring may create but not read, and a role on another service sees the same 404 as a missing incident. Failed sign-ins, denials and every read of incident content are logged as JSON lines on the API's standard error (`aisre.auth.failed`, `aisre.authz.denied`, `aisre.content.read`). Tokens last 5 minutes; mint new ones when they expire. Without the three `AISRE_OIDC_*` settings the API falls back to the development-only `X-Aisre-Dev-Caller` header (with optional `X-Aisre-Dev-Org` and `X-Aisre-Dev-Groups`, default `aisre:responder`), and then refuses to start unless `AISRE_ENV` is `development` or `test`. With them set, that header is refused. The in-process integration tests use the header.
 
 The service and environment must be in the organisation's catalogue (`services`, `environments`); otherwise the answer is `404 unknown_service`. M0 has no catalogue route; `python -m aisre.api.dev_seed` adds one service and environment (default `orders-api`/`production`, the reference incident's) to the development organisation, and a rerun changes nothing:
 

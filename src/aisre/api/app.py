@@ -11,7 +11,9 @@ alert attached to the open incident (200, `deduplicated: true`). The relay in th
 delivers the outbox row; this process never talks to Temporal (ADR-19).
 
 Every `/v1` route names its caller through aisre.api.auth: a verified bearer token, or the
-development-only header when no token verifier is configured (T1.3).
+development-only header when no token verifier is configured (T1.3). Each declares its
+ADR-50 permission with `**requires(...)`, and checks it again on the incident's own service
+(aisre.api.permissions, T1.4).
 
 Routes are plain `def`: the Incident Record is synchronous, so FastAPI runs them on its thread
 pool (see aisre.record). Errors are RFC 9457 problem details (aisre.api.problems).
@@ -34,6 +36,7 @@ from starlette.exceptions import HTTPException
 from aisre.api import audit
 from aisre.api.alerts import to_incident_create
 from aisre.api.auth import Authenticator, Caller, current_caller
+from aisre.api.permissions import check_service, content_read, requires
 from aisre.api.problems import ApiError, field_errors, problem_response
 from aisre.config import Settings
 from aisre.contracts import CloudEvent, IncidentAccepted, IncidentView, Page
@@ -46,6 +49,7 @@ from aisre.record import (
     uuid7,
 )
 from aisre.record import idempotency as idem
+from aisre.remediation.action import Perm
 
 CREATE_INCIDENT = "POST /v1/incidents"
 REQUEST_ID_HEADER = "X-Request-ID"
@@ -72,8 +76,11 @@ def create_app(settings: Settings | None = None, engine: Engine | None = None) -
     app.state.authenticator = authenticator
     _install_errors(app)
 
-    @app.post("/v1/incidents", status_code=201, response_model=IncidentAccepted)
+    @app.post(
+        "/v1/incidents", status_code=201, response_model=IncidentAccepted, **requires(Perm.CREATE)
+    )
     def submit_incident(
+        request: Request,
         caller: CallerDep,
         payload: Annotated[dict[str, Any], Body()],
         idempotency_key: Annotated[str | None, Header(alias="Idempotency-Key")] = None,
@@ -85,6 +92,8 @@ def create_app(settings: Settings | None = None, engine: Engine | None = None) -
             raise ApiError(
                 422, "validation_failed", "Invalid incident", errors=field_errors(e.errors())
             ) from None
+        if not check_service(request, caller, Perm.CREATE, body.service):
+            raise _unknown_service(body.service, body.environment)
         fingerprint = idem.request_fingerprint(body.model_dump(mode="json"))
         with db.begin() as conn:
             try:
@@ -116,12 +125,7 @@ def create_app(settings: Settings | None = None, engine: Engine | None = None) -
                 except UnknownService:
                     # One answer for unknown and forbidden, so existence isn't revealed
                     # (Artifact 7.4). Dead-lettering arrives with full intake (M1).
-                    raise ApiError(
-                        404,
-                        "unknown_service",
-                        "Unknown service",
-                        f"No service {body.service!r} in environment {body.environment!r}.",
-                    ) from None
+                    raise _unknown_service(body.service, body.environment) from None
                 path = f"/v1/incidents/{made.incident_id}"
                 accepted = IncidentAccepted(
                     incident_id=made.incident_id,
@@ -149,26 +153,44 @@ def create_app(settings: Settings | None = None, engine: Engine | None = None) -
         headers = {"Location": stored.body["links"]["self"]} if stored.status == 201 else None
         return JSONResponse(stored.body, status_code=stored.status, headers=headers)
 
-    @app.get("/v1/incidents/{incident_id}", response_model=IncidentView)
-    def read_incident(incident_id: UUID, caller: CallerDep, response: Response) -> IncidentView:
-        with db.connect() as conn:
-            view = load_incident(conn, incident_id, caller.org_id)
-        if view is None:
+    def readable(
+        request: Request, caller: Caller, view: IncidentView | None, incident_id: UUID
+    ) -> IncidentView:
+        """The incident, if the caller may read it: else the same 404 as a missing one."""
+        if view is None or not check_service(
+            request, caller, Perm.READ, view.service, incident_id=incident_id
+        ):
             raise _not_found(incident_id)
+        return view
+
+    @app.get("/v1/incidents/{incident_id}", response_model=IncidentView, **requires(Perm.READ))
+    def read_incident(
+        request: Request, incident_id: UUID, caller: CallerDep, response: Response
+    ) -> IncidentView:
+        with db.connect() as conn:
+            view = readable(
+                request, caller, load_incident(conn, incident_id, caller.org_id), incident_id
+            )
+        content_read(request, caller, incident_id, "incident")
         response.headers["ETag"] = f'"{view.version}"'
         return view
 
-    @app.get("/v1/incidents/{incident_id}/timeline", response_model=Page[CloudEvent])
+    @app.get(
+        "/v1/incidents/{incident_id}/timeline",
+        response_model=Page[CloudEvent],
+        **requires(Perm.READ),
+    )
     def read_timeline(
+        request: Request,
         incident_id: UUID,
         caller: CallerDep,
         after_seq: Annotated[int, Query(ge=0)] = 0,
         limit: Annotated[int, Query(ge=1, le=TIMELINE_PAGE_MAX)] = 100,
     ) -> Page[CloudEvent]:
         with db.connect() as conn:
-            if load_incident(conn, incident_id, caller.org_id) is None:
-                raise _not_found(incident_id)
+            readable(request, caller, load_incident(conn, incident_id, caller.org_id), incident_id)
             items = timeline(conn, incident_id, caller.org_id, after_seq=after_seq, limit=limit)
+        content_read(request, caller, incident_id, "timeline")
         last = items[-1].sequence if len(items) == limit else None
         return Page[CloudEvent](items=items, next_after_seq=last)
 
@@ -199,6 +221,15 @@ def _check_key(key: str | None) -> str:
             400, "idempotency_key_invalid", "Invalid Idempotency-Key", "Use 8 to 128 characters."
         )
     return key
+
+
+def _unknown_service(service: str, environment: str) -> ApiError:
+    return ApiError(
+        404,
+        "unknown_service",
+        "Unknown service",
+        f"No service {service!r} in environment {environment!r}.",
+    )
 
 
 def _not_found(incident_id: UUID) -> ApiError:
