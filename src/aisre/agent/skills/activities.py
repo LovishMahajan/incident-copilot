@@ -89,9 +89,9 @@ class SkillStore(Protocol):
     ) -> None: ...
 
 
-def diagnosis_id_for(idempotency_key: str) -> UUID:
+def diagnosis_id_for(incident_id: str, idempotency_key: str) -> UUID:
     """The same step gives the same diagnosis ID, so a retried activity stores nothing twice."""
-    return uuid5(DIAGNOSIS_NAMESPACE, idempotency_key)
+    return uuid5(DIAGNOSIS_NAMESPACE, f"{incident_id}:{idempotency_key}")
 
 
 def scored(draft: DiagnosisDraft, inputs: r.Inputs) -> tuple[Confidence, list[Confidence]]:
@@ -174,7 +174,7 @@ class ModelSkills:
             return checked
         report = check_citations(draft, ev, incident)
         confidence, each = scored(draft, inputs)
-        diagnosis_id = diagnosis_id_for(inp.idempotency_key)
+        diagnosis_id = diagnosis_id_for(inp.incident_id, inp.idempotency_key)
         prompt = self.prompts.current("diagnose")
         await self.store.save_diagnosis(
             diagnosis_id, inputs, draft, confidence, each, f"diagnose:{prompt.ref}"
