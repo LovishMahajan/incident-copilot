@@ -14,12 +14,20 @@ missing `anthropic-version`, or a body without `model`, `max_tokens` and `messag
 
 Scripts are the `*.json` files in FAKE_PROVIDER_SCRIPTS (default: `provider-scripts/` beside
 this file), tried in file-name order, `default.json` last. A script answers when its `match`
-string appears in the request's `system`, `messages` or `tools`, serialised as JSON:
+string appears in the request's `system`, `messages` or `tools`, serialised as JSON; a list of
+strings matches when every one appears:
 
     {"match": "FAKE_RATE_LIMIT", "status": 429,
      "error": {"type": "rate_limit_error", "message": "..."}, "headers": {"retry-after": "1"}}
     {"match": "", "response": {"content": [{"type": "text", "text": "..."}],
                                "stop_reason": "end_turn", "usage": {...}}}
+    {"match": ["You are the diagnosis step", "..."], "answer": {...}}
+
+`answer` is a JSON answer, sent as the one text block, as structured output returns it. Its
+strings may hold `{{ref:<regex>}}`: the ID of the first data block in the user message, as the
+platform renders evidence (`<data ref="evidence:<id>" ...>`), whose text matches the regular
+expression. That is how a fixed script cites evidence collected at run time. A placeholder
+nothing matches makes the answer a 500 `api_error` naming it.
 
 A message's `id`, `type`, `role` and `model` (echoed from the request) are filled in, and
 `usage` defaults to a rough count (4 characters a token). FAKE_PROVIDER_PORT sets the port
@@ -30,6 +38,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import sys
 import threading
 from collections import deque
@@ -39,11 +48,47 @@ from typing import Any
 
 SCRIPTS = Path(__file__).parent / "provider-scripts"
 REQUIRED = ("model", "max_tokens", "messages")
+DATA_BLOCK = re.compile(r'<data ref="[a-z]+:([0-9a-f-]{36})" kind="[^"]*">\n(.*?)\n</data>', re.S)
+PLACEHOLDER = re.compile(r"\{\{ref:(.+?)\}\}")
 
 
 def load_scripts(directory: Path) -> list[dict[str, Any]]:
     files = sorted(directory.glob("*.json"), key=lambda p: (p.name == "default.json", p.name))
     return [json.loads(p.read_text()) | {"name": p.stem} for p in files]
+
+
+def matches(script: dict[str, Any], text: str) -> bool:
+    wanted = script.get("match", "")
+    return all(w in text for w in ([wanted] if isinstance(wanted, str) else wanted))
+
+
+def user_text(req: dict[str, Any]) -> str:
+    parts = []
+    for m in req["messages"]:
+        content = m.get("content")
+        if isinstance(content, str):
+            parts.append(content)
+        elif isinstance(content, list):
+            parts += [b.get("text", "") for b in content if isinstance(b, dict)]
+    return "\n".join(parts)
+
+
+def render(value: Any, blocks: list[tuple[str, str]]) -> Any:
+    """Fills each `{{ref:<regex>}}` with the ID of the first block whose text matches."""
+    if isinstance(value, dict):
+        return {k: render(v, blocks) for k, v in value.items()}
+    if isinstance(value, list):
+        return [render(v, blocks) for v in value]
+    if not isinstance(value, str):
+        return value
+
+    def ref(m: re.Match[str]) -> str:
+        found = next((i for i, text in blocks if re.search(m.group(1), text, re.M)), None)
+        if found is None:
+            raise LookupError(m.group(1))
+        return found
+
+    return PLACEHOLDER.sub(ref, value)
 
 
 def error_body(kind: str, message: str, request_id: str) -> dict[str, Any]:
@@ -91,7 +136,7 @@ class Provider:
             )
         self.requests.append(req)
         text = json.dumps([req.get("system"), req["messages"], req.get("tools")])
-        script = next((s for s in self.scripts if s.get("match", "") in text), None)
+        script = next((s for s in self.scripts if matches(s, text)), None)
         if script is None:
             return (
                 500,
@@ -106,7 +151,15 @@ class Provider:
                 error_body(err["type"], err["message"], request_id),
                 extra,
             )
-        content = script["response"].get("content", [])
+        response = dict(script.get("response", {}))
+        if "answer" in script:
+            try:
+                answer = render(script["answer"], DATA_BLOCK.findall(user_text(req)))
+            except LookupError as e:
+                message = f"script {script['name']}: no data block matches {e}"
+                return 500, error_body("api_error", message, request_id), {}
+            response["content"] = [{"type": "text", "text": json.dumps(answer)}]
+        content = response.get("content", [])
         usage = {"input_tokens": len(text) // 4, "output_tokens": len(json.dumps(content)) // 4}
         message = {
             "id": f"msg_fake_{n:06d}",
@@ -117,7 +170,7 @@ class Provider:
             "stop_reason": "end_turn",
             "stop_sequence": None,
             "usage": usage,
-        } | script["response"]
+        } | response
         return int(script.get("status", 200)), message, extra | {"request-id": request_id}
 
 
