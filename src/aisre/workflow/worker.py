@@ -61,7 +61,7 @@ def investigation_activities(settings: Settings, engine: Engine) -> list[Callabl
     if settings.scripted_skills:
         if settings.env == "production":
             raise RuntimeError("scripted skills are refused when AISRE_ENV is production")
-        chosen += scripted.SCRIPTED_ACTIVITIES
+        chosen += scripted.scripted_activities(settings.scripted_step_seconds)
     names = {activity_name(a) for a in chosen}
     # activities.py isn't strict: its list is typed as plain functions.
     interfaces = cast(Sequence[Callable[..., Any]], act.ALL_INVESTIGATION_ACTIVITIES)

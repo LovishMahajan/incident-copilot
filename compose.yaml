@@ -22,6 +22,9 @@ x-app: &app
       condition: service_healthy
     temporal:
       condition: service_healthy
+    # Also lets `docker compose up --wait` count this one-shot job's exit as success.
+    temporal-namespace:
+      condition: service_completed_successfully
     migrate:
       condition: service_completed_successfully
 
@@ -169,6 +172,7 @@ services:
       AISRE_TEMPORAL_NAMESPACE: ${AISRE_TEMPORAL_NAMESPACE}
       AISRE_LOG_LEVEL: ${AISRE_LOG_LEVEL:-INFO}
       AISRE_SCRIPTED_SKILLS: ${AISRE_SCRIPTED_SKILLS:-false}
+      AISRE_SCRIPTED_STEP_SECONDS: ${AISRE_SCRIPTED_STEP_SECONDS:-0}
     command: ["python", "-m", "aisre.workflow.worker"]
     healthcheck:
       # The worker touches this file after every relay pass (aisre.workflow.worker).

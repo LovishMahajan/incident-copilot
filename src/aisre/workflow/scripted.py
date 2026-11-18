@@ -25,6 +25,7 @@ registered at all.
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from collections.abc import Callable
 from typing import Any
@@ -54,6 +55,23 @@ SCRIPT_NAMESPACE = UUID("2c7d4b1e-9a3f-5e60-8b17-4d2a6f9c0e85")
 NO_USAGE = SkillUsage()  # no model call, no tool call, no spend
 NOT_DRAFTED = "scripted M0 run: no patch is drafted before M2"
 SCRIPTED = "Scripted M0 result, no model ran"
+MAX_STEP_SECONDS = 10.0  # below the 20 s heartbeat timeout of the skill steps (8.5)
+_step_seconds = 0.0  # set once by scripted_activities(), before the worker starts
+
+
+def scripted_activities(step_seconds: float = 0.0) -> list[Callable[..., Any]]:
+    """The scripted activities, each skill step taking `step_seconds` first. The pause is for
+    the M0 demo only, so a worker kill lands mid-run; it is one setting for the process."""
+    global _step_seconds
+    if not 0 <= step_seconds <= MAX_STEP_SECONDS:
+        raise ValueError(f"step_seconds must be 0 to {MAX_STEP_SECONDS}")
+    _step_seconds = step_seconds
+    return list(SCRIPTED_ACTIVITIES)
+
+
+async def _pace() -> None:
+    if _step_seconds:
+        await asyncio.sleep(_step_seconds)
 
 
 def scripted_id(incident_id: str, name: str) -> UUID:
@@ -98,12 +116,14 @@ async def notify(inp: act.NotifyIn) -> None:
 
 @activity.defn(name="collect_evidence")
 async def collect_evidence(inp: act.EvidenceIn) -> SkillResult[act.EvidenceOut]:
+    await _pace()
     ids = [str(scripted_id(inp.incident_id, f"evidence:{inp.mode}:{n}")) for n in (1, 2)]
     return SkillResult(output=act.EvidenceOut(evidence_ids=ids, gap_count=0), usage=NO_USAGE)
 
 
 @activity.defn(name="retrieve_knowledge")
 async def retrieve_knowledge(inp: act.SkillIn) -> SkillResult[KnowledgeOut]:
+    await _pace()
     out = KnowledgeOut(
         evidence_ids=[str(scripted_id(inp.incident_id, "knowledge:1"))],
         gap_count=0,
@@ -114,12 +134,14 @@ async def retrieve_knowledge(inp: act.SkillIn) -> SkillResult[KnowledgeOut]:
 
 @activity.defn(name="hypothesise")
 async def hypothesise(inp: act.SkillIn) -> SkillResult[HypothesesOut]:
+    await _pace()
     out = HypothesesOut(hypotheses=_hypotheses(inp.incident_id))
     return SkillResult(output=out, usage=NO_USAGE)
 
 
 @activity.defn(name="diagnose")
 async def diagnose(inp: act.SkillIn) -> SkillResult[DiagnosisResult]:
+    await _pace()
     draft = DiagnosisDraft(
         outcome="established",
         leading_index=0,
@@ -138,6 +160,7 @@ async def diagnose(inp: act.SkillIn) -> SkillResult[DiagnosisResult]:
 
 @activity.defn(name="review_diagnosis")
 async def review_diagnosis(inp: act.SkillIn) -> SkillResult[ReviewResult]:
+    await _pace()
     out = ReviewResult(
         verdict=CriticVerdict(verdict="accept", confidence_cap=Confidence.high),
         confidence=Confidence.high,
@@ -147,6 +170,7 @@ async def review_diagnosis(inp: act.SkillIn) -> SkillResult[ReviewResult]:
 
 @activity.defn(name="draft_patch")
 async def draft_patch(inp: act.SkillIn) -> SkillResult[act.PatchOut]:
+    await _pace()
     failure = SkillFailure(skill="draft_patch", code="no_allowed_fix", detail=NOT_DRAFTED)
     return SkillResult(failure=failure, usage=NO_USAGE)
 

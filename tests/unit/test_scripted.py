@@ -121,3 +121,11 @@ def test_scripts_are_refused_in_production():
     forced = Settings.model_construct(env="production", scripted_skills=True)
     with pytest.raises(RuntimeError, match="production"):
         worker.investigation_activities(forced, object())  # type: ignore[arg-type]
+
+
+def test_demo_pacing_stays_below_the_heartbeat_timeout():
+    assert scripted.scripted_activities(0) == scripted.SCRIPTED_ACTIVITIES
+    with pytest.raises(ValueError):
+        scripted.scripted_activities(scripted.MAX_STEP_SECONDS + 1)
+    with pytest.raises(ValidationError):
+        Settings.from_env({"AISRE_SCRIPTED_STEP_SECONDS": "11"})
