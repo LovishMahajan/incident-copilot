@@ -6,6 +6,7 @@
     GET  /v1/incidents/{id}/evidence?kind&cursor Page[EvidenceRecord]          (T1.5)
     GET  /v1/incidents/{id}/diagnoses/current  Diagnosis
     GET  /v1/incidents/{id}/actions            list[ActionView]; GET /v1/actions/{id}
+    GET  /v1/artifacts/{id}/content            a patch's canonical diff (M2: patch_diff only)
     GET  /v1/incidents/{id}/timeline/stream    SSE (aisre.api.stream)
     GET  /v1/incidents/{id}/timeline/export    signed JSON (aisre.api.export)
     GET  /v1/incidents/{id}/audit/export       signed JSON, from the write-once copy (T1.20)
@@ -31,9 +32,10 @@ record's work to the same pool. Errors are RFC 9457 problem details (aisre.api.p
 
 from __future__ import annotations
 
+import hashlib
 from collections.abc import AsyncIterator, Awaitable, Callable
 from contextlib import asynccontextmanager
-from typing import Annotated
+from typing import Annotated, Protocol
 from uuid import UUID
 
 from fastapi import Depends, FastAPI, Header, Query, Request, Response
@@ -67,6 +69,7 @@ from aisre.contracts import (
     ReinvestigationCreate,
     SeverityConfirmationCreate,
 )
+from aisre.evidence.snapshots import S3Snapshots, SnapshotFailed
 from aisre.record import commands as cmd
 from aisre.record import load_incident, make_engine, reads, timeline, uuid7
 from aisre.record.audit_copy import WriteOnceStore, store_from_settings
@@ -78,6 +81,12 @@ TIMELINE_PAGE_MAX = 500
 EVIDENCE_PAGE_MAX = 200
 
 CallerDep = Annotated[Caller, Depends(current_caller)]
+
+
+class ArtifactReader(Protocol):
+    def get(self, key: str) -> bytes: ...
+
+
 KeyDep = Annotated[str | None, Header(alias="Idempotency-Key")]
 IfMatchDep = Annotated[str | None, Header(alias="If-Match")]
 
@@ -88,6 +97,7 @@ def create_app(
     *,
     stream_timing: Timing | None = None,
     audit_store: WriteOnceStore | None = None,
+    artifact_store: ArtifactReader | None = None,
 ) -> FastAPI:
     """The API. Without a token verifier, refuses to build outside development and test
     (aisre.api.auth). The audit copy's store defaults to the AISRE_AUDIT_STORE_* settings."""
@@ -98,6 +108,7 @@ def create_app(
     audit.install_handler()
     copy = audit.install_copy(store)
     db = engine or make_engine(settings.database_url)
+    blobs = artifact_store if artifact_store is not None else _artifact_store(settings)
 
     @asynccontextmanager
     async def lifespan(_: FastAPI) -> AsyncIterator[None]:
@@ -355,6 +366,42 @@ def create_app(
         content_read(request, caller, incident_id, "action")
         return action
 
+    @app.get("/v1/artifacts/{artifact_id}/content", **requires(Perm.READ))
+    def read_artifact_content(request: Request, artifact_id: UUID, caller: CallerDep) -> Response:
+        """Artifact 7.4, ADR-50 (read incidents, timeline, artifacts). M2 serves one kind, a
+        patch's canonical diff (`PatchView.diff_artifact_id`): repository text that passed the
+        output checks. Evidence snapshots and model input and output stay unserved until their
+        redaction and restricted-document rules are applied to the bytes, so they are 404."""
+        missing = ApiError(404, "not_found", "Artifact not found", f"No artifact {artifact_id}.")
+        with db.connect() as conn:
+            found = reads.artifact(conn, artifact_id, caller.org_id)
+            if found is None or found.kind != "patch_diff" or blobs is None:
+                raise missing
+            view = load_incident(conn, found.incident_id, caller.org_id)
+            if view is None or not check_service(
+                request, caller, Perm.READ, view.service, incident_id=found.incident_id
+            ):
+                raise missing
+        try:
+            body = blobs.get(found.storage_key)
+        except SnapshotFailed as e:
+            raise ApiError(
+                503, "artifact_unavailable", "Artifact unavailable", "The store did not answer."
+            ) from e
+        if hashlib.sha256(body).hexdigest() != found.content_sha256:
+            raise ApiError(
+                500, "artifact_changed", "Artifact changed", "The stored bytes fail their hash."
+            )
+        content_read(request, caller, found.incident_id, "artifact")
+        return Response(
+            body,
+            media_type=found.media_type,
+            headers={
+                "Content-Disposition": f'attachment; filename="{artifact_id}.json"',
+                "X-Content-Type-Options": "nosniff",
+            },
+        )
+
     streams = Streams(db, stream_timing)
 
     @app.get("/v1/incidents/{incident_id}/timeline/stream", **requires(Perm.READ))
@@ -476,3 +523,21 @@ def _install_errors(app: FastAPI) -> None:
     @app.exception_handler(Exception)
     async def unexpected(request: Request, exc: Exception) -> Response:
         return problem_response(request, ApiError(500, "internal_error", "Internal error"))
+
+
+def _artifact_store(settings: Settings) -> ArtifactReader | None:
+    """The object store artifacts live in (ADR-57), read-only use here. Unset: none served."""
+    s = settings
+    if not (
+        s.object_store_url
+        and s.object_store_bucket
+        and s.object_store_access_key
+        and s.object_store_secret_key
+    ):
+        return None
+    return S3Snapshots(
+        s.object_store_url,
+        s.object_store_bucket,
+        s.object_store_access_key,
+        s.object_store_secret_key,
+    )
