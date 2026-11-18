@@ -1,10 +1,15 @@
 -- schema.sql (proposed, 2026-11-02): the canonical PostgreSQL schema (ADR-64).
 --
+-- FROZEN at M0 (2026-11-18). Alembic's db/migrations/versions/0001_baseline.py applies this
+-- file unchanged, and it stays the source of the schema until a later migration replaces
+-- it. Don't edit it: a schema change is a new migration. Text tests in tests/unit parse
+-- this file, so they describe the database only while 0001 is the only migration.
+--
 -- Status: proposed, pending team sign-off. Not one of the team's Room 7 tabs.
 -- Supersedes schema-tables.sql and schema.mmd, which stay as the team's originals.
 -- The application generates UUIDv7 keys (ADR-20); the database doesn't create them.
--- Target: PostgreSQL 16 (Technical specification section 4). Tested on 17: see
--- artifact 7.2 and schema-tests.sql.
+-- Target: PostgreSQL 16 (Technical specification section 4). Tested on 16.16 and 17.12
+-- through 0001_baseline on 2026-11-18: see artifact 7.2 and schema-tests.sql.
 --
 -- Load as the owning role in an empty database:
 --   CREATE ROLE aisre_owner LOGIN CREATEROLE;
