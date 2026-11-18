@@ -253,7 +253,7 @@ def alert_rules() -> list[dict]:
 
 def test_alert_rules_parse_and_name_runbooks():
     rules = alert_rules()
-    assert len(rules) == 32 and all(r["annotations"]["runbook"].startswith("RB-") for r in rules)
+    assert len(rules) == 33 and all(r["annotations"]["runbook"].startswith("RB-") for r in rules)
 
 
 def test_alert_rules_match_the_12_3_table():
@@ -267,7 +267,7 @@ def test_alert_rules_match_the_12_3_table():
         r["alert"]: (r.get("for", "none"), r["labels"]["severity"], r["annotations"]["runbook"])
         for r in alert_rules()
     }
-    assert len(spec) == 32 and rules == spec
+    assert len(spec) == 33 and rules == spec
 
 
 def test_every_alert_selects_metrics_and_labels_in_the_catalog():
@@ -320,7 +320,8 @@ def test_alert_routing_exceptions():
         and "route" not in rules["AisreApprovalBacklog"]
     )
     assert rules["AisreAuditChainBroken"]["route"] == "security_lead"
-    assert sum("route" in r or "also_route" in r for r in rules.values()) == 4
+    assert rules["AisreModelOutputSecret"]["route"] == "security_lead"
+    assert sum("route" in r or "also_route" in r for r in rules.values()) == 5
 
 
 def test_approval_refused_alert_selects_exactly_the_security_codes():

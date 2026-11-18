@@ -25,7 +25,7 @@
 
 *Answers Q12.1–Q12.4, Q12.6–Q12.11, Q12.16, Q12.17.*
 
-**How the platform watches itself** ([Q12.1](conversation.md)): every process is instrumented with OpenTelemetry (metrics, traces, structured logs, tagged with service, step and incident). Metrics go to Prometheus, with 32 alerts (12.3). Grafana dashboards show health. `/livez` and `/readyz` report process state (12.5). A status line in the CLI and API reads "platform healthy / degraded: \<what> / writes disabled: \<why>".
+**How the platform watches itself** ([Q12.1](conversation.md)): every process is instrumented with OpenTelemetry (metrics, traces, structured logs, tagged with service, step and incident). Metrics go to Prometheus, with 33 alerts (12.3). Grafana dashboards show health. `/livez` and `/readyz` report process state (12.5). A status line in the CLI and API reads "platform healthy / degraded: \<what> / writes disabled: \<why>".
 
 **Two observability responsibilities** ([Q12.2](conversation.md)):
 
@@ -177,7 +177,7 @@ Engineers search by incident ID and see the tree: intake → workflow → collec
 
 *Answers Q12.1, Q12.4–Q12.11, Q12.16, Q12.20.*
 
-This table is the specification: 32 alerts. [files/alerts.yml](files/alerts.yml) has the same 32 rules, and the rule count test holds it there. "New" marks a rule added to the team's 18. Thresholds are provisional and owned by the Platform owner. "Hold" is the rule's `for` clause; "none" means it fires on the first evaluation.
+This table is the specification: 33 alerts. [files/alerts.yml](files/alerts.yml) has the same 33 rules, and the rule count test holds it there. "New" marks a rule added to the team's 18. Thresholds are provisional and owned by the Platform owner. "Hold" is the rule's `for` clause; "none" means it fires on the first evaluation.
 
 | Group | Alert | Condition | Hold | Severity | Runbook |
 | --- | --- | --- | --- | --- | --- |
@@ -205,6 +205,7 @@ This table is the specification: 32 alerts. [files/alerts.yml](files/alerts.yml)
 | Model | `AisreMonthlySpend80` (new) | Monthly spend above 80% of its ceiling | none | ticket | RB-06 spend |
 | Model | `AisreMonthlySpend100` (new) | Monthly spend at or above its ceiling | none | page | RB-06 spend |
 | Model | `AisreUnreconciledUsage` | `aisre_budget_pending_reconcile` above 20 | 1h | ticket | RB-06 spend |
+| Model | `AisreModelOutputSecret` (new) | Any model answer stopped for holding a secret in 5 min, `aisre_model_output_unsafe_total{kind="secret"}` (ST-24, ADR-59, T1.16). Routed to the Security lead | none | page | RB-05 dependency failing |
 | Remediation | `AisreActionOutcomeUnknown` | Any action with an unknown outcome | 1m | page | RB-07 unknown action outcome |
 | Remediation | `AisreApprovalBacklog` | Oldest approval request over 900 s | none | page | RB-08 approval backlog |
 | Remediation | `AisreApprovalRefused` (new) | Any approval attempt refused on identity, rights or digest in 5 min, the `reason` values in `SECURITY_ALERT_CODES` (ADR-49, 11.6). Every refusal still writes its event | none | page | RB-08 approval backlog |
@@ -229,7 +230,7 @@ Answers that shape these rules:
 
 *Answers Q12.5, Q12.10, Q12.11, Q12.20, Q12.25.*
 
-Fourteen runbooks. RB-01 to RB-13 cover all 32 alerts. RB-14 has no alert: a person starts it on suspecting the approval signing key is stolen. "Owner" keeps the runbook current; it's the role that owns the failing component in the System Design. Every step says what to check and where; commands depend on tooling the sources don't name.
+Fourteen runbooks. RB-01 to RB-13 cover all 33 alerts. RB-14 has no alert: a person starts it on suspecting the approval signing key is stolen. "Owner" keeps the runbook current; it's the role that owns the failing component in the System Design. Every step says what to check and where; commands depend on tooling the sources don't name.
 
 | Runbook | Alerts | Owner | Applies from |
 | --- | --- | --- | --- |
@@ -237,7 +238,7 @@ Fourteen runbooks. RB-01 to RB-13 cover all 32 alerts. RB-14 has no alert: a per
 | RB-02 workflow engine unavailable | `AisreOutboxStuck`, `AisreEventDeliverySlow` | Platform owner | Release A |
 | RB-03 queue saturated | `AisreQueueBacklog`, `AisreQueueDepthHigh`, `AisreFirstSummarySlow`, `AisreFirstNotificationSlow` | Platform owner | Release A |
 | RB-04 stalled workflow | `AisreWorkflowStalled`, `AisreCrashResumeSlow`, `AisreCancellationSlow` | Platform owner | Release A |
-| RB-05 dependency failing | `AisreModelAuthErrors`, `AisreModelErrorRate`, `AisreModelLatencyHigh`, `AisreCircuitOpen` | SRE lead | Release A |
+| RB-05 dependency failing | `AisreModelAuthErrors`, `AisreModelErrorRate`, `AisreModelLatencyHigh`, `AisreCircuitOpen`, `AisreModelOutputSecret` | SRE lead | Release A |
 | RB-06 spend | `AisreDailySpend80`, `AisreDailySpend100`, `AisreMonthlySpend50`, `AisreMonthlySpend80`, `AisreMonthlySpend100`, `AisreUnreconciledUsage` | SRE lead | Release A |
 | RB-07 unknown action outcome | `AisreActionOutcomeUnknown` | Security lead | Release B |
 | RB-08 approval backlog | `AisreApprovalBacklog`, `AisreApprovalRefused` | Security lead | Release B |
