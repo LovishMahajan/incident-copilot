@@ -97,6 +97,8 @@ module = [
     "aisre.api.*",
     "aisre.workflow.relay",
     "aisre.workflow.worker",
+    "aisre.workflow.record_activities",
+    "aisre.workflow.scripted",
 ]
 # `strict = true` here applies to every module, so name the flags --strict sets.
 disallow_any_generics = true

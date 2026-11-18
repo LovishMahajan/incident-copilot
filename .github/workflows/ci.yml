@@ -50,7 +50,8 @@ jobs:
         run: |
           paths=()
           for p in src/aisre/config.py src/aisre/record src/aisre/api \
-                   src/aisre/workflow/relay.py src/aisre/workflow/worker.py; do
+                   src/aisre/workflow/relay.py src/aisre/workflow/worker.py \
+                   src/aisre/workflow/record_activities.py src/aisre/workflow/scripted.py; do
             [ -e "$p" ] && paths+=("$p")
           done
           uv run mypy --follow-imports=silent "${paths[@]}"

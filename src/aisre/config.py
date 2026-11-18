@@ -22,7 +22,7 @@ import os
 from collections.abc import Mapping
 from typing import ClassVar, Literal
 
-from pydantic import BaseModel, ConfigDict, Field, SecretStr
+from pydantic import BaseModel, ConfigDict, Field, SecretStr, model_validator
 
 Environment = Literal["development", "test", "production"]
 LogLevel = Literal["DEBUG", "INFO", "WARNING", "ERROR"]
@@ -36,6 +36,7 @@ ENV_VARS: dict[str, str] = {
     "temporal_address": "AISRE_TEMPORAL_ADDRESS",
     "temporal_namespace": "AISRE_TEMPORAL_NAMESPACE",
     "log_level": "AISRE_LOG_LEVEL",
+    "scripted_skills": "AISRE_SCRIPTED_SKILLS",
 }
 
 
@@ -55,10 +56,19 @@ class Settings(BaseModel):
     temporal_address: str = Field(default="127.0.0.1:7233", min_length=1)
     temporal_namespace: str = Field(default="default", min_length=1)
     log_level: LogLevel = "INFO"
+    # M0 (T0.11): the worker answers the skill activities with aisre.workflow.scripted's fixed
+    # results, so an incident runs end to end with no model. Refused in production.
+    scripted_skills: bool = False
 
     # Fixed: equal to aisre.workflow.activities.INVESTIGATION_QUEUE and DISPATCHER_QUEUE.
     investigation_task_queue: ClassVar[str] = "aisre-investigation"
     dispatcher_task_queue: ClassVar[str] = "aisre-dispatcher"
+
+    @model_validator(mode="after")
+    def no_scripts_in_production(self) -> Settings:
+        if self.scripted_skills and self.env == "production":
+            raise ValueError("AISRE_SCRIPTED_SKILLS is for development and test, never production")
+        return self
 
     @classmethod
     def from_env(cls, environ: Mapping[str, str] | None = None) -> Settings:
