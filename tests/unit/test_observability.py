@@ -113,8 +113,8 @@ def test_the_otlp_exporter_posts_json_to_the_collector():
 
 
 def test_metrics_are_served_on_their_own_port_only_when_asked():
-    assert telemetry.serve_metrics({}) is None
-    server = telemetry.serve_metrics({telemetry.METRICS_PORT_VAR: "0"})
+    assert telemetry.serve_metrics(None) is None
+    server = telemetry.serve_metrics(Settings.from_env({"AISRE_METRICS_PORT": "0"}).metrics_port)
     try:
         port = server.server_address[1]
         body = urllib.request.urlopen(f"http://127.0.0.1:{port}/metrics", timeout=5).read()

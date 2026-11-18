@@ -89,3 +89,68 @@ def test_env_example_names_every_setting_with_fake_values():
 
 def test_dot_env_is_ignored():
     assert ".env" in (ROOT / ".gitignore").read_text().splitlines()
+
+
+def test_process_wiring_is_typed_under_its_own_variable_names():
+    s = Settings.from_env(
+        {
+            "AISRE_EVIDENCE_SOURCES": '{"sources": {"*": {"adapter": "fake_monitoring"}}}',
+            "AISRE_OBJECT_STORE_URL": "http://minio:9000",
+            "AISRE_OBJECT_STORE_BUCKET": "aisre-artifacts",
+            "AISRE_OBJECT_STORE_ACCESS_KEY": "fake-key",
+            "AISRE_OBJECT_STORE_SECRET_KEY": "fake-secret",
+            "AISRE_AUDIT_STORE_LOCK_DAYS": "3",
+            "AISRE_EXPORT_SIGNING_KEY": "ZmFrZQ==",
+            "OTEL_EXPORTER_OTLP_ENDPOINT": "http://otel-collector:4318",
+            "AISRE_METRICS_PORT": "9464",
+        }
+    )
+    assert s.evidence_sources == {"sources": {"*": {"adapter": "fake_monitoring"}}}
+    assert (s.metrics_port, s.otlp_endpoint, s.audit_store_lock_days) == (
+        9464,
+        "http://otel-collector:4318",
+        3,
+    )
+    assert "fake-secret" not in repr(s) and "ZmFrZQ" not in repr(s)
+
+
+@pytest.mark.parametrize(
+    "values",
+    [
+        {"AISRE_EVIDENCE_SOURCES": "{not json"},
+        {"AISRE_METRICS_PORT": "nine"},
+        {"AISRE_OBJECT_STORE_URL": "http://minio:9000"},  # without bucket and keys
+        {"AISRE_AUDIT_STORE_URL": "http://minio:9000", "AISRE_AUDIT_STORE_BUCKET": "b"},
+        {"AISRE_AUDIT_STORE_LOCK_DAYS": "0"},
+        {"OTEL_EXPORTER_OTLP_ENDPOINT": "otel-collector:4318"},
+    ],
+)
+def test_bad_wiring_is_refused_at_start(values):
+    with pytest.raises(ValidationError):
+        Settings.from_env(values)
+
+
+def test_no_process_reads_the_environment_outside_config():
+    """Every AISRE_* variable a process reads goes through Settings; the CLI is a person's tool."""
+    src = ROOT / "src" / "aisre"
+    offenders = [
+        str(p.relative_to(ROOT))
+        for p in src.rglob("*.py")
+        if p.name != "config.py"
+        and p != src / "cli.py"
+        and ("os.environ" in p.read_text() or "getenv(" in p.read_text())
+    ]
+    assert offenders == []
+
+
+def test_the_export_key_comes_from_settings_and_is_required_in_production():
+    import base64
+
+    from aisre.api.export import ExportSigner
+
+    seed = base64.b64encode(bytes(32)).decode()  # all zeros: a test key, never a real one
+    signed = ExportSigner.from_settings(Settings.from_env({"AISRE_EXPORT_SIGNING_KEY": seed}))
+    assert signed.key_id.startswith("export-")
+    assert ExportSigner.from_settings(Settings()).key_id.startswith("ephemeral-")
+    with pytest.raises(RuntimeError, match="AISRE_EXPORT_SIGNING_KEY"):
+        ExportSigner.from_settings(Settings(env="production"))

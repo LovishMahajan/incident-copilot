@@ -25,7 +25,6 @@ from __future__ import annotations
 import base64
 import hashlib
 import json
-import os
 from collections.abc import Mapping
 from datetime import UTC, datetime, timedelta
 from typing import Any
@@ -36,6 +35,7 @@ from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey,
 from cryptography.hazmat.primitives.serialization import Encoding, PublicFormat
 from sqlalchemy import Connection, text
 
+from aisre.config import Settings
 from aisre.contracts import IncidentView
 from aisre.record import timeline
 from aisre.record.audit_copy import LOG, WriteOnceStore, copied_timeline, read_log_lines
@@ -55,12 +55,15 @@ class ExportSigner:
         self.public_key = base64.b64encode(raw).decode()
 
     @classmethod
-    def from_env(cls, env: str, environ: Mapping[str, str] | None = None) -> ExportSigner:
-        seed = (os.environ if environ is None else environ).get(KEY_VAR)
-        if seed:
-            key = Ed25519PrivateKey.from_private_bytes(base64.b64decode(seed, validate=True))
+    def from_settings(cls, settings: Settings) -> ExportSigner:
+        """The key from AISRE_EXPORT_SIGNING_KEY; without one, a throwaway key outside
+        production."""
+        seed = settings.export_signing_key
+        if seed is not None:
+            raw_seed = base64.b64decode(seed.get_secret_value(), validate=True)
+            key = Ed25519PrivateKey.from_private_bytes(raw_seed)
             label = "export"
-        elif env == "production":
+        elif settings.env == "production":
             raise RuntimeError(f"{KEY_VAR} is required in production: exports must be signed")
         else:
             key, label = Ed25519PrivateKey.generate(), "ephemeral"

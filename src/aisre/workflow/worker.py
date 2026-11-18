@@ -20,7 +20,7 @@ aisre.evidence.sources.SourceSet.from_config, which names the adapter answering 
 for example `{"sources": {"*": {"adapter": "fake_monitoring", "url":
 "http://fake-monitoring:8080/v1/scenarios/reference-incident"}}}`. Snapshots go to the object
 store when `AISRE_OBJECT_STORE_URL`, `_BUCKET`, `_ACCESS_KEY` and `_SECRET_KEY` are all set.
-These are read here, not in aisre.config, until the settings module takes them over.
+All of them are typed settings (aisre.config).
 
 Budget jobs (T1.21): the worker registers BudgetJobWorkflow with the ledger's expiry and
 reconciliation activities, over PostgreSQL, and starts both jobs if they aren't running
@@ -45,19 +45,16 @@ SIGTERM or SIGINT: the relay finishes its pass, then the worker drains.
 from __future__ import annotations
 
 import asyncio
-import json
 import logging
-import os
 import signal
 import sys
 import tempfile
 import time
-from collections.abc import Callable, Mapping, Sequence
+from collections.abc import Callable, Sequence
 from datetime import timedelta
 from pathlib import Path
 from typing import Any, cast
 
-from pydantic import SecretStr
 from sqlalchemy import Engine
 from temporalio.client import Client
 from temporalio.worker import Interceptor, Worker
@@ -69,7 +66,7 @@ from aisre.gateway.jobs import BudgetJobActivities
 from aisre.gateway.ledger import PgBudgetLedger
 from aisre.notify.notifier import Notifier
 from aisre.record import make_engine
-from aisre.record.audit_copy import store_from_env
+from aisre.record.audit_copy import store_from_settings
 from aisre.reliability import telemetry
 from aisre.reliability.audit_jobs import AuditJobActivities, ensure_audit_jobs
 from aisre.reliability.temporal_telemetry import interceptors
@@ -90,23 +87,25 @@ def activity_name(fn: Callable[..., Any]) -> str:
     return fn.__name__  # every activity here is defined under its own name
 
 
-def evidence_activities(
-    settings: Settings, engine: Engine, environ: Mapping[str, str] | None = None
-) -> list[Callable[..., Any]]:
+def evidence_activities(settings: Settings, engine: Engine) -> list[Callable[..., Any]]:
     """T1.10, T1.17: the real Evidence Collector and Knowledge Retriever, when the evidence
     sources are configured; else none."""
-    env = os.environ if environ is None else environ
-    config = env.get("AISRE_EVIDENCE_SOURCES")
-    if not config:
+    if settings.evidence_sources is None:
         return []
     production = settings.env == "production"
-    sources = SourceSet.from_config(json.loads(config), production=production)
-    store = [env.get(f"AISRE_OBJECT_STORE_{k}") for k in ("URL", "BUCKET", "ACCESS_KEY")]
-    secret = env.get("AISRE_OBJECT_STORE_SECRET_KEY")
-    url, bucket, access = store
+    sources = SourceSet.from_config(settings.evidence_sources, production=production)
+    s = settings
     snapshots = (
-        S3Snapshots(url, bucket, access, SecretStr(secret))
-        if url and bucket and access and secret
+        S3Snapshots(
+            s.object_store_url,
+            s.object_store_bucket,
+            s.object_store_access_key,
+            s.object_store_secret_key,
+        )
+        if s.object_store_url
+        and s.object_store_bucket
+        and s.object_store_access_key
+        and s.object_store_secret_key
         else None
     )
     return EvidenceActivities(engine, sources, snapshots).all()
@@ -116,13 +115,12 @@ def investigation_activities(
     settings: Settings,
     engine: Engine,
     notifier: Notifier | None = None,
-    environ: Mapping[str, str] | None = None,
 ) -> list[Callable[..., Any]]:
     """Real record, evidence and Notifier activities, then the scripts if enabled for what is
     still missing, then the interfaces for the rest."""
     chosen = (
         RecordActivities(engine).all()
-        + evidence_activities(settings, engine, environ)
+        + evidence_activities(settings, engine)
         + (notifier or Notifier(engine)).activities()
     )
     if settings.scripted_skills:
@@ -158,8 +156,8 @@ def build_worker(
 
 async def run(settings: Settings, stop: asyncio.Event | None = None) -> None:
     stop = stop or asyncio.Event()
-    telemetry.setup_tracing("aisre-worker")
-    metrics = telemetry.serve_metrics()
+    telemetry.setup_tracing("aisre-worker", settings.otlp_endpoint)
+    metrics = telemetry.serve_metrics(settings.metrics_port)
     client = await Client.connect(
         settings.temporal_address,
         namespace=settings.temporal_namespace,
@@ -170,7 +168,7 @@ async def run(settings: Settings, stop: asyncio.Event | None = None) -> None:
     try:
         chosen = investigation_activities(settings, engine, notifier)
         chosen += budget_job_activities(engine)
-        chosen += AuditJobActivities(engine, store_from_env(os.environ)).all()
+        chosen += AuditJobActivities(engine, store_from_settings(settings)).all()
         async with build_worker(client, chosen, interceptors()):
             await ensure_budget_jobs(client, act.INVESTIGATION_QUEUE)
             await ensure_audit_jobs(client, act.INVESTIGATION_QUEUE)

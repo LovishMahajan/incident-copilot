@@ -37,9 +37,11 @@ def _activities(environ, scripted=True):
 
     from aisre.config import Settings
 
-    settings = Settings(env="test", scripted_skills=scripted)
+    settings = Settings.from_env(
+        {**environ, "AISRE_ENV": "test", "AISRE_SCRIPTED_SKILLS": str(scripted).lower()}
+    )
     engine = create_engine("postgresql+psycopg://aisre_app@127.0.0.1:1/aisre")  # never connects
-    return worker.investigation_activities(settings, engine, environ=environ)
+    return worker.investigation_activities(settings, engine)
 
 
 def test_the_real_collector_replaces_the_script_once_sources_are_configured():

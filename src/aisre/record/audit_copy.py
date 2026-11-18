@@ -46,6 +46,7 @@ from uuid import UUID
 
 from sqlalchemy import Connection, Engine, text
 
+from aisre.config import Settings
 from aisre.record.incidents import uuid7
 from aisre.record.notifications import advance, cursor, cursors
 
@@ -108,30 +109,21 @@ class S3Config:
     lock_days: int | None = None  # Object Lock retention, COMPLIANCE mode
 
 
-ENV_VARS = {
-    "endpoint": "AISRE_AUDIT_STORE_URL",
-    "bucket": "AISRE_AUDIT_STORE_BUCKET",
-    "access_key": "AISRE_AUDIT_STORE_ACCESS_KEY",
-    "secret_key": "AISRE_AUDIT_STORE_SECRET_KEY",
-    "lock_days": "AISRE_AUDIT_STORE_LOCK_DAYS",
-}
-
-
-def store_from_env(environ: Mapping[str, str]) -> S3Store | None:
-    """The S3 store from the AISRE_AUDIT_STORE_* variables, or None if the URL is unset."""
-    if not environ.get(ENV_VARS["endpoint"]):
+def store_from_settings(settings: Settings) -> S3Store | None:
+    """The S3 store from the AISRE_AUDIT_STORE_* settings, or None if the URL is unset.
+    Settings has already refused a URL without its bucket and keys."""
+    s = settings
+    if not (s.audit_store_url and s.audit_store_bucket and s.audit_store_access_key):
         return None
-    missing = [v for k, v in ENV_VARS.items() if k != "lock_days" and not environ.get(v)]
-    if missing:
-        raise RuntimeError(f"audit store: set {', '.join(missing)}")
-    lock = environ.get(ENV_VARS["lock_days"])
+    if s.audit_store_secret_key is None:
+        return None
     return S3Store(
         S3Config(
-            environ[ENV_VARS["endpoint"]],
-            environ[ENV_VARS["bucket"]],
-            environ[ENV_VARS["access_key"]],
-            environ[ENV_VARS["secret_key"]],
-            lock_days=int(lock) if lock else None,
+            s.audit_store_url,
+            s.audit_store_bucket,
+            s.audit_store_access_key,
+            s.audit_store_secret_key.get_secret_value(),
+            lock_days=s.audit_store_lock_days,
         )
     )
 

@@ -9,7 +9,6 @@ from __future__ import annotations
 
 import re
 import threading
-from collections.abc import Mapping
 from typing import Any
 
 from prometheus_client import CollectorRegistry, Counter, Gauge, Histogram
@@ -453,39 +452,32 @@ def build_tracer_provider(service_name: str, exporter=None):
 # ---------------------------------------------------------------------------
 # Wiring a process (T1.19, NFR-26): metrics on their own port, spans to the collector
 # ---------------------------------------------------------------------------
-# Read from the environment here, not aisre.config: OTEL_EXPORTER_OTLP_ENDPOINT is
-# OpenTelemetry's own variable (http://otel-collector:4318 in Compose), and the metrics port
-# belongs with the process's other wiring. Unset means off, so tests and tools start neither.
-OTLP_ENDPOINT_VAR = "OTEL_EXPORTER_OTLP_ENDPOINT"
-METRICS_PORT_VAR = "AISRE_METRICS_PORT"  # 9464 in Compose, on the internal network only
+# The settings are aisre.config's `otlp_endpoint` (OpenTelemetry's own OTEL_EXPORTER_OTLP_ENDPOINT,
+# http://otel-collector:4318 in Compose) and `metrics_port` (AISRE_METRICS_PORT, 9464 in Compose,
+# on the internal network only). Unset means off, so tests and tools start neither.
 _tracing_done = threading.Lock()
 _tracing_set = False
 
 
-def serve_metrics(environ: Mapping[str, str] | None = None) -> Any:
-    """Start `/metrics` for REGISTRY on AISRE_METRICS_PORT, if set. Returns the server, or None."""
-    import os
-
+def serve_metrics(port: int | None) -> Any:
+    """Start `/metrics` for REGISTRY on `port` (AISRE_METRICS_PORT), if set. Returns the server,
+    or None."""
     from prometheus_client import start_http_server
 
-    port = (os.environ if environ is None else environ).get(METRICS_PORT_VAR)
-    if not port:
+    if port is None:
         return None
-    server, _ = start_http_server(int(port), registry=REGISTRY)
+    server, _ = start_http_server(port, registry=REGISTRY)
     return server
 
 
-def setup_tracing(service_name: str, environ: Mapping[str, str] | None = None) -> Any:
-    """Install the process's tracer provider once: spans go to the collector when
-    OTEL_EXPORTER_OTLP_ENDPOINT is set, and are dropped otherwise."""
+def setup_tracing(service_name: str, endpoint: str | None) -> Any:
+    """Install the process's tracer provider once: spans go to the collector when `endpoint`
+    (OTEL_EXPORTER_OTLP_ENDPOINT) is set, and are dropped otherwise."""
     global _tracing_set
-    import os
-
     from opentelemetry import trace
 
     from aisre.reliability.otlp import OtlpJsonExporter
 
-    endpoint = (os.environ if environ is None else environ).get(OTLP_ENDPOINT_VAR)
     with _tracing_done:
         if _tracing_set:
             return trace.get_tracer_provider()
