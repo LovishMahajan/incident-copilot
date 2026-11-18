@@ -82,7 +82,7 @@ curl -X POST http://127.0.0.1:8000/v1/incidents -H 'Content-Type: application/js
 
 Each route checks ADR-50's matrix on the incident's service (T1.4): Monitoring may create but not read, and a role on another service sees the same 404 as a missing incident. Failed sign-ins, denials and every read of incident content are logged as JSON lines on the API's standard error (`aisre.auth.failed`, `aisre.authz.denied`, `aisre.content.read`). Tokens last 5 minutes; mint new ones when they expire. Without the three `AISRE_OIDC_*` settings the API falls back to the development-only `X-Aisre-Dev-Caller` header (with optional `X-Aisre-Dev-Org` and `X-Aisre-Dev-Groups`, default `aisre:responder`), and then refuses to start unless `AISRE_ENV` is `development` or `test`. With them set, that header is refused. The in-process integration tests use the header.
 
-The service and environment must be in the organisation's catalogue (`services`, `environments`); otherwise the answer is `404 unknown_service`. M0 has no catalogue route; `python -m aisre.api.dev_seed` adds one service and environment (default `orders-api`/`production`, the reference incident's) to the development organisation, and a rerun changes nothing:
+**Intake** (`src/aisre/api/intake.py`, T1.2). The service and environment must be in the organisation's catalogue (`services`, `environments`), and the caller must hold `incident:create` on that service. Otherwise the alert is rejected: stored raw in `dead_letters` with the reason, logged as `aisre.intake.dead_lettered` for the incident lead, and answered `422 unknown_service` to a monitoring caller or `404 unknown_service` to a person, the same for an unknown and a forbidden service (ADR-58). A body missing a mandatory field is `422 validation_failed`, naming the field, and is dead-lettered too. A repeat of an open incident's alert (same fingerprint, or service plus alert name without one), or any alert for the same service and environment within 10 minutes of the incident opening, joins that incident: `200`, `"deduplicated": true`. M0 has no catalogue route; `python -m aisre.api.dev_seed` adds one service and environment (default `orders-api`/`production`, the reference incident's) to the development organisation, and a rerun changes nothing:
 
 ```
 docker compose exec api python -m aisre.api.dev_seed
@@ -142,12 +142,12 @@ docker compose exec postgres psql -U postgres -d aisre -c 'SELECT count(*) FROM 
 docker compose run --rm --no-deps --entrypoint temporal temporal-namespace workflow count
 ```
 
-Kill the worker during a second run. Restart the worker with each scripted step taking 3 seconds, post an alert with another fingerprint (a new incident), kill the worker with `SIGKILL` once the incident is `investigating`, start it again, and the incident still reaches `handed_over`. Activities the dead worker held are retried once their heartbeat or start-to-close timeout passes, so allow about a minute:
+Kill the worker during a second run. Restart the worker with each scripted step taking 3 seconds, post an alert for another service (a new incident: from M1, another alert for `orders-api` within 10 minutes joins the first), kill the worker with `SIGKILL` once the incident is `investigating`, start it again, and the incident still reaches `handed_over`. Activities the dead worker held are retried once their heartbeat or start-to-close timeout passes, so allow about a minute:
 
 ```
 AISRE_SCRIPTED_STEP_SECONDS=3 docker compose up -d --wait worker
-ID2=$(sed 's/orders-api:OrdersApiHighErrorRate/orders-api:OrdersApiHighErrorRate:run2/' \
-    tests/fixtures/reference-incident/alert.json \
+docker compose exec api python -m aisre.api.dev_seed checkout production
+ID2=$(sed 's/orders-api/checkout/g' tests/fixtures/reference-incident/alert.json \
   | curl -s -X POST http://127.0.0.1:8000/v1/incidents -H 'Content-Type: application/json' \
     -H "Authorization: Bearer $MON" -H 'Idempotency-Key: demo-run-0003' --data @- \
   | uv run python -c 'import json, sys; print(json.load(sys.stdin)["incident_id"])')

@@ -16,6 +16,7 @@ from sqlalchemy import func, select
 
 from aisre.api.app import create_app
 from aisre.record import uuid7
+from aisre.record.dead_letters import dead_letters
 from aisre.record.tables import idempotency_keys, incidents
 
 ALERT = json.loads(
@@ -87,6 +88,7 @@ def test_st19_refused_tokens_write_and_read_nothing(token_api, token_issuer, app
     }
     assert token_api.post("/v1/incidents", json=body, headers=dev).status_code == 401
     assert rows(app_engine, incidents, org) == 0
+    assert rows(app_engine, dead_letters, org) == 0  # refused callers leave no dead letter
     with app_engine.connect() as conn:
         assert not conn.execute(
             select(idempotency_keys.c.idem_key).where(
