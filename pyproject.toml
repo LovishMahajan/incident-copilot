@@ -5,12 +5,17 @@ description = "AI incident copilot: investigation workflow, model gateway, safe 
 readme = "README.md"
 requires-python = ">=3.12"
 dependencies = [
+    "alembic>=1.13",
     "cryptography>=43",
+    "fastapi>=0.115",
     "opentelemetry-sdk>=1.27",
     "prometheus-client>=0.20",
+    "psycopg[binary]>=3.2",
     "pydantic>=2.8",
     "scipy>=1.14",
+    "sqlalchemy>=2.0",
     "temporalio[pydantic]>=1.11",
+    "uvicorn>=0.30",
 ]
 
 [dependency-groups]
