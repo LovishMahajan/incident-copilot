@@ -44,14 +44,14 @@ def as_(org, groups: str = "aisre:viewer", caller: str = "vera") -> dict[str, st
 
 
 def opened(api, org, service: str, quiet=None) -> str:
+    if quiet is not None:
+        return quiet(org, service)
     r = api.post(
         "/v1/incidents",
         json=ALERT["incident_create"] | {"service": service},
         headers=as_(org, "aisre:monitoring", "monitoring") | {"Idempotency-Key": f"rd-{org.hex}"},
     )
     assert r.status_code == 201, r.text
-    if quiet is not None:
-        quiet(r.json()["incident_id"])
     return str(r.json()["incident_id"])
 
 
