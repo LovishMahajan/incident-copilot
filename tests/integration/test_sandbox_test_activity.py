@@ -180,6 +180,19 @@ def test_the_revert_passes_and_is_stored_labelled_development_runc(
             "isolation": "development-runc",
         }
     ]
+    with app_engine.connect() as conn:
+        started = conn.execute(
+            text(
+                "SELECT data FROM timeline_events WHERE type = 'aisre.action.test_started.v1' "
+                "AND data->>'action_id' = :a"
+            ),
+            {"a": action_id},
+        ).scalar_one()
+    assert started == {
+        "action_id": action_id,
+        "patch_sha256": p.digest,
+        "isolation": "development-runc",
+    }
     again = asyncio.run(ActivityEnvironment().run(r.run_sandbox_test, inp))
     assert again.test_run_id == out.test_run_id and len(stored(app_engine, action_id)[0]) == 1
     assert labelled() == []
