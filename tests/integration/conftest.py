@@ -61,3 +61,58 @@ def temporal_address(settings: Settings) -> str:
     except Exception as e:  # any failure to connect is a skip, never an error
         pytest.skip(f"Temporal unreachable at {settings.temporal_address}: {type(e).__name__}")
     return settings.temporal_address
+
+
+@pytest.fixture(scope="session")
+def app_engine(postgres_url: str, settings: Settings):
+    """A SQLAlchemy engine as aisre_app (the API's and worker's role)."""
+    from aisre.record import make_engine
+
+    engine = make_engine(settings.database_url)
+    yield engine
+    engine.dispose()
+
+
+def add_catalogue(engine, org_id, service: str, environment: str = "production") -> None:
+    """Put one service and one environment in an organisation's catalogue."""
+    from sqlalchemy import insert
+
+    from aisre.record import uuid7
+    from aisre.record.tables import environments, services
+
+    with engine.begin() as conn:
+        conn.execute(
+            insert(services).values(
+                service_id=uuid7(),
+                org_id=org_id,
+                slug=service,
+                display_name=service,
+                owner_group="test-owners",
+                critical=False,
+                hold_seconds=600,
+            )
+        )
+        conn.execute(
+            insert(environments).values(environment_id=uuid7(), org_id=org_id, slug=environment)
+        )
+
+
+@pytest.fixture
+def catalogue(app_engine):
+    """A fresh organisation with one service and one environment, so tests never share rows.
+
+    Returns (org_id, service_slug, environment_slug)."""
+    from aisre.record import uuid7
+
+    org_id = uuid7()
+    slug = f"svc-{org_id.hex[-8:]}"
+    add_catalogue(app_engine, org_id, slug)
+    return org_id, slug, "production"
+
+
+@pytest.fixture
+def add_service(app_engine):
+    """add_catalogue, bound to the app engine: add_service(org_id, slug)."""
+    return lambda org_id, slug, environment="production": add_catalogue(
+        app_engine, org_id, slug, environment
+    )
