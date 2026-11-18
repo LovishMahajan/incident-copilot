@@ -210,6 +210,11 @@ services:
       AISRE_OIDC_JWKS_URL: ${AISRE_OIDC_JWKS_URL:-}
       # Unset: each start signs exports with a fresh key (development and test only).
       AISRE_EXPORT_SIGNING_KEY: ${AISRE_EXPORT_SIGNING_KEY:-}
+      # Read-only use: a patch's diff for GET /v1/artifacts/{id}/content (M2). Unset: not served.
+      AISRE_OBJECT_STORE_URL: ${AISRE_OBJECT_STORE_URL:-}
+      AISRE_OBJECT_STORE_BUCKET: ${AISRE_OBJECT_STORE_BUCKET:-aisre-artifacts}
+      AISRE_OBJECT_STORE_ACCESS_KEY: ${AISRE_OBJECT_STORE_ACCESS_KEY:-}
+      AISRE_OBJECT_STORE_SECRET_KEY: ${AISRE_OBJECT_STORE_SECRET_KEY:-}
     command:
       ["uvicorn", "--factory", "aisre.api.app:create_app", "--host", "0.0.0.0", "--port", "8000"]
     ports:

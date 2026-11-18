@@ -116,7 +116,7 @@ From `GET /v1/incidents/{id}`.
   | not_recovered, cancelled | Not recovered, Cancelled | bad |
   | closed | Closed | none |
 
-  Later milestones add testing, awaiting_approval, executing, reconciling and verifying, which already have labels.
+  M2 adds testing ("Testing a fix", shown between Diagnosed and Handed over in the stepper's third step); later milestones add awaiting_approval, executing, reconciling and verifying, which already have labels.
 - **Confidence**: categorical (ADR-53), never a percentage: a three-step bar, low = 1, medium = 2, high = 3, using `final_confidence` when reviewed (ADR-69). Green when established, amber when inconclusive, "Not yet" before a diagnosis.
 - **Model spend** (from `budget`): "$0.0706 / $2.00", a thin bar (width set through CSSOM, which `style-src 'self'` allows), "Model calls 3 of 30" plus any amount reserved, and "Fake provider: nothing billed; list price on its token counts."
 - **View in Temporal** (`#temporal`): `http://127.0.0.1:8233/namespaces/default/workflows/incident-<id>` (or `incident-<id>-r<run>` after a re-investigation event), built only from the validated UUID and an integer run; new tab, `rel="noopener noreferrer"`. The Temporal UI resolves it to the latest run. The UI port and namespace are the `.env.example` defaults.
@@ -134,10 +134,10 @@ Alert received → Investigating → Diagnosed (Inconclusive, amber, on the hone
   - **Hypotheses**: one row each with its number, statement, status pill (Supported or Confirmed green, Ruled out red, Open grey), Leading pill, confidence and an expand chevron (`aria-expanded`). Expanded: category, status reason, "Confirmed if", "Refuted if", and evidence chips split into Supports and Contradicts (red). Before the diagnosis, rows come from the hypothesis events and show "Proposed".
 - **Evidence (n)**: counts by strength class (mechanism 1–3, supporting 4–7, timing alone, no tier, gaps) with what each means, then one row per record that jumps to it in the explorer.
 - **Runbooks (n)**: `runbook` and `past_incident` evidence, collapsible, with heading, label, document and version, and the passage. Restricted ones show a lock, "Restricted runbook", and the owner, no text.
-- **Timeline (n)**: every event, oldest first, with UTC date and time, readable name (`EVENT_LABEL`, all 41 types), sequence, detail and actor. Rows that arrive after the incident was opened get a 1.5 s highlight; history replayed on open does not flash.
+- **Timeline (n)**: every event, oldest first, with UTC date and time, readable name (`EVENT_LABEL`, all 43 types; M2 adds "Fix test started" and "Draft pull request opened"), sequence, detail and actor. Rows that arrive after the incident was opened get a 1.5 s highlight; history replayed on open does not flash.
 
 ### Proposed fix card (soft blue)
-The platform is advisory in this release (ADR-44) and the viewer is read-only (ADR-70), so there is no approve or apply control, enabled or disabled. For each `open_action_ids` entry the card reads `GET /v1/actions/{id}` and shows kind, status, description, target, revisions, expected effect, risk, undo plan and, when there is a patch, its `+added −removed` counts (the diff text is an artifact the API doesn't serve here), then "Approval happens outside this demo, by an approver, in the CLI (ADR-49)." With none (all of M1): "No fix drafted. Patch drafting arrives in M2; this incident was handed over to people with the diagnosis.", the hand-over reason from the timeline, and the ADR-44/70 note.
+The platform is advisory in this release (ADR-44) and the viewer is read-only (ADR-70), so there is no approve or apply control, enabled or disabled. From M2 the card reads `GET /v1/incidents/{id}/actions`, every fix the incident has, open or ended: a Release A fix ends `withdrawn` once it is handed over, so it is no longer in `open_action_ids`. The list is read again when the incident's status or version moves or an `aisre.action.*` event arrives. For each fix it shows kind, status, description (the patch summary), target, revisions, expected effect, risk, undo plan, the latest sandbox test (outcome, whether the failure reproduced first, and the isolation label: `development-runc` says it proves the flow, never isolation, ADR-71), the draft pull request's reference as text (never a link), the `+added −removed` counts, and the patch itself as red and green lines, read from `GET /v1/artifacts/{diff_artifact_id}/content` (the canonical diff, `Patch.canonical()`'s hunks, rendered as text). Then the hand-over reason and "The fix is a recommendation, applied by people" with the ADR-44/70 note. With no fix (the scripted run, the honesty run, `no_allowed_fix`): "No fix drafted.", the hand-over reason from the timeline, and the same note.
 
 ### Live timeline card
 A condensed rail built from the same events: incident opened, status changes (with reason), consecutive evidence events grouped as "Evidence collected: 16 records, 3 strong" (strong = mechanism tiers 1–3) with the kinds, gaps and flagged evidence as amber rows, hypotheses grouped, diagnosis produced or inconclusive, reviewed, handed over, other alerts joining. Done rows have a green check; while the run is live the newest row has a blue ring and a grey "Not yet" row shows the next step. The **Live** pill (`#live`) has four states: `live` (green, pulsing), `reconnecting` (amber), `error` (red), and idle/ended (grey). **View full timeline →** opens the Timeline tab.
@@ -175,7 +175,8 @@ From `GET /v1/incidents/{id}/evidence`, following every page, reloaded after eac
 | `GET /v1/incidents/{id}/timeline/stream` | Timeline tab, live timeline, stepper times, hand-over reason, and when to reload the rest |
 | `GET /v1/incidents/{id}/evidence` | Explorer, Evidence and Runbooks tabs, citation labels |
 | `GET /v1/incidents/{id}/diagnoses/current` | Diagnosis, confidence, hypotheses after diagnosis |
-| `GET /v1/actions/{id}` | Proposed fix (none in M1) |
+| `GET /v1/incidents/{id}/actions` | Proposed fix: every action, open or ended (M2) |
+| `GET /v1/artifacts/{id}/content` | The fix's patch as red and green lines (M2; `patch_diff` artifacts only, ADR-50's read permission) |
 
 The proxy also passes `GET /livez`, unused by the page.
 
@@ -183,7 +184,8 @@ The proxy also passes `GET /livez`, unused by the page.
 
 | Scenario | What changes |
 | --- | --- |
-| Reference (default) | 16 evidence records, 3 hypotheses (1 supported, 2 ruled out), established high-confidence diagnosis with 5 cited claims, reviewed, handed over, no fix |
+| Reference (default) | 16 evidence records, 3 hypotheses (1 supported, 2 ruled out), established high-confidence diagnosis with 5 cited claims, reviewed; from M2, with the Test Runner running on the host, a config revert drafted, its sandbox test passed under `development-runc`, a draft pull request, handed over, the fix `withdrawn`, its diff in red and green. Without the Test Runner the test waits (900 s) and the incident stays `testing` |
+| `not_reproduced` (M2) | The fake review system on its `tolerant` branch (root README): the fix is drafted, the sandbox test says the failure did not reproduce, no pull request, the fix `test_failed`, handed over saying so |
 | Honesty (change history missing) | The change source is a **gap**, the stepper shows **Inconclusive**, the root cause block is amber "not established" with the stop reason, all hypotheses stay open, a missing-evidence list, not reviewed. It needs a worker restart, described in the root README |
 | Before anything is opened | The empty-state card and the recent list (`idle-light.png`) |
 | While running | Sections fill in as events arrive; spend grows; the live pill pulses; the stepper and rail show the current step |
@@ -245,7 +247,7 @@ Dark tokens are written twice in `styles.css` (under `prefers-color-scheme: dark
 | Tabs: AI Diagnosis, Evidence (7), Runbooks (2), Timeline | Same tabs with real counts; Evidence is a strength overview, Runbooks the retrieved passages, Timeline every event |
 | Root cause with green check | Leading hypothesis when established; amber "Root cause not established" with the stop reason otherwise |
 | Hypotheses with status pills | Supported / Ruled out / Open (+ Leading), "Proposed" before the diagnosis; expand shows tests and evidence chips |
-| Proposed Fix with diff | Read-only actions from `GET /v1/actions/{id}` (patch line counts only; the diff text isn't served); in M1 the honest empty state "No fix drafted" with the hand-over reason |
+| Proposed Fix with diff | Read-only actions from `GET /v1/incidents/{id}/actions`, with the patch as a red and green diff from `GET /v1/artifacts/{id}/content`, the sandbox test and its isolation label, and the draft pull request's reference; "No fix drafted" with the hand-over reason when there is none |
 | Approve & Apply Fix, View Details | Not shown: advisory release (ADR-44), read-only viewer (ADR-70); approval is in the CLI (ADR-49) |
 | "Will be verified automatically" | Not shown (no verification before M3) |
 | Live Timeline with ● Live | Condensed rail from the real stream; the pill reflects live / reconnecting / error / ended |

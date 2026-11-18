@@ -8,7 +8,9 @@
 //   GET  /v1/incidents/{id}/diagnoses/current     diagnosis, hypotheses, citations (404: none yet)
 //   GET  /v1/incidents/{id}/timeline/stream       live timeline, SSE, read with fetch so the
 //                                                 Authorization header can be sent
-//   GET  /v1/actions/{id}                         a proposed fix, for each open_action_ids entry
+//   GET  /v1/incidents/{id}/actions               the incident's fixes, open or ended (a Release A
+//                                                 fix ends `withdrawn`, so open_action_ids drops it)
+//   GET  /v1/artifacts/{id}/content               a fix's patch, its canonical diff (patch_diff only)
 //   GET  /readyz                                  the system-health box (no token)
 //
 // SECURITY: every value from the API (evidence, model output, titles, IDs) is untrusted. It is
@@ -153,8 +155,10 @@ const EVENT_LABEL = {
   "aisre.diagnosis.produced.v1": "Diagnosis produced",
   "aisre.diagnosis.inconclusive.v1": "Diagnosis inconclusive",
   "aisre.diagnosis.reviewed.v1": "Diagnosis reviewed",
-  "aisre.action.proposed.v1": "Fix proposed",
+  "aisre.action.proposed.v1": "Fix drafted",
+  "aisre.action.test_started.v1": "Fix test started",
   "aisre.action.tested.v1": "Fix tested",
+  "aisre.action.review_opened.v1": "Draft pull request opened",
   "aisre.action.withdrawn.v1": "Fix withdrawn",
   "aisre.action.undone.v1": "Fix undone",
   "aisre.approval.requested.v1": "Approval requested",
@@ -552,6 +556,8 @@ const view = {
   diagnosisLoaded: false,
   actions: new Map(), // action_id -> ActionView
   actionsKey: "",
+  actionEvents: 0, // aisre.action.* events seen: the actions are read again when it moves
+  diffs: new Map(), // diff_artifact_id -> {files} (Patch.canonical()) or {error}
   hypothesesFromEvents: new Map(), // hypothesis_id -> data, until a diagnosis lists them
   statusTimes: new Map(), // status -> time it was entered, from the timeline
   run: 1, // the investigation run, from re-investigation events
@@ -580,6 +586,8 @@ function resetView(id) {
   view.diagnosisLoaded = false;
   view.actions = new Map();
   view.actionsKey = "";
+  view.actionEvents = 0;
+  view.diffs = new Map();
   view.hypothesesFromEvents = new Map();
   view.statusTimes = new Map();
   view.run = 1;
@@ -645,28 +653,38 @@ async function refreshIncident() {
   renderIncident();
   renderFix();
   renderLiveTimeline();
-  const ids = (body.open_action_ids || []).filter((a) => UUID_RE.test(String(a)));
-  const key = ids.join(",");
+  // Every fix, open or ended: a Release A fix ends `withdrawn` and leaves open_action_ids.
+  const key = `${body.status}|${body.version}|${view.actionEvents}|${(body.open_action_ids || []).join(",")}`;
   if (key !== view.actionsKey) {
     view.actionsKey = key;
-    refreshActions(ids).catch((e) => console.warn("actions read failed", e));
+    refreshActions().catch((e) => console.warn("actions read failed", e));
   }
 }
 
-async function refreshActions(ids) {
+async function refreshActions() {
   const id = view.id;
-  const found = new Map();
-  for (const actionId of ids) {
-    try {
-      const { body } = await api(`/v1/actions/${actionId}`);
-      found.set(actionId, body);
-    } catch (e) {
-      found.set(actionId, { action_id: actionId, error: e.message });
-    }
-  }
+  const { body } = await api(`/v1/incidents/${id}/actions`);
   if (id !== view.id) return;
+  const found = new Map();
+  for (const a of Array.isArray(body) ? body : []) {
+    if (UUID_RE.test(String(a.action_id))) found.set(String(a.action_id), a);
+  }
   view.actions = found;
   renderFix();
+  for (const a of found.values()) {
+    const diffId = a.patch && String(a.patch.diff_artifact_id);
+    if (!diffId || !UUID_RE.test(diffId) || view.diffs.has(diffId)) continue;
+    view.diffs.set(diffId, { loading: true });
+    try {
+      const got = await api(`/v1/artifacts/${diffId}/content`);
+      const files = got.body && Array.isArray(got.body.files) ? got.body.files : null;
+      view.diffs.set(diffId, files ? { files } : { error: "not a patch" });
+    } catch (e) {
+      view.diffs.set(diffId, { error: e.message });
+    }
+    if (id !== view.id) return;
+    renderFix();
+  }
 }
 
 async function refreshEvidence() {
@@ -908,6 +926,7 @@ function onEvent(event, seq) {
     view.hypothesesFromEvents.set(String(data.hypothesis_id), data);
     if (!view.diagnosis) renderHypotheses();
   }
+  if (type.startsWith("aisre.action.")) view.actionEvents += 1;
   if (type.startsWith("aisre.incident.") || type.startsWith("aisre.diagnosis.") || type.startsWith("aisre.action.")) {
     scheduleRefresh("incident");
   }
@@ -1315,17 +1334,42 @@ function renderHypotheses() {
 
 // ------------------------------------------------------------------ proposed fix (read only)
 
+const ISOLATION_NOTE = {
+  "development-runc": "development-runc: runc on a development host. It proves the flow, never isolation (ADR-71).",
+  gvisor: "gvisor: the sandbox ran under gVisor on the test host.",
+};
+
+/** A patch's canonical diff as red and green lines: text only, from Patch.canonical()'s hunks. */
+function renderDiff(diff) {
+  if (!diff) return null;
+  if (diff.loading) return el("p", { className: "fix-text", text: "Loading the patch…" });
+  if (diff.error) return el("p", { className: "fix-text", text: `Patch not shown: ${diff.error}` });
+  const lines = [];
+  for (const f of diff.files) {
+    lines.push(el("span", { className: "diff-file", text: `--- a/${f.path}\n+++ b/${f.path}` }));
+    for (const h of Array.isArray(f.hunks) ? f.hunks : []) {
+      lines.push(el("span", { className: "diff-hunk", text: `@@ -${h.old_start},${h.old_lines} +${h.new_start},${h.new_lines} @@` }));
+      for (const line of Array.isArray(h.lines) ? h.lines : []) {
+        const tag = String(line).slice(0, 1);
+        const kind = tag === "+" ? "add" : tag === "-" ? "del" : "ctx";
+        lines.push(el("span", { className: `diff-line ${kind}`, text: String(line) }));
+      }
+    }
+  }
+  return el("pre", { className: "diff", attrs: { "aria-label": "Patch diff" } }, lines);
+}
+
 function renderFix() {
   const box = $("fix");
   const inc = view.incident;
   const actions = [...view.actions.values()];
   const parts = [];
+  const handover = [...view.events.values()].find((e) => e.type === "aisre.incident.handed_over.v1");
+  const reason = handover && handover.data && handover.data.reason ? String(handover.data.reason) : "";
   if (actions.length) {
     for (const a of actions) {
-      if (a.error) {
-        parts.push(el("p", { className: "fix-text", text: `Could not read fix ${a.action_id}: ${a.error}` }));
-        continue;
-      }
+      const test = a.latest_test;
+      const diff = a.patch ? view.diffs.get(String(a.patch.diff_artifact_id)) : null;
       parts.push(
         el("div", { className: "fix-item" }, [
           el("div", { className: "fix-top" }, [
@@ -1344,18 +1388,37 @@ function renderFix() {
             el("dd", { text: a.risk }),
             el("dt", { text: "Undo" }),
             el("dd", { text: a.undo_plan }),
+            el("dt", { text: "Sandbox test" }),
+            el("dd", {
+              text: test
+                ? `${humanize(test.outcome)} · failure reproduced first: ${test.reproduced ? "yes" : "no"} · ${ISOLATION_NOTE[test.isolation] || test.isolation}`
+                : a.status === "testing" ? "Running" : "Not run",
+            }),
+            el("dt", { text: "Pull request" }),
+            el("dd", {
+              text: a.patch && a.patch.review_ref
+                ? `${a.patch.review_ref}, a draft in the review system. People review, merge and deploy it; the platform never merges.`
+                : "None: a draft pull request is opened only for a fix whose test passed.",
+            }),
           ]),
           a.patch
             ? el("div", { className: "diff-stat" }, [
                 el("span", { className: "add", text: `+${a.patch.lines_added}` }),
                 el("span", { className: "del", text: `−${a.patch.lines_removed}` }),
-                el("span", { text: `${a.patch.files_changed} file${a.patch.files_changed === 1 ? "" : "s"} changed · the diff text is stored as an artifact this viewer does not read` }),
+                el("span", { text: `${a.patch.files_changed} file${a.patch.files_changed === 1 ? "" : "s"} changed` }),
               ])
             : null,
+          renderDiff(diff),
         ]),
       );
     }
-    parts.push(el("p", { className: "fix-note", text: "Approval happens outside this demo, by an approver, in the CLI (ADR-49)." }));
+    if (reason) parts.push(el("p", { className: "fix-reason" }, [el("strong", { text: "Hand-over reason: " }), reason]));
+    parts.push(
+      el("p", {
+        className: "fix-note",
+        text: "The fix is a recommendation, applied by people: the platform is advisory in this release (ADR-44) and this viewer is read-only (ADR-70).",
+      }),
+    );
   } else {
     parts.push(el("p", { className: "fix-empty-title", text: "No fix drafted." }));
     const handed = inc && ["handed_over", "closed"].includes(inc.status);
@@ -1363,14 +1426,11 @@ function renderFix() {
       el("p", {
         className: "fix-text",
         text: handed
-          ? "Patch drafting arrives in M2; this incident was handed over to people with the diagnosis."
-          : "Patch drafting arrives in M2; in M1 an incident is handed over to people with the diagnosis.",
+          ? "This incident was handed over to people with the diagnosis and no fix."
+          : "A fix is drafted only from an established, reviewed diagnosis, then tested in the sandbox.",
       }),
     );
-    const handover = [...view.events.values()].find((e) => e.type === "aisre.incident.handed_over.v1");
-    if (handover && handover.data && handover.data.reason) {
-      parts.push(el("p", { className: "fix-reason" }, [el("strong", { text: "Hand-over reason: " }), String(handover.data.reason)]));
-    }
+    if (reason) parts.push(el("p", { className: "fix-reason" }, [el("strong", { text: "Hand-over reason: " }), reason]));
     parts.push(el("p", { className: "fix-note", text: "The platform is advisory in this release (ADR-44) and this viewer is read-only (ADR-70)." }));
   }
   box.replaceChildren(...parts);
@@ -1451,6 +1511,7 @@ function condensedRows() {
         const names = {
           investigating: "Investigation started",
           diagnosed: "Diagnosed",
+          testing: "Testing a fix in the sandbox",
           inconclusive: "Inconclusive",
           handed_over: "Handed over to people",
           closed: "Closed",
@@ -1481,6 +1542,22 @@ function condensedRows() {
       case "aisre.incident.alert_attached.v1":
         row = { title: "Another alert joined", detail: d.fingerprint || "" };
         break;
+      case "aisre.action.proposed.v1":
+        row = { title: "Fix drafted", detail: humanize(d.kind) };
+        break;
+      case "aisre.action.test_started.v1":
+        row = { title: "Sandbox test started", detail: String(d.isolation || "") };
+        break;
+      case "aisre.action.tested.v1":
+        row = {
+          title: `Sandbox test: ${humanize(d.outcome)}`,
+          detail: `${d.reproduced ? "failure reproduced first" : "failure did not reproduce"} · ${d.isolation}`,
+          tone: d.outcome === "passed" ? "done" : "warn",
+        };
+        break;
+      case "aisre.action.review_opened.v1":
+        row = { title: "Draft pull request opened", detail: `${d.review_ref} · for people to review and merge` };
+        break;
       default:
         row = { title: EVENT_LABEL[type] || type, detail: "" };
     }
@@ -1506,7 +1583,8 @@ function renderLiveTimeline() {
   const next = {
     open: "Investigation",
     investigating: "Diagnosis",
-    diagnosed: "Hand-over to people",
+    diagnosed: "Fix drafted and tested",
+    testing: "Hand-over to people",
     inconclusive: "Hand-over to people",
   }[status];
   if (running && next) rows.push({ title: next, detail: "Not yet", time: null, tone: "todo" });
@@ -1562,6 +1640,14 @@ function describeEvent(event) {
       return `revision ${d.revision}${d.stop_reason ? `: ${d.stop_reason}` : ""}`;
     case "aisre.diagnosis.reviewed.v1":
       return `revision ${d.revision}${d.review_notes ? `: ${d.review_notes}` : ""}`;
+    case "aisre.action.proposed.v1":
+      return `${humanize(d.kind)} for ${d.target_service}/${d.target_environment}`;
+    case "aisre.action.test_started.v1":
+      return `isolation ${d.isolation}${d.isolation === "development-runc" ? " (proves the flow, not isolation)" : ""}`;
+    case "aisre.action.tested.v1":
+      return `${humanize(d.outcome)} · reproduced first: ${d.reproduced ? "yes" : "no"} · isolation ${d.isolation}`;
+    case "aisre.action.review_opened.v1":
+      return `${d.review_ref} · draft, never merged by the platform · isolation ${d.isolation}`;
     case "aisre.limit.reached.v1":
     case "aisre.model.attempt_failed.v1":
       return Object.entries(d)

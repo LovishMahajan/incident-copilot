@@ -362,3 +362,45 @@ def test_a_cited_runbook_shows_its_text_only_to_its_groups(api, app_engine, cata
     assert by_id[p["ev2"]]["summary"] == "ValueError on POST /v1/orders"  # not a document
     inside = api.get(url, headers=as_(org, "aisre:viewer,sre")).json()["items"]
     assert {e["evidence_id"]: e for e in inside}[p["ev"]]["summary"] == passage
+
+
+def test_a_patch_diff_is_served_to_its_readers_and_nothing_else_is(
+    app_engine, settings, catalogue, quiet
+):
+    """Artifact 7.4's content read, M2: a patch's canonical diff, for ADR-50's read permission on
+    its service, byte for byte and as an attachment; other kinds and other services get 404."""
+    from aisre.evidence.snapshots import MemorySnapshots
+
+    org, service, _ = catalogue
+    incident_id = quiet(org, service)
+    blobs = MemorySnapshots()
+    body = b'{"files":[{"path":"deploy/production.env"}]}'
+    ids = {k: uuid7() for k in ("diff", "snap", "bad")}
+    with app_engine.begin() as conn:
+        for name, kind, content in (
+            ("diff", "patch_diff", body),
+            ("snap", "evidence_snapshot", b"raw"),
+            ("bad", "patch_diff", b"tampered"),
+        ):
+            key = f"test/{ids[name]}"
+            blobs.put(key, body if name == "bad" else content, "application/json")
+            conn.execute(
+                text(
+                    "INSERT INTO artifacts (artifact_id, org_id, incident_id, kind, storage_key,"
+                    " content_sha256, size_bytes, media_type, redacted, retain_until) VALUES"
+                    " (:a, :o, :i, CAST(:k AS artifact_kind), :key, :sha, 1, 'application/json',"
+                    " false, now() + interval '1 day')"
+                ),
+                {"a": ids[name], "o": org, "i": incident_id, "k": kind, "key": key,
+                 "sha": hashlib.sha256(content).hexdigest()},
+            )  # fmt: skip
+    with TestClient(create_app(settings, app_engine, artifact_store=blobs)) as c:
+        ok = c.get(f"/v1/artifacts/{ids['diff']}/content", headers=as_(org))
+        assert ok.status_code == 200 and ok.content == body
+        assert ok.headers["x-content-type-options"] == "nosniff"
+        assert ok.headers["content-disposition"].startswith("attachment")
+        other = as_(org, "aisre:viewer:another-svc")
+        assert c.get(f"/v1/artifacts/{ids['diff']}/content", headers=other).status_code == 404
+        assert c.get(f"/v1/artifacts/{ids['snap']}/content", headers=as_(org)).status_code == 404
+        assert c.get(f"/v1/artifacts/{uuid7()}/content", headers=as_(org)).status_code == 404
+        assert c.get(f"/v1/artifacts/{ids['bad']}/content", headers=as_(org)).status_code == 500
