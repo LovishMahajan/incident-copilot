@@ -449,6 +449,18 @@ def wrong_service_hits(hits: list[SearchHit], service: str) -> int:
     return sum(1 for h in hits if service not in h.services and "*" not in h.services)
 
 
+def may_read(allowed_groups: Iterable[str], groups: Iterable[str]) -> bool:
+    """Artifact 10.9: a reader sees a document's text only if one of their identity groups is
+    among the document's permitted groups."""
+    return bool(set(allowed_groups) & set(groups))
+
+
+def restricted_notice(doc_type: str, owner: str) -> str:
+    """What a reader outside a cited document's groups sees instead of its text (10.9)."""
+    what = "past incident review" if doc_type == "past_incident" else "runbook"
+    return f"restricted {what} (owner: {owner})"
+
+
 def wrong_permission_hits(hits: list[SearchHit], groups: set[str]) -> int:
     return sum(1 for h in hits if not (h.allowed_groups & groups))
 

@@ -9,6 +9,11 @@ ID returned. The current diagnosis is the highest revision. A diagnosis row name
 of its own, so it shows the incident's hypotheses recorded up to it, the latest five by
 ordinal (Diagnosis allows 2 to 5), always keeping the leading one. Actions come in creation
 order, each with its patch and its latest test run.
+
+Cited runbooks and past incident reviews are shown only to a reader in one of the document's
+permitted groups (Artifact 10.9, T1.24): to anyone else `restrict_documents` replaces the
+passage, its heading path and span with "restricted runbook (owner: …)", keeping only which
+document version it was. A document no longer in the organisation's corpus is shown restricted.
 """
 
 from __future__ import annotations
@@ -28,6 +33,7 @@ from aisre.contracts import (
     PatchView,
     TestRunView,
 )
+from aisre.retrieval.retrieval import may_read, restricted_notice
 
 EVIDENCE_COLUMNS = (
     "evidence_id, incident_id, kind, source_system, tool, collected_by, query, window_start, "
@@ -36,6 +42,8 @@ EVIDENCE_COLUMNS = (
     "content_removed_at, content_removed_reason"
 )
 HYPOTHESES_SHOWN = 5
+DOCUMENT_KINDS = ("runbook", "past_incident")
+KEPT_WHEN_RESTRICTED = ("collection_key", "doc_id", "doc_version", "index_revision")
 
 
 def evidence_page(
@@ -56,6 +64,50 @@ def evidence_page(
         {"i": incident_id, "kind": kind, "after": after, "limit": limit},
     ).mappings()
     return [EvidenceRecord.model_validate(dict(r)) for r in rows]
+
+
+def restrict_documents(
+    conn: Connection, org_id: UUID, items: list[EvidenceRecord], groups: frozenset[str]
+) -> list[EvidenceRecord]:
+    """`items` as a reader with `groups` may see them (10.9)."""
+    cited = {
+        (str(e.attributes.get("doc_id")), str(e.attributes.get("doc_version")))
+        for e in items
+        if e.kind.value in DOCUMENT_KINDS
+    }
+    if not cited:
+        return items
+    rows = conn.execute(
+        text(
+            "SELECT doc_ref, doc_version, doc_type, allowed_groups, owner FROM documents "
+            "WHERE org_id = :o AND doc_ref = ANY(:refs)"
+        ),
+        {"o": org_id, "refs": sorted({ref for ref, _ in cited})},
+    ).mappings()
+    docs = {(r["doc_ref"], r["doc_version"]): r for r in rows}
+    out = []
+    for e in items:
+        if e.kind.value not in DOCUMENT_KINDS:
+            out.append(e)
+            continue
+        key = (str(e.attributes.get("doc_id")), str(e.attributes.get("doc_version")))
+        doc = docs.get(key)
+        if doc is not None and may_read(doc["allowed_groups"], groups):
+            out.append(e)
+            continue
+        owner = doc["owner"] if doc is not None else "unknown"
+        kept = {k: e.attributes[k] for k in KEPT_WHEN_RESTRICTED if k in e.attributes}
+        out.append(
+            e.model_copy(
+                update={
+                    "summary": restricted_notice(e.kind.value, owner),
+                    "attributes": kept | {"restricted": True, "owner": owner},
+                    "source_link": None,
+                    "query": None,
+                }
+            )
+        )
+    return out
 
 
 def current_diagnosis(conn: Connection, incident_id: UUID) -> Diagnosis | None:
