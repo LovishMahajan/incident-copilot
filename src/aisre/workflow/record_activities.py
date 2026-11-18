@@ -29,6 +29,7 @@ from temporalio import activity
 from aisre.agent.agent_contracts import EvidenceKind, SkillFailure, SkillResult, SkillUsage
 from aisre.agent.tool_registry import MemoryToolCalls, ToolGate
 from aisre.evidence import collector
+from aisre.evidence.facts import ChangeInfo
 from aisre.evidence.snapshots import SnapshotFailed, SnapshotStore, snapshot_key
 from aisre.evidence.sources import SourceSet
 from aisre.record import evidence as ev_rec
@@ -138,14 +139,17 @@ class EvidenceActivities:
 
         def prepare(
             conn: Connection,
-        ) -> tuple[ev_rec.IncidentScope | None, list[Any], list[dict[str, Any]]]:
+        ) -> tuple[
+            ev_rec.IncidentScope | None, list[Any], list[dict[str, Any]], list[dict[str, Any]]
+        ]:
             return (
                 ev_rec.incident_scope(conn, incident_id),
                 ev_rec.round_evidence(conn, incident_id, inp.idempotency_key),
                 rows_in(conn, inp.incident_id),
+                ev_rec.change_history(conn, incident_id),
             )
 
-        scope, done, rows = await asyncio.to_thread(_transaction, self.engine, prepare)
+        scope, done, rows, changes = await asyncio.to_thread(_transaction, self.engine, prepare)
         if scope is None:
             failure = SkillFailure(
                 skill="collect_evidence", code="store_failed", detail="incident not found"
@@ -178,6 +182,7 @@ class EvidenceActivities:
             collection_key=inp.idempotency_key,
             now=now,
             on_progress=_heartbeat,
+            known_changes=[ChangeInfo.from_json(c) for c in changes],
         )
         items = [await self._with_snapshot(inp.incident_id, c) for c in outcome.collected]
         fresh = {str(c.evidence.evidence_id) for c in outcome.collected}

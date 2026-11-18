@@ -250,3 +250,27 @@ def test_snapshot_reaches_the_compose_object_store():
     key = snapshot_key(str(uuid7()), str(uuid7()))
     store.put(key, b'{"records": []}', "application/json")
     assert UUID(key.split("/")[1])
+
+
+def test_t1_11_tiers_are_stored_and_a_later_round_links_to_the_stored_change(app_engine, incident):
+    org_id, incident_id = incident
+    with serving() as url:
+        collect(app_engine, url, incident_id)
+        req = {
+            "tool": "get_logs",
+            "params": {"service": "orders-api", "level": "error"},
+            "reason": "r",
+        }
+        later = collect(app_engine, url, incident_id, key="step-2", mode="targeted", requests=[req])
+    with app_engine.connect() as conn:
+        rows = {str(r.evidence_id): r for r in list_evidence(conn, incident_id, org_id)}
+        tiers = [
+            e["data"]["strength_tier"]
+            for e in conn.execute(
+                text("SELECT data FROM timeline_events WHERE incident_id = :i AND type = :t"),
+                {"i": incident_id, "t": "aisre.evidence.collected.v1"},
+            ).mappings()
+        ]
+    new = rows[later.output.evidence_ids[0]]
+    assert new.strength_tier == 3 and "changed_key_on_failing_path" in new.attributes["facts"]
+    assert sorted(t for t in tiers if t) == [2, 3, 3, 3, 5, 6, 8]

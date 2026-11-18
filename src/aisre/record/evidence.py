@@ -177,6 +177,18 @@ def round_evidence(conn: Connection, incident_id: UUID, collection_key: str) -> 
     return [_agent_evidence(r) for r in rows]
 
 
+def change_history(conn: Connection, incident_id: UUID) -> list[dict[str, Any]]:
+    """Every change the incident's earlier rounds stored, as `attributes.change` holds it
+    (aisre.evidence.facts.ChangeInfo), for the tier rules of a later round."""
+    e = evidence
+    found = conn.execute(
+        select(e.c.attributes["change"])
+        .where(e.c.incident_id == incident_id, e.c.kind == "change")
+        .order_by(e.c.collected_at)
+    ).scalars()
+    return [c for changes in found if changes for c in changes]
+
+
 def store_round(
     conn: Connection,
     *,
