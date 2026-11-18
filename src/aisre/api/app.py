@@ -3,6 +3,8 @@
     POST /v1/incidents                         IncidentCreate + Idempotency-Key -> 201 / 200
     GET  /v1/incidents/{id}                    IncidentView, ETag = version
     GET  /v1/incidents/{id}/timeline?after_seq Page[CloudEvent]
+    POST /v1/incidents/{id}/notes, /cancellation, /severity-confirmation, /closure,
+         /reinvestigations                     aisre.api.commands (T1.6)
     GET  /livez, /readyz
 
 Intake (aisre.api.intake) is one transaction (Artifact 7.7): the idempotency key, then the
@@ -37,11 +39,23 @@ from starlette.exceptions import HTTPException
 
 from aisre.api import audit
 from aisre.api.auth import Authenticator, Caller, current_caller
+from aisre.api.commands import Commands, parse_if_match
 from aisre.api.intake import Intake
 from aisre.api.permissions import check_service, content_read, requires
 from aisre.api.problems import ApiError, field_errors, problem_response
 from aisre.config import Settings
-from aisre.contracts import CloudEvent, IncidentAccepted, IncidentView, Page
+from aisre.contracts import (
+    CancellationCreate,
+    ClosureCreate,
+    CloudEvent,
+    IncidentAccepted,
+    IncidentView,
+    NoteCreate,
+    Page,
+    ReinvestigationCreate,
+    SeverityConfirmationCreate,
+)
+from aisre.record import commands as cmd
 from aisre.record import load_incident, make_engine, timeline, uuid7
 from aisre.remediation.action import Perm
 
@@ -49,6 +63,8 @@ REQUEST_ID_HEADER = "X-Request-ID"
 TIMELINE_PAGE_MAX = 500
 
 CallerDep = Annotated[Caller, Depends(current_caller)]
+KeyDep = Annotated[str | None, Header(alias="Idempotency-Key")]
+IfMatchDep = Annotated[str | None, Header(alias="If-Match")]
 
 
 def create_app(settings: Settings | None = None, engine: Engine | None = None) -> FastAPI:
@@ -124,6 +140,122 @@ def create_app(settings: Settings | None = None, engine: Engine | None = None) -
         content_read(request, caller, incident_id, "timeline")
         last = items[-1].sequence if len(items) == limit else None
         return Page[CloudEvent](items=items, next_after_seq=last)
+
+    commands = Commands(db)
+
+    @app.post("/v1/incidents/{incident_id}/notes", status_code=201, **requires(Perm.NOTE))
+    def add_note(
+        request: Request,
+        incident_id: UUID,
+        body: NoteCreate,
+        caller: CallerDep,
+        idempotency_key: KeyDep = None,
+    ) -> JSONResponse:
+        return commands.run(
+            request,
+            caller,
+            incident_id,
+            Perm.NOTE,
+            idempotency_key,
+            body,
+            lambda c, inc: cmd.add_note(c, inc, caller.caller_id, body.note),
+            status=201,
+        )
+
+    @app.post("/v1/incidents/{incident_id}/cancellation", status_code=202, **requires(Perm.CANCEL))
+    def cancel(
+        request: Request,
+        incident_id: UUID,
+        body: CancellationCreate,
+        caller: CallerDep,
+        idempotency_key: KeyDep = None,
+    ) -> JSONResponse:
+        """A stop (ADR-69): the dispatcher refuses this incident's existing actions, and the
+        workflow is signalled through the outbox. Accepted is not stopped: 202."""
+        return commands.run(
+            request,
+            caller,
+            incident_id,
+            Perm.CANCEL,
+            idempotency_key,
+            body,
+            lambda c, inc: cmd.cancel(c, inc, caller.caller_id, body.reason),
+            status=202,
+        )
+
+    @app.post(
+        "/v1/incidents/{incident_id}/severity-confirmation",
+        **requires(Perm.CONFIRM_SEVERITY),
+    )
+    def confirm_severity(
+        request: Request,
+        incident_id: UUID,
+        body: SeverityConfirmationCreate,
+        caller: CallerDep,
+        idempotency_key: KeyDep = None,
+        if_match: IfMatchDep = None,
+    ) -> JSONResponse:
+        version = parse_if_match(if_match)
+        return commands.run(
+            request,
+            caller,
+            incident_id,
+            Perm.CONFIRM_SEVERITY,
+            idempotency_key,
+            body,
+            lambda c, inc: cmd.confirm_severity(c, inc, caller.caller_id, body.severity, version),
+            status=200,
+            if_match=version,
+        )
+
+    @app.post("/v1/incidents/{incident_id}/closure", **requires(Perm.CLOSE))
+    def close(
+        request: Request,
+        incident_id: UUID,
+        body: ClosureCreate,
+        caller: CallerDep,
+        idempotency_key: KeyDep = None,
+        if_match: IfMatchDep = None,
+    ) -> JSONResponse:
+        version = parse_if_match(if_match)
+        return commands.run(
+            request,
+            caller,
+            incident_id,
+            Perm.CLOSE,
+            idempotency_key,
+            body,
+            lambda c, inc: cmd.close(c, inc, caller.caller_id, body.note, version),
+            status=200,
+            if_match=version,
+        )
+
+    @app.post(
+        "/v1/incidents/{incident_id}/reinvestigations",
+        status_code=202,
+        **requires(Perm.REINVESTIGATE),
+    )
+    def reinvestigate(
+        request: Request,
+        incident_id: UUID,
+        body: ReinvestigationCreate,
+        caller: CallerDep,
+        idempotency_key: KeyDep = None,
+        if_match: IfMatchDep = None,
+    ) -> JSONResponse:
+        """ADR-46: only from handed_over. Starts `incident-<id>-r<N>` through the outbox."""
+        version = parse_if_match(if_match)
+        return commands.run(
+            request,
+            caller,
+            incident_id,
+            Perm.REINVESTIGATE,
+            idempotency_key,
+            body,
+            lambda c, inc: cmd.reinvestigate(c, inc, caller.caller_id, body.reason, version),
+            status=202,
+            if_match=version,
+        )
 
     @app.get("/livez")
     def livez() -> dict[str, str]:

@@ -241,11 +241,43 @@ def test_st20_a_route_refuses_what_the_matrix_refuses_and_logs_it(
     assert event["caller"] == "user:mallory" and event["path"] == path
 
 
-def test_st20_cancel_severity_note_and_audit_export_routes_arrive_with_t15_t16():
+@pytest.mark.parametrize(
+    "groups,path,body,perm",
+    [
+        (["aisre:viewer"], INCIDENT + "/cancellation", {"reason": "stop it"}, "incident:cancel"),
+        (
+            ["aisre:responder"],
+            INCIDENT + "/severity-confirmation",
+            {"severity": "sev1"},
+            "incident:confirm_severity",
+        ),
+        (["aisre:platform_admin"], INCIDENT + "/notes", {"note": "hello"}, "incident:note"),
+    ],
+)
+def test_st20_cancel_severity_and_note_routes_refuse_and_log(
+    token_api, token_issuer, caplog, groups, path, body, perm
+):
+    """T1.6's routes: Viewer cancels, Responder confirms severity, Platform admin adds a note."""
+    token = token_issuer[0].token("mallory", groups)
+    with caplog.at_level("INFO", logger="aisre.audit"):
+        r = token_api.post(
+            path,
+            json=body,
+            headers={
+                "Authorization": f"Bearer {token}",
+                "Idempotency-Key": "st20-key-002",
+                "If-Match": '"1"',
+            },
+        )
+    assert r.status_code == 403 and r.json()["code"] == "forbidden"
+    (event,) = [json.loads(m) for m in caplog.messages]
+    assert event["event"] == "aisre.authz.denied" and event["permission"] == perm
+
+
+def test_st20_audit_export_route_arrives_with_t1_20():
     pytest.skip(
-        "Viewer cancels, Responder confirms severity, Platform admin adds a note and Viewer reads "
-        "the audit export need routes that T1.5 and T1.6 add; each will declare its permission "
-        "with aisre.api.permissions.requires, which tests/unit/test_api.py checks for every route"
+        "Viewer reads the full audit export needs the route T1.20 adds with the write-once "
+        "audit copy; it will declare audit:export with aisre.api.permissions.requires"
     )
 
 
