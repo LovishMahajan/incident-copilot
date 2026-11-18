@@ -215,7 +215,8 @@ def test_expiry_charges_a_sent_reservation_and_releases_an_unsent_one(app_engine
         return sent, unsent, done, late
 
     sent, unsent, done, late = asyncio.run(go())
-    assert set(done) == {sent.reservation_id, unsent.reservation_id} and not late
+    # Other tests' reservations in the same database may fall due in the same sweep.
+    assert {sent.reservation_id, unsent.reservation_id} <= set(done) and not late
     u = row(app_engine, inc)
     assert (u.calls, u.spent_cost_micros, u.reserved_cost_micros) == (1, 5_000, 0)
     assert sent.reservation_id in asyncio.run(led.pending_reconciliation())
