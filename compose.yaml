@@ -1,0 +1,180 @@
+# Artifact 13.3: the local stack (ADR-14, ADR-51). M0 services only.
+#
+#   cp .env.example .env          # fake values only
+#   docker compose up -d --build  # waits on health checks: PostgreSQL, Temporal, migrations, app
+#   docker compose down -v        # stop and delete the volume
+#
+# Start order comes from health checks and one-shot jobs: PostgreSQL; Temporal's schema
+# (temporal-schema), then the server and its `default` namespace (temporal-namespace); the
+# Incident Record's migrations as aisre_owner (migrate); then the API and the worker, each
+# under the aisre_app role. Temporal keeps its own two databases on the same PostgreSQL
+# instance (ADR-51). Every published port is bound to 127.0.0.1.
+#
+# Images are pinned by tag, checked on Docker Hub on 2026-11-18. Artifact 13.3 asks for
+# digests; tags are what this pass verified, and digests replace them before M0 closes.
+name: aisre
+
+x-app: &app
+  build: .
+  image: aisre-app:dev
+  depends_on:
+    postgres:
+      condition: service_healthy
+    temporal:
+      condition: service_healthy
+    migrate:
+      condition: service_completed_successfully
+
+services:
+  postgres:
+    image: postgres:17.12
+    environment:
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?copy .env.example to .env}
+      AISRE_OWNER_PASSWORD: ${AISRE_OWNER_PASSWORD:?copy .env.example to .env}
+      AISRE_APP_PASSWORD: ${AISRE_APP_PASSWORD:?copy .env.example to .env}
+      AISRE_DISPATCHER_PASSWORD: ${AISRE_DISPATCHER_PASSWORD:?copy .env.example to .env}
+      TEMPORAL_DB_PASSWORD: ${TEMPORAL_DB_PASSWORD:?copy .env.example to .env}
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+      - ./ops/compose/postgres-init.sh:/docker-entrypoint-initdb.d/10-aisre.sh:ro
+    ports:
+      - "127.0.0.1:${AISRE_POSTGRES_PORT:-55432}:5432"
+    healthcheck:
+      # Over TCP: during first-start initialisation the server listens on its socket only,
+      # so this stays unhealthy until the init script has created the roles and databases.
+      test: ["CMD", "pg_isready", "-h", "127.0.0.1", "-U", "postgres", "-d", "aisre"]
+      interval: 2s
+      timeout: 5s
+      retries: 30
+
+  temporal-schema:
+    image: temporalio/admin-tools:1.32.2
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      SQL_PLUGIN: postgres12
+      SQL_HOST: postgres
+      SQL_PORT: "5432"
+      SQL_USER: temporal
+      SQL_PASSWORD: ${TEMPORAL_DB_PASSWORD}
+    entrypoint: ["sh", "-euc"]
+    # setup-schema -v 0.0 only adds the versioning tables, so a rerun is harmless;
+    # update-schema then brings each database to the version this tool ships.
+    command:
+      - |
+        for db in temporal:temporal temporal_visibility:visibility; do
+          name=$${db%%:*}; dir=$${db##*:}
+          temporal-sql-tool --db "$$name" setup-schema -v 0.0
+          temporal-sql-tool --db "$$name" update-schema -d "/etc/temporal/schema/postgresql/v12/$$dir/versioned"
+        done
+    restart: "no"
+
+  temporal:
+    image: temporalio/server:1.32.2
+    depends_on:
+      temporal-schema:
+        condition: service_completed_successfully
+    environment:
+      DB: postgres12
+      DB_PORT: "5432"
+      POSTGRES_SEEDS: postgres
+      POSTGRES_USER: temporal
+      POSTGRES_PWD: ${TEMPORAL_DB_PASSWORD}
+      DBNAME: temporal
+      VISIBILITY_DBNAME: temporal_visibility
+      DYNAMIC_CONFIG_FILE_PATH: /etc/temporal/config/dynamicconfig/aisre.yaml
+    volumes:
+      - ./ops/compose/temporal-dynamicconfig.yaml:/etc/temporal/config/dynamicconfig/aisre.yaml:ro
+    ports:
+      - "127.0.0.1:${AISRE_TEMPORAL_PORT:-7233}:7233"
+    healthcheck:
+      # The frontend's HTTP API answers for the `default` namespace: the server is up and
+      # temporal-namespace has run.
+      test: ["CMD-SHELL", "wget -q -O /dev/null http://$$(hostname):7243/api/v1/namespaces/default"]
+      interval: 3s
+      timeout: 5s
+      retries: 40
+      start_period: 10s
+
+  temporal-namespace:
+    image: temporalio/admin-tools:1.32.2
+    depends_on:
+      temporal:
+        condition: service_started
+    environment:
+      TEMPORAL_ADDRESS: temporal:7233
+    entrypoint: ["sh", "-euc"]
+    command:
+      - |
+        for i in $$(seq 60); do
+          temporal operator namespace describe -n default >/dev/null 2>&1 && exit 0
+          temporal operator namespace create -n default >/dev/null 2>&1 && exit 0
+          sleep 2
+        done
+        echo "namespace default not created" >&2; exit 1
+    restart: "no"
+
+  temporal-ui:
+    image: temporalio/ui:2.58.1
+    depends_on:
+      temporal:
+        condition: service_healthy
+    environment:
+      TEMPORAL_ADDRESS: temporal:7233
+    ports:
+      - "127.0.0.1:${AISRE_TEMPORAL_UI_PORT:-8233}:8080"
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q -O /dev/null http://$$(hostname):8080/"]
+      interval: 3s
+      timeout: 5s
+      retries: 20
+
+  migrate:
+    <<: *app
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      AISRE_MIGRATION_DATABASE_URL: ${AISRE_MIGRATION_DATABASE_URL}
+    command: ["alembic", "upgrade", "head"]
+    restart: "no"
+
+  api:
+    <<: *app
+    environment:
+      AISRE_ENV: ${AISRE_ENV:-development}
+      AISRE_DATABASE_URL: ${AISRE_DATABASE_URL}
+      AISRE_LOG_LEVEL: ${AISRE_LOG_LEVEL:-INFO}
+    command:
+      ["uvicorn", "--factory", "aisre.api.app:create_app", "--host", "0.0.0.0", "--port", "8000"]
+    ports:
+      - "127.0.0.1:${AISRE_API_PORT:-8000}:8000"
+    healthcheck:
+      test:
+        - CMD
+        - python
+        - -c
+        - "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/readyz', timeout=3)"
+      interval: 3s
+      timeout: 5s
+      retries: 20
+
+  worker:
+    <<: *app
+    environment:
+      AISRE_ENV: ${AISRE_ENV:-development}
+      AISRE_DATABASE_URL: ${AISRE_DATABASE_URL}
+      AISRE_TEMPORAL_ADDRESS: ${AISRE_TEMPORAL_ADDRESS}
+      AISRE_TEMPORAL_NAMESPACE: ${AISRE_TEMPORAL_NAMESPACE}
+      AISRE_LOG_LEVEL: ${AISRE_LOG_LEVEL:-INFO}
+    command: ["python", "-m", "aisre.workflow.worker"]
+    healthcheck:
+      # The worker touches this file after every relay pass (aisre.workflow.worker).
+      test: ["CMD", "python", "-m", "aisre.workflow.worker", "--check-alive"]
+      interval: 5s
+      timeout: 5s
+      retries: 12
+
+volumes:
+  pgdata:
