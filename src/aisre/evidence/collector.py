@@ -12,7 +12,9 @@ not run again (9.4). Each result is:
 3. capped: whole records dropped from the end until it fits the tool's output limit, and marked
    partial, as is a source that says its answer is incomplete (NFR-29);
 4. fingerprinted: SHA-256 of the snapshot bytes (Q9.22);
-5. summarised: a short extract, the only part the model sees (9.4).
+5. summarised: a short extract, the only part the model sees (9.4);
+6. given its strength tier, from facts computed against the change history (ADR-53,
+   aisre.evidence.facts), with those facts kept as its reasons.
 
 A source that fails, times out, has no adapter, or doesn't hold the data becomes a gap record
 with its reason, never an empty or healthy one (FR-08, ADR-54). Nothing here touches the
@@ -25,7 +27,7 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import json
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Any
@@ -35,6 +37,7 @@ from pydantic import BaseModel
 
 from aisre.agent.agent_contracts import Evidence, EvidenceKind
 from aisre.agent.tool_registry import REGISTRY, ToolGate, ToolRefused
+from aisre.evidence.facts import ChangeInfo, Observed, change_info, tier_and_reasons
 from aisre.evidence.sources import DEFAULT_TIMEOUT_S, Record, SourceSet, SourceUnavailable
 from aisre.record.incidents import uuid7
 from aisre.reliability.telemetry import redact_text
@@ -162,8 +165,10 @@ async def collect(
     now: datetime,
     timeout_s: float = DEFAULT_TIMEOUT_S,
     on_progress: Callable[[], None] | None = None,
+    known_changes: Sequence[ChangeInfo] = (),
 ) -> Outcome:
-    """Runs `calls` and returns what to store. Never raises for a source: a failure is a gap."""
+    """Runs `calls` and returns what to store. Never raises for a source: a failure is a gap.
+    `known_changes` is the change history earlier rounds stored, for the tier rules."""
     out = Outcome()
     pending: list[tuple[str, BaseModel, str, dict[str, Any]]] = []
     for call in calls:
@@ -212,11 +217,34 @@ async def collect(
         )
 
     results = await asyncio.gather(*(run(t, p, d) for t, p, _, d in pending))
+    assign_tiers(results, known_changes)
     for (name, _, call_hash, dumped), item in zip(pending, results, strict=True):
         out.collected.append(item)
         new = 0 if item.evidence.kind == EvidenceKind.gap else 1
         out.calls.append(CallRow(name, call_hash, dumped, (str(item.evidence.evidence_id),), new))
     return out
+
+
+def assign_tiers(items: Sequence[Collected], known_changes: Sequence[ChangeInfo] = ()) -> None:
+    """Sets each record's strength tier and `attributes.facts` (T1.11), and keeps each change
+    record's ChangeInfo as `attributes.change` for later rounds."""
+    observed = [
+        Observed(c.evidence.kind, c.attributes.get("params", {}), c.records)
+        for c in items
+        if c.evidence.kind != EvidenceKind.gap
+    ]
+    changes = list(known_changes)
+    for c in items:
+        if c.evidence.kind == EvidenceKind.change:
+            infos = [change_info(r) for r in c.records]
+            c.attributes["change"] = [i.to_json() for i in infos]
+            changes += infos
+    for c, o in zip(
+        [c for c in items if c.evidence.kind != EvidenceKind.gap], observed, strict=True
+    ):
+        tier, reasons = tier_and_reasons(o, changes, observed)
+        c.evidence = c.evidence.model_copy(update={"strength_tier": tier})
+        c.attributes["facts"] = reasons
 
 
 def _window(params: dict[str, Any]) -> tuple[datetime | None, datetime | None]:
