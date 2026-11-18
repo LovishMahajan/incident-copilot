@@ -410,7 +410,12 @@ class Fakes:
             verify_recovery,
             hand_over,
         ]
-        return inv, [dispatch_change, reconcile_execution]
+        sandbox = next(a for a in inv if a is run_sandbox_test)
+        return (
+            [a for a in inv if a is not sandbox],
+            [dispatch_change, reconcile_execution],
+            [sandbox],
+        )
 
 
 def start_env():
@@ -420,7 +425,7 @@ def start_env():
 
 
 def workers(env, fakes, unsandboxed=False):
-    inv, disp = fakes.build()
+    inv, disp, tests = fakes.build()
     fast_heartbeats = {
         "max_heartbeat_throttle_interval": timedelta(seconds=1),
         "default_heartbeat_throttle_interval": timedelta(seconds=1),
@@ -436,14 +441,15 @@ def workers(env, fakes, unsandboxed=False):
             **runner,
         ),
         Worker(env.client, task_queue=act.DISPATCHER_QUEUE, activities=disp),
+        Worker(env.client, task_queue=act.TEST_RUNNER_QUEUE, activities=tests, **fast_heartbeats),
     )
 
 
 async def run_case(fakes: Fakes, driver, run=1, unsandboxed=False):
     async with await start_env() as env:
         fakes.env = env
-        inv_worker, disp_worker = workers(env, fakes, unsandboxed)
-        async with inv_worker, disp_worker:
+        inv_worker, disp_worker, test_worker = workers(env, fakes, unsandboxed)
+        async with inv_worker, disp_worker, test_worker:
             iid = str(uuid.uuid4())
             fakes.incident_id = iid
             handle = await env.client.start_workflow(
@@ -1845,8 +1851,8 @@ async def test_six_concurrent_incidents_give_five_running_in_severity_order():
 
     async with await start_env() as env:
         f.env = env
-        inv_worker, disp_worker = workers(env, f)
-        async with inv_worker, disp_worker:
+        inv_worker, disp_worker, test_worker = workers(env, f)
+        async with inv_worker, disp_worker, test_worker:
             handles = {
                 i: await env.client.start_workflow(
                     IncidentWorkflow.run,
@@ -2017,8 +2023,8 @@ async def test_completed_history_replays_deterministically():
     f = Fakes(critic=["revise", "accept"], verify="failed", conditional=False)
     async with await start_env() as env:
         f.env = env
-        inv_worker, disp_worker = workers(env, f)
-        async with inv_worker, disp_worker:
+        inv_worker, disp_worker, test_worker = workers(env, f)
+        async with inv_worker, disp_worker, test_worker:
             iid = str(uuid.uuid4())
             h = await env.client.start_workflow(
                 IncidentWorkflow.run,

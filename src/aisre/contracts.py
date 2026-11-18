@@ -470,11 +470,17 @@ class PatchView(Strict):
     review_ref: str | None
 
 
+Isolation = Literal["gvisor", "development-runc"]  # ADR-71: what a test run proves
+
+
 class TestRunView(Strict):
     test_run_id: UUID
     patch_sha256: Sha256
     reproduced: bool
     outcome: TestOutcome
+    isolation: Isolation = Field(
+        description="gvisor, or development-runc: proves the flow, never isolation (ADR-71)"
+    )
     output_artifact_id: UUID | None
     started_at: datetime
     finished_at: datetime
@@ -802,6 +808,7 @@ class ActionTestedData(Strict):
     patch_sha256: Sha256
     reproduced: bool
     outcome: TestOutcome
+    isolation: Isolation
 
 
 class ActionWithdrawnData(Strict):

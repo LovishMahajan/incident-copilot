@@ -363,6 +363,7 @@ class IncidentWorkflow:
                     timeout_s=900,
                     heartbeat_s=20,
                     retry=NO_RETRY,
+                    task_queue=act.TEST_RUNNER_QUEUE,  # only the Test Runner has Docker (ADR-71)
                 )
             except ActivityError:
                 return await self._hand_over(
@@ -760,6 +761,7 @@ class IncidentWorkflow:
         heartbeat_s: Optional[int] = None,
         schedule_s: Optional[int] = None,
         unlimited: bool = False,
+        task_queue: str = act.INVESTIGATION_QUEUE,
     ):
         """Runs an activity that cancellation stops (8.7). The handle is kept so the signal
         handler and the 24-hour timer can cancel it; WAIT_CANCELLATION_COMPLETED lets it
@@ -768,7 +770,7 @@ class IncidentWorkflow:
         handle = workflow.start_activity(
             fn,
             arg,
-            task_queue=act.INVESTIGATION_QUEUE,
+            task_queue=task_queue,
             start_to_close_timeout=timedelta(seconds=timeout_s),
             schedule_to_close_timeout=None
             if unlimited

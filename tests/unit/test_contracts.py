@@ -126,7 +126,7 @@ VIEWS = [
     (c.Diagnosis, "diagnoses", {"hypotheses"}),
     (c.ActionView, "actions", {"target_service", "target_environment", "patch", "latest_test"}),
     (c.PatchView, "patches", set()),
-    (c.TestRunView, "test_runs", set()),
+    (c.TestRunView, "test_runs", {"isolation"}),  # added by migration 0007 (ADR-71)
     (c.ApprovalDecisionView, "approval_decisions", {"target_service", "target_environment"}),
     (c.ArtifactView, "artifacts", {"content_url"}),
 ]
@@ -571,6 +571,7 @@ def test_run(outcome):
         patch_sha256=SHA,
         reproduced=True,
         outcome=outcome,
+        isolation="gvisor",
         output_artifact_id=None,
         started_at=NOW,
         finished_at=NOW,

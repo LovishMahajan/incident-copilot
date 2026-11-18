@@ -188,6 +188,7 @@ class TestOut:
     reproduced: bool
     outcome: Literal["passed", "failed", "not_reproduced", "inconclusive", "crashed", "timeout"]
     action_digest: Optional[str] = None  # write-once, set when testing ends (ADR-64)
+    isolation: Optional[str] = None  # gvisor, or development-runc: the flow, not isolation (ADR-71)
 
 
 @dataclass
@@ -515,8 +516,9 @@ async def draft_patch(inp: SkillIn) -> SkillResult[PatchOut]:
 
 @activity.defn(name="run_sandbox_test")
 async def run_sandbox_test(inp: TestIn) -> TestOut:
-    """Test Runner: fresh isolated environment, reproduce first, apply, check, destroy.
-    Heartbeats; on cancellation it kills and destroys the sandbox before the activity ends."""
+    """Test Runner (TEST_RUNNER_QUEUE, its own process; ADR-71): fresh isolated environment,
+    reproduce first, apply, check, destroy. Heartbeats; on cancellation it kills and destroys the
+    sandbox before the activity ends. Implementation: aisre.remediation.test_runner."""
     raise NotImplementedError
 
 
@@ -594,7 +596,6 @@ ALL_INVESTIGATION_ACTIVITIES = [
     diagnose,
     review_diagnosis,
     draft_patch,
-    run_sandbox_test,
     request_approval,
     escalate_approval,
     close_approval_request,
@@ -603,3 +604,4 @@ ALL_INVESTIGATION_ACTIVITIES = [
     reconcile_workflows,
 ]
 ALL_DISPATCHER_ACTIVITIES = [dispatch_change, reconcile_execution]
+ALL_TEST_RUNNER_ACTIVITIES = [run_sandbox_test]  # with the reaper's reap_sandboxes (ADR-71)

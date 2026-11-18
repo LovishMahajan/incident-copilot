@@ -8,7 +8,7 @@ An AI incident copilot for SRE teams. It investigates an alert through a Tempora
 | --- | --- |
 | `src/aisre/` | The `aisre` package: contracts, workflow, agent, gateway, retrieval, remediation, verification, reliability, evaluation |
 | `db/` | `schema.sql` and `schema-tests.sql` for PostgreSQL; `migrations/` (Alembic) |
-| `ops/` | `alerts.yml`; `compose/` (Compose configuration); `fakes/` (local-only stand-ins: token issuer, model provider, monitoring source) |
+| `ops/` | `alerts.yml`; `compose/` (Compose configuration); `fakes/` (local-only stand-ins: token issuer, model provider, monitoring source); `reference-app/` (the runnable orders-api, M2); `sandbox/` (the sandbox image and its trusted harness, M2) |
 | `tests/unit/` | Unit tests |
 | `tests/integration/` | Tests against PostgreSQL and Temporal; skipped when those aren't reachable |
 | `tests/security/` | Security tests ST-01 to ST-40. See its [README](tests/security/README.md) |
@@ -153,6 +153,24 @@ uv run python -m aisre.evaluation.runner tests/fixtures/eval/dev-seed-1 tests/fi
 ```
 
 A run stops before it could pass `--max-spend-usd` (default $10, ADR-56): a case starts only while the spend so far plus one incident's $2 cap fits, and cases left unrun count as wrong. Against the fake provider nothing is billed; the spend shown is list price on the fake's token counts. `.github/workflows/eval-nightly.yml` runs it every night on the development split. On 2026-11-18, with the fake provider: FR-13 leading cause 2/2, FR-14 1/1, FR-15 5/5 contradicted hypotheses not left supported, FR-16 honesty 1/1, FR-39 injection followed 0/1 and flagged 1/1, accuracy 4/4, evidence coverage 0/2 (the scripted answers never cite the alert, which the keys require). These show the evaluation path works end to end; the answers come from scripts written with the cases, so they say nothing about a model's accuracy.
+
+## Test Runner and sandbox (M2)
+
+The Test Runner runs `run_sandbox_test` and the 5-minute sandbox reaper on its own task queue, `aisre-test-runner` (ADR-71). It is the only process with the Docker socket, which is root on its host, so it is not in Compose: locally it runs on the host, in production on the separate test host. Each test is a fresh container from `ops/sandbox/` (the trusted harness, standard library only, user 65534, no network), with the exact base commit piped in by `git archive`, never mounted. The harness reproduces the failure first, and tests the patch only if it appears; a patch touching tests, test configuration, CI, policies, the harness or the sandbox is refused before anything starts. At most three run at once across Test Runner processes (PostgreSQL advisory locks), and a queued run's wait counts inside the activity's 900 s.
+
+**Under `runc` this proves the flow, not isolation.** Production requires `runsc` (gVisor); `AISRE_SANDBOX_RUNTIME=runc` is refused unless `AISRE_ENV` is `development` or `test`, and every result carries `isolation: development-runc` in `test_runs` and in `aisre.action.tested.v1`. M2's security gate (ST-16, ST-25 to ST-28) stays not met until the same tests pass on a gVisor host.
+
+```
+python ops/reference-app/build_repo.py ~/aisre-mirrors/orders-api     # cfg-41 good, cfg-42 bad
+image=$(ops/sandbox/build.sh)                                         # sha256:...
+set -a; . ./.env.example; set +a
+AISRE_DATABASE_URL=postgresql+psycopg://aisre_app:fake-app-password@127.0.0.1:55432/aisre \
+AISRE_TEMPORAL_ADDRESS=127.0.0.1:7233 AISRE_OBJECT_STORE_URL=http://127.0.0.1:59000 \
+AISRE_SANDBOX_IMAGE=$image AISRE_SANDBOX_REPOS="{\"orders-api\": \"$HOME/aisre-mirrors/orders-api\"}" \
+AISRE_METRICS_PORT= OTEL_EXPORTER_OTLP_ENDPOINT= uv run python -m aisre.remediation.test_runner
+```
+
+`tests/integration/test_sandbox_docker.py` and `test_sandbox_test_activity.py` run the real launcher against Docker (they skip without it): the reference failure reproduces at `cfg-42` and the revert to `825` passes, a base that doesn't fail is `not_reproduced`, a long test hits the wall clock, a cancel kills the container, the reaper removes a leftover, and nothing labelled `aisre.sandbox=1` is left.
 
 ## Demo viewer
 

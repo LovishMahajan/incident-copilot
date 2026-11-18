@@ -185,7 +185,7 @@ def actions(conn: Connection, incident_id: UUID, action_id: UUID | None = None) 
         test = (
             conn.execute(
                 text(
-                    "SELECT test_run_id, patch_sha256, reproduced, outcome, output_artifact_id, "
+                    "SELECT test_run_id, patch_sha256, reproduced, outcome, isolation, output_artifact_id, "
                     "started_at, finished_at FROM test_runs WHERE action_id = :a "
                     "ORDER BY started_at DESC, test_run_id DESC LIMIT 1"
                 ),
