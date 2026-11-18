@@ -12,7 +12,7 @@ from __future__ import annotations
 import asyncio
 import json
 import time
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from uuid import UUID, uuid4
 
 import pytest
@@ -80,8 +80,13 @@ def new_incident(engine, catalogue) -> str:
             "fingerprint": f"{service}:{uuid4().hex}",
         }
     )
+    # A zero grouping window keeps each call its own incident; otherwise FR-43 would attach
+    # every alert for this service within 10 minutes to the first open incident.
     with engine.begin() as conn:
-        return str(create_incident(conn, org_id=org, caller_id="dev:test", body=body).incident_id)
+        intake = create_incident(
+            conn, org_id=org, caller_id="dev:test", body=body, grouping_window=timedelta(0)
+        )
+        return str(intake.incident_id)
 
 
 def request(incident_id: str, **kw) -> ModelRequest:

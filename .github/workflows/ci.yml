@@ -44,14 +44,16 @@ jobs:
         run: uv run ruff format --check .
       - name: Lint
         run: uv run ruff check .
-      - name: Types, strict and blocking on the M0 modules
-        # The M0 modules named in pyproject.toml's strict override. Each joins the list when
+      - name: Types, strict and blocking on the M0 and M1 modules
+        # The modules named in pyproject.toml's strict override. Each joins the list when
         # its task creates it; imports are followed for types but not reported.
         run: |
           paths=()
           for p in src/aisre/config.py src/aisre/record src/aisre/api \
                    src/aisre/workflow/relay.py src/aisre/workflow/worker.py \
-                   src/aisre/workflow/record_activities.py src/aisre/workflow/scripted.py; do
+                   src/aisre/workflow/record_activities.py src/aisre/workflow/scripted.py \
+                   src/aisre/gateway/ledger.py src/aisre/gateway/transport.py \
+                   src/aisre/gateway/jobs.py src/aisre/workflow/budget_jobs.py; do
             [ -e "$p" ] && paths+=("$p")
           done
           uv run mypy --follow-imports=silent "${paths[@]}"
