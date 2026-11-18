@@ -58,7 +58,7 @@ jobs:
             src/aisre/workflow/record_activities.py src/aisre/workflow/scripted.py \
             src/aisre/gateway/ledger.py src/aisre/gateway/transport.py \
             src/aisre/gateway/jobs.py src/aisre/workflow/budget_jobs.py \
-            src/aisre/evidence src/aisre/retrieval/corpus.py
+            src/aisre/evidence src/aisre/retrieval/corpus.py src/aisre/agent/skills
       - name: Types, report-only on src
         run: |
           set +e

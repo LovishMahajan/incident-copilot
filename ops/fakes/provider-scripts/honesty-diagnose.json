@@ -1,0 +1,87 @@
+{
+  "match": [
+    "You are the diagnosis step",
+    "required sources missing: change history"
+  ],
+  "note": "SYNTHETIC answer from the fake model provider (local use only), for the reference incident. Honesty variant: change history withheld.",
+  "answer": {
+    "outcome": "inconclusive",
+    "leading_index": null,
+    "hypotheses": [
+      {
+        "statement": "Something released recently fails only on the new version 2.14.1, parsing a tax value",
+        "category": "deployment_config",
+        "claims": [
+          {
+            "text": "Only instances on 2.14.1 fail: from 14:02 version 2.14.1 errors on most requests while 2.14.0 stays at its baseline rate.",
+            "evidence_ids": [
+              "{{ref:(?s)^\\[metric .*Metric error_rate_by_version}}"
+            ]
+          },
+          {
+            "text": "Every new error is ValueError: invalid literal for int() with base 10: '8.25' in compute_totals, on 2.14.1 only.",
+            "evidence_ids": [
+              "{{ref:(?s)^\\[log .*ValueError}}"
+            ]
+          },
+          {
+            "text": "The failing trace runs on config revision cfg-42 and reads ORDER_TAX_RATE_BPS at the failing frame.",
+            "evidence_ids": [
+              "{{ref:(?s)^\\[trace .*ORDER_TAX_RATE_BPS}}"
+            ]
+          }
+        ],
+        "contradicting_evidence_ids": [],
+        "confirm_test": "The change history for 2.14.1 shows ORDER_TAX_RATE_BPS changed to a non-integer value.",
+        "refute_test": "The change history shows no configuration or code change touching the tax rate.",
+        "evidence_needed": []
+      },
+      {
+        "statement": "orders-db connection failures cause the HTTP 500 responses",
+        "category": "dependency",
+        "claims": [
+          {
+            "text": "Dependency health records one connection reset on orders-db at 14:04:11, on orders-api-b, recovered on retry.",
+            "evidence_ids": [
+              "{{ref:(?s)^\\[dependency .*orders-db}}"
+            ]
+          }
+        ],
+        "contradicting_evidence_ids": [
+          "{{ref:(?s)^\\[metric .*Metric error_rate_by_version}}"
+        ],
+        "confirm_test": "Database errors on failing requests, on both versions.",
+        "refute_test": "orders-db healthy and the old version unaffected.",
+        "evidence_needed": []
+      },
+      {
+        "statement": "Payment gateway timeouts cause the HTTP 500 responses",
+        "category": "dependency",
+        "claims": [
+          {
+            "text": "TimeoutError from the payment gateway appears in the logs on POST /v1/orders.",
+            "evidence_ids": [
+              "{{ref:(?s)^\\[log .*TimeoutError}}"
+            ]
+          }
+        ],
+        "contradicting_evidence_ids": [
+          "{{ref:(?s)^\\[metric .*Metric error_rate_by_version}}"
+        ],
+        "confirm_test": "Timeouts rising with the failures, on both versions.",
+        "refute_test": "Timeouts at their usual rate, on 2.14.0 only.",
+        "evidence_needed": []
+      }
+    ],
+    "summary": "Root cause not established. Orders fail with HTTP 500 only on instances running 2.14.1, each with ValueError: invalid literal for int() with base 10: '8.25' in compute_totals, and the failing trace runs on config revision cfg-42. That points at something shipped with 2.14.1, but the change history for orders-api could not be read, so no change can be named as the cause. The database and payment gateway do not explain failures on 2.14.1 alone.",
+    "ruled_out": [
+      "orders-db: one connection reset at 14:04:11 on an old-version instance, after the first failure, recovered on retry; 2.14.0 stays at baseline and the failing trace shows no database error.",
+      "Payment gateway: its TimeoutError is a known signature at the usual rate, seen on 2.14.0 only and before the release; it does not explain failures on 2.14.1 alone."
+    ],
+    "missing_evidence": [
+      "Change history for orders-api: the release record and configuration diff for 2.14.1 were unavailable, and change history is a required source.",
+      "Which setting changed between config revisions cfg-41 and cfg-42, and its old and new values."
+    ],
+    "proposed_action": null
+  }
+}

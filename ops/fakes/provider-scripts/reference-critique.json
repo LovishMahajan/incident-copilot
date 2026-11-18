@@ -1,0 +1,13 @@
+{
+  "match": [
+    "You review a diagnosis draft",
+    "required sources missing: none"
+  ],
+  "note": "SYNTHETIC answer from the fake model provider (local use only), for the reference incident.",
+  "answer": {
+    "verdict": "accept",
+    "issues": [],
+    "evidence_requests": [],
+    "confidence_cap": "high"
+  }
+}

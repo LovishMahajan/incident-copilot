@@ -172,6 +172,32 @@ def test_provider_refuses_what_the_real_api_refuses(provider_url, headers, body,
     assert got == status and err["error"]["type"] == kind
 
 
+def test_provider_answers_cite_the_data_blocks_they_were_sent(tmp_path):
+    (tmp_path / "a.json").write_text(
+        json.dumps(
+            {
+                "match": ["STEP", "both"],
+                "answer": {"cites": ["{{ref:(?s)^\\[log .*ValueError}}"], "n": 1},
+            }
+        )
+    )
+    p = model_provider.Provider(model_provider.load_scripts(tmp_path))
+    log = "11111111-1111-4111-8111-111111111111"
+    text = (
+        'STEP both\n<data ref="evidence:22222222-2222-4222-8222-222222222222" kind="evidence">\n'
+        '[metric from m] ValueError\n</data>\n<data ref="evidence:' + log + '" kind="evidence">\n'
+        "[log from l] 3 lines\nValueError: x\n</data>"
+    )
+    body = MESSAGE | {"messages": [{"role": "user", "content": text}]}
+    status, msg, _ = p.answer(API_HEADERS, json.dumps(body).encode())
+    assert status == 200 and json.loads(msg["content"][0]["text"]) == {"cites": [log], "n": 1}
+    body = MESSAGE | {"messages": [{"role": "user", "content": "STEP both, no data"}]}
+    status, err, _ = p.answer(API_HEADERS, json.dumps(body).encode())
+    assert status == 500 and "no data block matches" in err["error"]["message"]
+    body = MESSAGE | {"messages": [{"role": "user", "content": "STEP only"}]}
+    assert p.answer(API_HEADERS, json.dumps(body).encode())[0] == 500  # no script, no default
+
+
 def test_provider_keeps_requests_but_never_the_key(provider_url):
     call(provider_url + "/v1/messages", MESSAGE | {"system": "CAPTURED"}, API_HEADERS)
     _, seen, _ = call(provider_url + "/_fake/requests")
