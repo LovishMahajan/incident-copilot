@@ -21,9 +21,9 @@ defaults:
 env:
   UV_VERSION: "0.12.6"
   PYTHON_VERSION: "3.12"
-  # tests/security skips on 2026-11-18. A new skip there fails the build (Artifact 13.4, M0
-  # security gate); lower this when a skip is removed.
-  SECURITY_SKIPS_ALLOWED: "21"
+  # tests/security skips in a default run on 2026-11-18. A new skip there fails the build
+  # (Artifact 13.4, M0 security gate); lower this when a skip is removed.
+  SECURITY_SKIPS_ALLOWED: "16"
 
 jobs:
   checks:
@@ -45,18 +45,20 @@ jobs:
       - name: Lint
         run: uv run ruff check .
       - name: Types, strict and blocking on the M0 and M1 modules
-        # The modules named in pyproject.toml's strict override. Each joins the list when
-        # its task creates it; imports are followed for types but not reported.
+        # Exactly the modules named in pyproject.toml's strict override (a directory stands for
+        # `pkg` and `pkg.*`); tests/unit/test_strict_paths.py fails if the two lists drift.
+        # Imports are followed for types but not reported.
         run: |
-          paths=()
-          for p in src/aisre/config.py src/aisre/record src/aisre/api \
-                   src/aisre/workflow/relay.py src/aisre/workflow/worker.py \
-                   src/aisre/workflow/record_activities.py src/aisre/workflow/scripted.py \
-                   src/aisre/gateway/ledger.py src/aisre/gateway/transport.py \
-                   src/aisre/gateway/jobs.py src/aisre/workflow/budget_jobs.py; do
-            [ -e "$p" ] && paths+=("$p")
-          done
-          uv run mypy --follow-imports=silent "${paths[@]}"
+          uv run mypy --follow-imports=silent \
+            src/aisre/config.py src/aisre/cli.py src/aisre/notify \
+            src/aisre/reliability/otlp.py src/aisre/reliability/audit_jobs.py \
+            src/aisre/reliability/temporal_telemetry.py \
+            src/aisre/record src/aisre/api \
+            src/aisre/workflow/relay.py src/aisre/workflow/worker.py \
+            src/aisre/workflow/record_activities.py src/aisre/workflow/scripted.py \
+            src/aisre/gateway/ledger.py src/aisre/gateway/transport.py \
+            src/aisre/gateway/jobs.py src/aisre/workflow/budget_jobs.py \
+            src/aisre/evidence src/aisre/retrieval/corpus.py
       - name: Types, report-only on src
         run: |
           set +e
@@ -117,8 +119,8 @@ jobs:
           uv run alembic upgrade head
           n=$($PSQL -U postgres -d aisre -tA -c "SELECT count(*) FROM information_schema.tables
                 WHERE table_schema = 'public' AND table_type = 'BASE TABLE'")
-          echo "public tables: $n (expected 37)"
-          [ "$n" -eq 37 ]
+          echo "public tables: $n (expected 39)"
+          [ "$n" -eq 39 ]
       - name: Run schema-tests.sql
         run: |
           $PSQL -U postgres -d aisre < db/schema-tests.sql | tee schema-tests.log
