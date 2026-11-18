@@ -67,6 +67,9 @@ ENV_VARS: dict[str, str] = {
     "review_adapter": "AISRE_REVIEW_ADAPTER",
     "review_url": "AISRE_REVIEW_URL",
     "review_token": "AISRE_REVIEW_TOKEN",
+    "release_adapter": "AISRE_RELEASE_ADAPTER",
+    "release_url": "AISRE_RELEASE_URL",
+    "release_token": "AISRE_RELEASE_TOKEN",
 }
 
 
@@ -140,6 +143,13 @@ class Settings(BaseModel):
     review_adapter: Literal["fake_review"] | None = None
     review_url: str | None = Field(default=None, pattern=r"^https?://")
     review_token: SecretStr | None = None
+    # The release process (M3, T3.1, ADR-73): `fake_release` is Compose's fake
+    # (ops/fakes/release.py), the only adapter, refused in production: no production write
+    # credential exists (ADR-44). On the worker the adapter alone turns on the approval path; the
+    # URL and the token, the release credential, are the dispatcher process's only.
+    release_adapter: Literal["fake_release"] | None = None
+    release_url: str | None = Field(default=None, pattern=r"^https?://")
+    release_token: SecretStr | None = None
 
     # Fixed: equal to aisre.workflow.activities.INVESTIGATION_QUEUE, DISPATCHER_QUEUE and
     # TEST_RUNNER_QUEUE.
@@ -159,6 +169,12 @@ class Settings(BaseModel):
             self.review_adapter is not None and self.review_token is None
         ):
             raise ValueError("AISRE_REVIEW_ADAPTER, _URL and _TOKEN go together")
+        if self.release_adapter is not None and self.env == "production":
+            raise ValueError("AISRE_RELEASE_ADAPTER=fake_release is for development and test")
+        if (self.release_url is None) != (self.release_token is None) or (
+            self.release_url is not None and self.release_adapter is None
+        ):
+            raise ValueError("AISRE_RELEASE_URL and _TOKEN go together, with AISRE_RELEASE_ADAPTER")
         return self
 
     @model_validator(mode="after")
