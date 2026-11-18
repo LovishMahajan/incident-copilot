@@ -543,6 +543,26 @@ Artifacts 1, 2, 5, 6 and 13 keep a product dashboard out of the first version: t
 - **Owner:** Platform owner. **Reversal:** Low: delete `demo/` and its Compose service. **Revisit when:** someone asks for it outside a demo, which is Artifact 6's trigger for a real dashboard.
 - **Resolves:** the request for a visual showcase of the investigation without breaking the first version's scope.
 
+### ADR-71: A development sandbox runtime, labelled, never isolation (2026-11-18, Proposed)
+
+M2 is built on a macOS host with Docker Desktop, which has `runc` and no gVisor. The test host with `runsc` (T2.1) is not available, so the flow is built and proven here and the isolation is proven later, on that host.
+
+| Topic | Decision |
+| --- | --- |
+| Runtime | The launcher takes it from settings (`AISRE_SANDBOX_RUNTIME`). Production requires `runsc`. `runc` is allowed only when `AISRE_ENV` is `development` or `test`, and is refused otherwise, like scripted skills and the fake evidence adapter: by `Settings` and again by the launcher's argument check |
+| Same flags | `runc` runs with every other flag unchanged: no network, read-only root, user 65534, all capabilities dropped, `no-new-privileges`, cgroup CPU, memory and PID limits, bounded tmpfs, a size-limited workspace volume, the wall clock |
+| Label | Every result says what it ran under: `isolation` is `gvisor` or `development-runc` in the stored test run and in `aisre.action.tested.v1`. A `development-runc` result proves the flow, never isolation |
+| Checkout | The Test Runner runs `git archive` of the exact `base_revision` commit from its own read-only mirror of the repository (`AISRE_SANDBOX_REPOS`), and pipes it on the container's standard input, as a tar with the patch's canonical bytes and the run description. The harness unpacks it into the run's tmpfs workspace volume. No host path, repository, `.git` directory or credential is ever mounted |
+| Image | Built from `ops/sandbox/`, on a base pinned by digest, the harness inside it, running as user 65534 and needing no network. It is named by digest (`AISRE_SANDBOX_IMAGE`): a registry digest on the test host, the content-addressed image ID locally |
+| Protected paths | The launcher refuses a patch touching a protected path (`patch.PROTECTED`: tests, test configuration, CI, policies, the harness and sandbox) before any volume or container exists, and the harness refuses it again. `deploy/**` stays a draft-time boundary only (`check_boundaries`): the reference fix edits `deploy/production.env`, and whether that is editable for `config_revert` is T2.10's decision |
+| Docker access | The Docker socket is root-equivalent on its host. Only the Test Runner holds it: a separate process, `python -m aisre.remediation.test_runner`, on its own task queue, `aisre-test-runner`, which serves `run_sandbox_test` and the reaper and nothing else. Never the API, and never the worker that runs model-facing code. Locally it runs on the host; in production on the test host (ADR-51). It also holds `aisre_app` and an object-store read until a Test Runner role exists (M4) |
+| Three at once | Across Test Runner processes: three PostgreSQL session advisory locks, so a crashed process frees its slot. A queued run's wait and its run share one budget inside the activity's 900 s, leaving a margin for the stop and cleanup |
+| Reaper | A timer workflow every 5 minutes on the Test Runner's queue, as for the budget jobs (the time-skipping test server has no Schedule API). It removes anything labelled `aisre.sandbox=1` older than its wall clock plus a margin, and sets `aisre_sandboxes_leftover` |
+| Security gate | M2's security gate (ST-16, ST-25 to ST-28) stays NOT MET until the same tests pass under `runsc` on the gVisor host. `system` tests that need gVisor stay `system` and skip here with the reason |
+
+- **Owner:** Security lead. **Reversal:** Low: remove `runc` from the allowed runtimes. **Revisit when:** the gVisor test host exists (T2.1), at which point local runs may keep `runc` but no M2 evidence may rely on it.
+- **Resolves:** building and demonstrating M2's patch-and-test flow without the gVisor host, without claiming isolation it does not have.
+
 ## Not conflicts
 
 | Claim | Finding |
