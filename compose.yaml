@@ -24,6 +24,9 @@
 #                         (ops/fakes/monitoring.py)
 #   fake-review           FAKE review system (M2, T2.8): the reference repository, built at
 #                         start-up, and draft pull requests, never merged (ops/fakes/review.py)
+#   fake-release          FAKE release process (M3, T3.1, ADR-73): what orders-api-production
+#                         runs; apply, undo and lookup by key, with the release token
+#                         (ops/fakes/release.py). fake-monitoring's live metrics follow it
 # The fakes are for local use only: anyone who reaches the issuer can mint any identity.
 #
 # Wired from M1 (T1.10, T1.17, T1.19, T1.20): the worker runs the real Evidence Collector against
@@ -403,6 +406,8 @@ services:
     command: ["python", "/opt/fakes/monitoring.py"]
     environment:
       FAKE_MONITORING_FIXTURES: /fixtures
+      # Live metrics follow what the fake release process deploys (ADR-73).
+      FAKE_MONITORING_RELEASE_URL: http://fake-release:8080
     volumes:
       - ./ops/fakes:/opt/fakes:ro
       - ./tests/fixtures:/fixtures:ro
@@ -427,6 +432,26 @@ services:
       - ./ops/reference-app:/opt/reference-app:ro
     ports:
       - "127.0.0.1:${AISRE_FAKE_REVIEW_PORT:-59400}:8080"
+    healthcheck: *fake-health
+    restart: unless-stopped
+
+  fake-release:
+    # Builds the reference repository with git, so it runs on fake-review's image.
+    image: aisre-fake-review:dev
+    build:
+      context: ./ops/fakes
+      dockerfile: review.Dockerfile
+    user: "65534:65534"
+    command: ["python", "/opt/fakes/release.py"]
+    environment:
+      AISRE_ENV: ${AISRE_ENV:-development}
+      FAKE_REVIEW_REPO_SOURCE: /opt/reference-app/build_repo.py
+      FAKE_RELEASE_TOKEN: ${AISRE_RELEASE_TOKEN:?copy .env.example to .env}
+    volumes:
+      - ./ops/fakes:/opt/fakes:ro
+      - ./ops/reference-app:/opt/reference-app:ro
+    ports:
+      - "127.0.0.1:${AISRE_FAKE_RELEASE_PORT:-59500}:8080"
     healthcheck: *fake-health
     restart: unless-stopped
 

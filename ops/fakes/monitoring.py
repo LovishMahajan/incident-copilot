@@ -28,6 +28,20 @@ were missing, so `changes` is 404 and its adapter reports the source unavailable
 Optional `start` and `end` (ISO 8601, UTC) filter metrics by `minute_utc`, logs by `ts` and
 error groups by the logs they are built from. A missing fixture file is 404, which an adapter
 reports as an unavailable source, never as an empty one (ADR-54).
+
+Live metrics (M3, T3.1, ADR-73), for the deployment the fake release process holds:
+
+    GET /v1/live/<deployment>/metrics?start=&end=   one row a minute: requests, HTTP 500s and
+                                                    their rate, and the revision running then
+
+Each minute takes the configuration the release process's history says was running then. A
+minute whose `ORDER_TAX_RATE_BPS` isn't an integer fails as the reference application does
+(`int()` on every order, ops/reference-app), at the incident's rate; any other minute is the
+baseline. So applying the config revert brings the rate down and a bad change brings it up,
+and what the Verifier reads comes from here, never from the release process's own answer. The
+window defaults to the last 30 minutes and is at most 24 hours. FAKE_MONITORING_RELEASE_URL is
+the release process's base URL; unset, live metrics are 404.
+
 FAKE_MONITORING_FIXTURES names the folder holding the scenarios (default: tests/fixtures in
 this repository); FAKE_MONITORING_PORT the port (default 8080). Standard library only.
 """
@@ -40,6 +54,8 @@ import os
 import re
 import sys
 import threading
+import urllib.request
+from datetime import UTC, datetime, timedelta
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any
@@ -110,6 +126,68 @@ def read(root: Path, scenario: str, kind: str, query: dict[str, str]) -> Any:
     return json.loads((d / files[kind]).read_text())
 
 
+REQUESTS_PER_MINUTE = 1200
+FAILING_RATE = 0.61  # v2.14.1's rate in the reference incident's metrics.csv
+BASELINE_RATE = 0.0008
+LIVE_DEFAULT = timedelta(minutes=30)
+LIVE_MAX = timedelta(hours=24)
+
+
+def failing(config: dict[str, str]) -> bool:
+    """The reference application's failure: `int(settings.order_tax_rate_bps)` on every order."""
+    try:
+        int(config.get("ORDER_TAX_RATE_BPS", ""))
+    except ValueError:
+        return True
+    return False
+
+
+def _stamp(value: str) -> datetime:
+    return datetime.fromisoformat(value.replace("Z", "+00:00")).astimezone(UTC)
+
+
+def live_metrics(
+    history: list[dict[str, Any]], start: datetime, end: datetime
+) -> list[dict[str, Any]]:
+    """One row per minute from `start` to `end`, from what the release history says ran then."""
+    changes = sorted(((_stamp(h["at"]), h) for h in history), key=lambda c: c[0])
+    rows: list[dict[str, Any]] = []
+    minute = start.replace(second=0, microsecond=0)
+    while minute <= end:
+        running = [h for at, h in changes if at <= minute + timedelta(seconds=59)]
+        if running:
+            state = running[-1]
+            rate = FAILING_RATE if failing(state.get("config") or {}) else BASELINE_RATE
+            errors = round(REQUESTS_PER_MINUTE * rate)
+            rows.append(
+                {
+                    "minute_utc": minute.isoformat().replace("+00:00", "Z"),
+                    "requests_total": REQUESTS_PER_MINUTE,
+                    "http_500_total": errors,
+                    "rate_500_total": round(errors / REQUESTS_PER_MINUTE, 5),
+                    "revision": state["revision"],
+                }
+            )
+        minute += timedelta(minutes=1)
+    return rows
+
+
+def read_live(release_url: str, deployment: str, query: dict[str, str]) -> Any:
+    """Live metrics for `deployment`. Raises FileNotFoundError or KeyError."""
+    try:
+        with urllib.request.urlopen(
+            f"{release_url.rstrip('/')}/v1/deployments/{deployment}", timeout=5
+        ) as r:
+            state = json.loads(r.read())
+    except OSError as e:  # HTTPError, URLError and timeouts
+        raise FileNotFoundError(deployment) from e
+    end = _stamp(query["end"]) if query.get("end") else datetime.now(UTC)
+    start = _stamp(query["start"]) if query.get("start") else end - LIVE_DEFAULT
+    if not start <= end or end - start > LIVE_MAX:
+        raise KeyError("window")
+    return live_metrics(state.get("history") or [], start, end)
+
+
 def _error_groups(records: list[dict[str, Any]]) -> list[dict[str, Any]]:
     """Errors grouped by type and message, with first and last sighting, count, versions and the
     stack's files, in order of first sighting."""
@@ -144,7 +222,7 @@ def _error_groups(records: list[dict[str, Any]]) -> list[dict[str, Any]]:
     return sorted(groups.values(), key=lambda g: g["first_seen"])
 
 
-def handler_for(root: Path) -> type[BaseHTTPRequestHandler]:
+def handler_for(root: Path, release_url: str | None = None) -> type[BaseHTTPRequestHandler]:
     class Handler(BaseHTTPRequestHandler):
         def log_message(self, format: str, *args: Any) -> None:
             sys.stderr.write(f"fake-monitoring {self.command} {self.path.split('?')[0]}\n")
@@ -165,6 +243,12 @@ def handler_for(root: Path) -> type[BaseHTTPRequestHandler]:
                 return self.reply(200, {"status": "ok"})
             if parts == ["v1", "scenarios"]:
                 return self.reply(200, sorted(scenarios(root)))
+            if len(parts) == 4 and parts[:2] == ["v1", "live"] and parts[3] == "metrics":
+                if release_url:
+                    try:
+                        return self.reply(200, read_live(release_url, parts[2], query))
+                    except (FileNotFoundError, KeyError, ValueError):
+                        pass
             if len(parts) == 4 and parts[:2] == ["v1", "scenarios"]:
                 try:
                     return self.reply(200, read(root, parts[2], parts[3], query))
@@ -175,9 +259,11 @@ def handler_for(root: Path) -> type[BaseHTTPRequestHandler]:
     return Handler
 
 
-def serve(root: Path = FIXTURES, port: int = 0, host: str = "127.0.0.1") -> ThreadingHTTPServer:
+def serve(
+    root: Path = FIXTURES, port: int = 0, host: str = "127.0.0.1", release_url: str | None = None
+) -> ThreadingHTTPServer:
     """Start serving on a daemon thread; `server.server_address` has the port."""
-    server = ThreadingHTTPServer((host, port), handler_for(root))
+    server = ThreadingHTTPServer((host, port), handler_for(root, release_url))
     threading.Thread(target=server.serve_forever, daemon=True).start()
     return server
 
@@ -185,8 +271,9 @@ def serve(root: Path = FIXTURES, port: int = 0, host: str = "127.0.0.1") -> Thre
 def main() -> None:
     port = int(os.environ.get("FAKE_MONITORING_PORT", "8080"))
     root = Path(os.environ.get("FAKE_MONITORING_FIXTURES") or FIXTURES)
+    release_url = os.environ.get("FAKE_MONITORING_RELEASE_URL") or None
     print(f"fake monitoring source on :{port}, scenarios in {root} (local use only)", flush=True)
-    ThreadingHTTPServer(("0.0.0.0", port), handler_for(root)).serve_forever()
+    ThreadingHTTPServer(("0.0.0.0", port), handler_for(root, release_url)).serve_forever()
 
 
 if __name__ == "__main__":
