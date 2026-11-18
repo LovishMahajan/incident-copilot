@@ -170,6 +170,7 @@ def test_honesty_variant_is_stored_inconclusive_with_what_is_missing(
         "low",
     )
     assert d["summary"].startswith("Root cause not established")
+    assert d["stop_reason"] == rec.UNDECIDED
     assert any("Change history" in m for m in d["missing_evidence"])
     assert d["final_outcome"] is None and not d["reviewed"]
     hyps = rows(app_engine, "SELECT status FROM hypotheses WHERE incident_id = :i", incident)

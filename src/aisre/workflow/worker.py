@@ -22,6 +22,13 @@ for example `{"sources": {"*": {"adapter": "fake_monitoring", "url":
 store when `AISRE_OBJECT_STORE_URL`, `_BUCKET`, `_ACCESS_KEY` and `_SECRET_KEY` are all set.
 All of them are typed settings (aisre.config).
 
+Skills (T1.14, T1.18): with `AISRE_PROVIDER_API_KEY` set, `hypothesise`, `diagnose` and
+`review_diagnosis` are the real skills (aisre.agent.skills), ahead of any script: the Model
+Gateway over the Anthropic transport (to `AISRE_PROVIDER_URL` when set, which locally is
+Compose's fake provider), the durable ledger, the prompts in `AISRE_PROMPTS_DIR`, and
+PgSkillStore. `draft_patch` stays scripted until M2. Without a key, tests that ask for scripted
+skills get them.
+
 Budget jobs (T1.21): the worker registers BudgetJobWorkflow with the ledger's expiry and
 reconciliation activities, over PostgreSQL, and starts both jobs if they aren't running
 (aisre.workflow.budget_jobs).
@@ -61,12 +68,18 @@ from sqlalchemy import Engine
 from temporalio.client import Client
 from temporalio.worker import Interceptor, Worker
 
+from aisre.agent.skills.activities import ModelSkills
+from aisre.agent.skills.reasoning import SCHEMAS, load_prompts
+from aisre.agent.skills.store import PgSkillStore
 from aisre.api import audit
 from aisre.config import Settings
 from aisre.evidence.snapshots import S3Snapshots
 from aisre.evidence.sources import SourceSet
+from aisre.gateway.adapters import ClaudeAdapter
+from aisre.gateway.gateway import CLAUDE_PRICES, ModelGateway
 from aisre.gateway.jobs import BudgetJobActivities
 from aisre.gateway.ledger import PgBudgetLedger
+from aisre.gateway.transport import AnthropicTransport
 from aisre.notify.notifier import Notifier
 from aisre.record import make_engine
 from aisre.record.audit_copy import store_from_settings
@@ -114,16 +127,37 @@ def evidence_activities(settings: Settings, engine: Engine) -> list[Callable[...
     return EvidenceActivities(engine, sources, snapshots).all()
 
 
+def skill_activities(
+    settings: Settings, engine: Engine, transport: AnthropicTransport | None
+) -> list[Callable[..., Any]]:
+    """T1.18: the real model-backed skills, when the gateway is configured; else none."""
+    if transport is None:
+        return []
+    gateway = ModelGateway(
+        ClaudeAdapter(), transport, PgBudgetLedger(engine), CLAUDE_PRICES, SCHEMAS
+    )
+    prompts = load_prompts(Path(settings.prompts_dir))
+    return ModelSkills(gateway, prompts, PgSkillStore(engine)).all()
+
+
+def provider_transport(settings: Settings) -> AnthropicTransport | None:
+    if settings.provider_api_key is None:
+        return None
+    return AnthropicTransport(settings.provider_api_key, settings.provider_url)
+
+
 def investigation_activities(
     settings: Settings,
     engine: Engine,
     notifier: Notifier | None = None,
+    transport: AnthropicTransport | None = None,
 ) -> list[Callable[..., Any]]:
-    """Real record, evidence and Notifier activities, then the scripts if enabled for what is
-    still missing, then the interfaces for the rest."""
+    """Real record, evidence, skill and Notifier activities, then the scripts if enabled for
+    what is still missing, then the interfaces for the rest."""
     chosen = (
         RecordActivities(engine).all()
         + evidence_activities(settings, engine)
+        + skill_activities(settings, engine, transport)
         + (notifier or Notifier(engine)).activities()
     )
     if settings.scripted_skills:
@@ -171,16 +205,18 @@ async def run(settings: Settings, stop: asyncio.Event | None = None) -> None:
     store = store_from_settings(settings)
     audit.install_handler()
     audit.install_copy(store)
+    transport = provider_transport(settings)
     try:
-        chosen = investigation_activities(settings, engine, notifier)
+        chosen = investigation_activities(settings, engine, notifier, transport)
         chosen += budget_job_activities(engine)
         chosen += AuditJobActivities(engine, store).all()
         async with build_worker(client, chosen, interceptors()):
             await ensure_budget_jobs(client, act.INVESTIGATION_QUEUE)
             await ensure_audit_jobs(client, act.INVESTIGATION_QUEUE)
             log.info(
-                "worker on %s, relay running, scripted skills %s",
+                "worker on %s, relay running, model skills %s, scripted skills %s",
                 act.INVESTIGATION_QUEUE,
+                "on" if transport is not None else "off",
                 "on" if settings.scripted_skills else "off",
             )
             await asyncio.gather(
@@ -188,6 +224,8 @@ async def run(settings: Settings, stop: asyncio.Event | None = None) -> None:
                 notifier.run(stop),
             )
     finally:
+        if transport is not None:
+            await transport.close()
         audit.install_copy(None)  # flushes what is pending
         engine.dispose()
         if metrics is not None:

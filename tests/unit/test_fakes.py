@@ -192,10 +192,17 @@ def test_provider_answers_cite_the_data_blocks_they_were_sent(tmp_path):
     status, msg, _ = p.answer(API_HEADERS, json.dumps(body).encode())
     assert status == 200 and json.loads(msg["content"][0]["text"]) == {"cites": [log], "n": 1}
     body = MESSAGE | {"messages": [{"role": "user", "content": "STEP both, no data"}]}
-    status, err, _ = p.answer(API_HEADERS, json.dumps(body).encode())
-    assert status == 500 and "no data block matches" in err["error"]["message"]
+    status, err, _ = p.answer(API_HEADERS, json.dumps(body).encode())  # falls through: no default
+    assert status == 500 and "no script matched" in err["error"]["message"]
     body = MESSAGE | {"messages": [{"role": "user", "content": "STEP only"}]}
-    assert p.answer(API_HEADERS, json.dumps(body).encode())[0] == 500  # no script, no default
+    assert p.answer(API_HEADERS, json.dumps(body).encode())[0] == 500
+
+
+def test_provider_takes_the_key_as_a_bearer_token_too(provider_url):
+    bearer = {"authorization": "Bearer fake-key", "anthropic-version": "2023-06-01"}
+    assert call(provider_url + "/v1/messages", MESSAGE, bearer)[0] == 200
+    empty = {"authorization": "Bearer ", "anthropic-version": "2023-06-01"}
+    assert call(provider_url + "/v1/messages", MESSAGE, empty)[0] == 401
 
 
 def test_provider_keeps_requests_but_never_the_key(provider_url):
@@ -206,6 +213,15 @@ def test_provider_keeps_requests_but_never_the_key(provider_url):
 
 
 # ---------------------------------------------------------------- monitoring
+def test_monitoring_withholds_files_for_the_honesty_variant(monitoring_url):
+    ref = monitoring_url + "/v1/scenarios/reference-incident:without=release.json,config-diff.txt"
+    assert call(ref + "/changes")[0] == 404
+    assert call(ref + "/alert")[0] == 200 and call(ref + "/logs")[0] == 200
+    only_diff = monitoring_url + "/v1/scenarios/reference-incident:without=config-diff.txt"
+    assert call(only_diff + "/changes")[1]["config_diff"] is None
+    assert call(monitoring_url + "/v1/scenarios/reference-incident:other=x/alert")[0] == 404
+
+
 def test_monitoring_serves_the_reference_incident(monitoring_url):
     base = monitoring_url + "/v1/scenarios"
     assert call(base)[1] == ["reference-incident"]

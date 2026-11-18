@@ -22,12 +22,14 @@ from aisre.agent.agent_contracts import (
     ReviewResult,
     SkillContext,
 )
+from aisre.agent.coordinator import AgentState, Step, apply_result, next_step
 from aisre.agent.skills import reasoning
 from aisre.agent.skills.activities import ModelSkills
 from aisre.agent.tool_registry import ToolGate
 from aisre.evidence.collector import Scope, baseline_plan, collect
 from aisre.gateway.adapters import ClaudeAdapter, HttpResponse
 from aisre.gateway.gateway import CLAUDE_PRICES, BudgetLedger, ModelGateway
+from aisre.workflow import activities as act
 
 ROOT = Path(__file__).parents[1]
 SCRIPTS = ROOT / "ops/fakes/provider-scripts"
@@ -151,3 +153,49 @@ def skills(
         store,
         transport,
     )
+
+
+def run(coro: Any) -> Any:
+    return asyncio.run(coro)
+
+
+def skill_in(inputs: reasoning.Inputs, key: str, **kw: Any) -> act.SkillIn:
+    ids = [str(e.evidence_id) for e in inputs.evidence]
+    return act.SkillIn(str(inputs.context.incident_id), key, evidence_ids=ids, **kw)
+
+
+def investigate(inputs: reasoning.Inputs, transport: Any = None) -> tuple[AgentState, Any, Any]:
+    """The coordinator's loop over the three skills, from evidence already collected."""
+    sk, store, transport = skills(inputs, transport)
+    s = AgentState(started_at=inputs.context.started_at)
+    s.baseline_done = s.knowledge_done = True
+    s.evidence_ids = [str(e.evidence_id) for e in inputs.evidence]
+    hyps = diagnosis = critic = None
+    n = 0
+    while (step := next_step(s, inputs.context.started_at)) not in (
+        Step.FINISH_ESTABLISHED,
+        Step.FINISH_INCONCLUSIVE,
+    ):
+        n += 1
+        if step == Step.HYPOTHESISE:
+            result = run(sk.hypothesise(skill_in(inputs, f"k:s{n}")))
+            hyps = result.output
+        elif step == Step.DIAGNOSE:
+            result = run(sk.diagnose(skill_in(inputs, f"k:s{n}", hypotheses=hyps, critic=critic)))
+            diagnosis = result.output
+        elif step == Step.CRITIQUE:
+            result = run(
+                sk.review_diagnosis(
+                    skill_in(
+                        inputs,
+                        f"k:s{n}",
+                        diagnosis=diagnosis.draft,
+                        diagnosis_id=str(diagnosis.diagnosis_id),
+                    )
+                )
+            )
+            critic = result.output.verdict if result.output else None
+        else:
+            raise AssertionError(step)
+        apply_result(s, step, result)
+    return s, store, transport

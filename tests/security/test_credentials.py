@@ -9,6 +9,8 @@ import subprocess
 from pathlib import Path
 
 import pytest
+from monitoring_scenarios import copy_reference
+from skill_rig import collected, investigate
 from support import T0, FakeProvider, draft_json, gateway, provider_reply, request
 
 from aisre.agent.tool_registry import (
@@ -135,11 +137,31 @@ def test_st17_platform_credentials_are_not_in_any_prompt(monkeypatch):
     assert "canary" not in sent and "headers" not in provider.bodies[0]
 
 
-def test_st17_prompts_across_a_real_investigation_need_the_evidence_adapters():
-    pytest.skip(
-        "The evidence adapters that hold the credentials and redact extracts don't exist (collect_evidence is "
-        "NotImplementedError), so tool results and whole-investigation prompts can't be captured and searched"
+def test_st17_no_credential_reaches_any_prompt_of_a_whole_investigation(monkeypatch, tmp_path):
+    """The real collector reads a log line holding a key; the real skills run the whole loop
+    (hypothesise, diagnose, critique) with the process environment full of credentials. Neither
+    reaches any prompt the provider is sent, nor any stored extract."""
+    for var, value in {
+        "AISRE_DATABASE_URL": "postgresql+psycopg://aisre_app:canary-db-pass@prod/aisre",
+        "AISRE_PROVIDER_API_KEY": "canary-provider-key",
+        "AISRE_OBJECT_STORE_SECRET_KEY": "canary-store-secret",
+        "ANTHROPIC_API_KEY": "canary-anthropic-key",
+    }.items():
+        monkeypatch.setenv(var, value)
+    root = copy_reference(tmp_path)
+    logs = root / "reference-incident/logs.ndjson"
+    logs.write_text(
+        logs.read_text().replace(
+            "payment gateway did not answer within 3000 ms",
+            "payment gateway did not answer within 3000 ms (api_key=canary-tool-key)",
+        )
     )
+    inputs = collected(root)
+    assert "within 3000 ms" in json.dumps([e.summary for e in inputs.evidence])
+    s, _, transport = investigate(inputs)
+    assert s.stop_reason == "critic accepted" and len(transport.bodies) == 3
+    sent = json.dumps(transport.bodies) + json.dumps([e.summary for e in inputs.evidence])
+    assert "canary" not in sent
 
 
 # ---------------------------------------------------------------- ST-18

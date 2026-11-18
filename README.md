@@ -90,7 +90,9 @@ Each route checks ADR-50's matrix on the incident's service (T1.4): Monitoring m
 docker compose exec api python -m aisre.api.dev_seed
 ```
 
-**The worker** runs the workflow with the real `load_incident`, `record_transition` and `hand_over`. M0 has no model, so with `AISRE_SCRIPTED_SKILLS=true` (as in `.env.example`) the other activities answer with fixed results from `src/aisre/workflow/scripted.py`, and an incident goes `open` → `investigating` → `diagnosed` → `handed_over`, with every step in its timeline. Scripted results are refused when `AISRE_ENV` is `production`.
+**The worker** runs the workflow with the real `load_incident`, `record_transition` and `hand_over`. With `AISRE_SCRIPTED_SKILLS=true` (as in `.env.example`) the activities not built yet answer with fixed results from `src/aisre/workflow/scripted.py`: the slot, the spend state and `draft_patch`, which answers "no allowed fix" until M2, and the model skills too when no provider is configured. Scripted results are refused when `AISRE_ENV` is `production`.
+
+**The model skills** (`src/aisre/agent/skills/`, T1.14 to T1.18). With `AISRE_PROVIDER_API_KEY` set on the worker, `hypothesise`, `diagnose` and `review_diagnosis` are real: each assembles its context from the incident's evidence and the facts behind each record's strength tier, takes its prompt from `prompts/` (`AISRE_PROMPTS_DIR`, v1 active), and asks the Model Gateway, which picks the model per task (ADR-69), reserves budget in PostgreSQL and calls the provider through the Anthropic SDK transport, at `AISRE_PROVIDER_URL` when set. Answers are validated against `agent_contracts`, their citations checked against the incident's records, and output holding a secret, link or command is stopped without retry, its audit copy masked (`aisre.model_output.unsafe` on the audit log, `aisre_model_output_unsafe_total`); a secret takes the security stop. Code scores confidence from the cited observations (ADR-53). Each diagnosis is stored with its hypotheses and their evidence links, and the review writes `final_outcome` and `final_confidence` once (ADR-69). `.env.example` points the worker at Compose's fake provider, whose scripts (`ops/fakes/provider-scripts/`) answer the reference incident with a cited diagnosis naming the `ORDER_TAX_RATE_BPS` change, and the honesty variant with "Root cause not established"; they fill in evidence IDs from the request (`{{ref:<regex>}}`, see `ops/fakes/model_provider.py`). So an incident goes `open` → `investigating` → `diagnosed` → `handed_over`, with the hypotheses, diagnosis and review in its timeline. No real key exists here; a real one belongs in a secrets manager.
 
 **Evidence** (`src/aisre/evidence/`, T1.10). With `AISRE_EVIDENCE_SOURCES` set on the worker, `collect_evidence` is the real Evidence Collector: the baseline plan (alert, changes, 5xx rate, error rate by version, logs, error groups, traces, dependency health) or a targeted round's requests, each through the ToolGate, then the source configured for that tool. Results are scoped to the incident's service, environment and window, redacted, capped, fingerprinted and stored as `evidence` rows with a timeline event each; a failed source is a `gap` row, never an empty one. Tool calls are counted and inserted in one transaction per incident (`tool_calls`, ADR-69). The variable is JSON naming an adapter per tool (`"*"` for the rest); against the fake monitoring source, replaying the reference incident up to its evidence cut-off:
 
@@ -132,7 +134,16 @@ AISRE_TEMPORAL_ADDRESS=127.0.0.1:7233 \
 uv run pytest -q -m integration
 ```
 
-The `integration` tests expect the Compose worker to run with scripted skills, as in `.env.example`; with the evidence sources set as there, it also collects real evidence. Tests that drive an incident themselves keep the Compose relay from starting it (the `quiet` fixture in `tests/integration/conftest.py`). On 2026-11-18: 130 passed, 2 skipped (`paid`).
+The `integration` tests expect the Compose worker as `.env.example` configures it: scripted skills for what isn't built, real evidence from the fake monitoring source, and the real model skills against the fake provider. Tests that drive an incident themselves keep the Compose relay from starting it (the `quiet` fixture in `tests/integration/conftest.py`). On 2026-11-18: 133 passed, 2 skipped (`paid`).
+
+**The honesty variant** (Run 2 of the reference incident: `release.json` and `config-diff.txt` withheld). The fake monitoring source serves a scenario with files withheld when its name says so, `reference-incident:without=release.json,config-diff.txt`, and the change history then answers 404, a gap. Restart the worker pointed at it, post the alert, and the incident goes `open` → `investigating` → `inconclusive` → `handed_over`, its diagnosis starting "Root cause not established"; restart without the override to go back:
+
+```
+AISRE_EVIDENCE_SOURCES='{"sources": {"*": {"adapter": "fake_monitoring", "url": "http://fake-monitoring:8080/v1/scenarios/reference-incident:without=release.json,config-diff.txt"}}, "replay_as_of": "2026-10-20T14:20:00Z"}' \
+  docker compose up -d --wait worker
+```
+
+An alert for `orders-api` joins an incident still open within 10 minutes, so close the first run's incident before posting the second.
 
 ## M0 demo
 

@@ -18,6 +18,10 @@ served: it is what an investigation must find, not something monitoring knows.
     GET /v1/scenarios/<name>/dependencies     dependency-health.json
     GET /healthz
 
+A scenario name may withhold files, for runs like the reference incident's honesty variant:
+`reference-incident:without=release.json,config-diff.txt` serves that folder as if those files
+were missing, so `changes` is 404 and its adapter reports the source unavailable.
+
 Optional `start` and `end` (ISO 8601, UTC) filter metrics by `minute_utc`, logs by `ts` and
 error groups by the logs they are built from. A missing fixture file is 404, which an adapter
 reports as an unavailable source, never as an empty one (ADR-54).
@@ -49,10 +53,26 @@ def _in_window(stamp: str, start: str | None, end: str | None) -> bool:
     return (start is None or stamp >= start) and (end is None or stamp <= end)
 
 
+NEEDS = {  # the file each kind can't be served without
+    "alert": "alert.json",
+    "metrics": "metrics.csv",
+    "logs": "logs.ndjson",
+    "errors": "logs.ndjson",
+    "traces": "trace.json",
+    "changes": "release.json",
+    "catalog": "service-catalog.json",
+    "dependencies": "dependency-health.json",
+}
+
+
 def read(root: Path, scenario: str, kind: str, query: dict[str, str]) -> Any:
     """The answer for one scenario and kind. Raises FileNotFoundError or KeyError."""
+    scenario, _, option = scenario.partition(":")
+    withheld = set(option.removeprefix("without=").split(",")) if option else set()
+    if option and not option.startswith("without="):
+        raise KeyError(option)
     names = {p.parent.name for p in root.glob("*/alert.json")}
-    if scenario not in names:
+    if scenario not in names or NEEDS[kind] in withheld:
         raise FileNotFoundError(scenario)
     d = root / scenario
     start, end = query.get("start"), query.get("end")
@@ -68,7 +88,8 @@ def read(root: Path, scenario: str, kind: str, query: dict[str, str]) -> Any:
     if kind == "changes":
         diff = d / "config-diff.txt"
         changes = json.loads((d / "release.json").read_text())
-        return changes | {"config_diff": diff.read_text() if diff.exists() else None}
+        shown = diff.exists() and diff.name not in withheld
+        return changes | {"config_diff": diff.read_text() if shown else None}
     files = {
         "alert": "alert.json",
         "traces": "trace.json",
