@@ -93,6 +93,10 @@ check_untyped_defs = true
 module = [
     "aisre.config",
     "aisre.cli",
+    "aisre.notify",
+    "aisre.notify.*",
+    "aisre.reliability.otlp",
+    "aisre.reliability.temporal_telemetry",
     "aisre.record",
     "aisre.record.*",
     "aisre.api",

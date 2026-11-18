@@ -42,7 +42,7 @@ from fastapi.responses import JSONResponse, StreamingResponse
 from sqlalchemy import Engine, text
 from starlette.exceptions import HTTPException
 
-from aisre.api import audit
+from aisre.api import audit, observe
 from aisre.api.auth import Authenticator, Caller, current_caller
 from aisre.api.commands import Commands, parse_if_match
 from aisre.api.export import ExportSigner, timeline_document
@@ -68,6 +68,7 @@ from aisre.contracts import (
 )
 from aisre.record import commands as cmd
 from aisre.record import load_incident, make_engine, reads, timeline, uuid7
+from aisre.reliability import telemetry
 from aisre.remediation.action import Perm
 
 REQUEST_ID_HEADER = "X-Request-ID"
@@ -95,13 +96,18 @@ def create_app(
 
     @asynccontextmanager
     async def lifespan(_: FastAPI) -> AsyncIterator[None]:
+        telemetry.setup_tracing("aisre-api")
+        metrics = telemetry.serve_metrics()  # AISRE_METRICS_PORT, when set (T1.19)
         yield
+        if metrics is not None:
+            metrics.shutdown()
         if engine is None:
             db.dispose()
 
     app = FastAPI(title="AI SRE platform API", version="0.1.0", lifespan=lifespan)
     app.state.authenticator = authenticator
     _install_errors(app)
+    observe.install(app)
 
     intake = Intake(db)
 

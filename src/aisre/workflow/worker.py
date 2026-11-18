@@ -17,6 +17,11 @@ Budget jobs (T1.21): the worker registers BudgetJobWorkflow with the ledger's ex
 reconciliation activities, over PostgreSQL, and starts both jobs if they aren't running
 (aisre.workflow.budget_jobs).
 
+Notifier (T1.19): the real `notify` activity, ahead of the scripts, and the dead-letter pass
+running beside the relay (aisre.notify.notifier). Telemetry (T1.19): `/metrics` on
+AISRE_METRICS_PORT, spans to OTEL_EXPORTER_OTLP_ENDPOINT, and every activity timed and traced
+by the interceptors in aisre.reliability.temporal_telemetry.
+
 Liveness: after every relay pass the worker touches ALIVE_FILE; `--check-alive` exits 0 if
 that happened within ALIVE_WITHIN, which is Compose's health check.
 
@@ -39,12 +44,15 @@ from typing import Any, cast
 
 from sqlalchemy import Engine
 from temporalio.client import Client
-from temporalio.worker import Worker
+from temporalio.worker import Interceptor, Worker
 
 from aisre.config import Settings
 from aisre.gateway.jobs import BudgetJobActivities
 from aisre.gateway.ledger import PgBudgetLedger
+from aisre.notify.notifier import Notifier
 from aisre.record import make_engine
+from aisre.reliability import telemetry
+from aisre.reliability.temporal_telemetry import interceptors
 from aisre.workflow import activities as act
 from aisre.workflow import scripted
 from aisre.workflow.budget_jobs import BudgetJobWorkflow, ensure_budget_jobs
@@ -62,13 +70,18 @@ def activity_name(fn: Callable[..., Any]) -> str:
     return fn.__name__  # every activity here is defined under its own name
 
 
-def investigation_activities(settings: Settings, engine: Engine) -> list[Callable[..., Any]]:
-    """Real record activities, then the scripts if enabled, then the interfaces for the rest."""
-    chosen = RecordActivities(engine).all()
+def investigation_activities(
+    settings: Settings, engine: Engine, notifier: Notifier | None = None
+) -> list[Callable[..., Any]]:
+    """Real record and Notifier activities, then the scripts if enabled for what is still
+    missing, then the interfaces for the rest."""
+    chosen = RecordActivities(engine).all() + (notifier or Notifier(engine)).activities()
     if settings.scripted_skills:
         if settings.env == "production":
             raise RuntimeError("scripted skills are refused when AISRE_ENV is production")
-        chosen += scripted.scripted_activities(settings.scripted_step_seconds)
+        real = {activity_name(a) for a in chosen}
+        scripts = scripted.scripted_activities(settings.scripted_step_seconds)
+        chosen += [a for a in scripts if activity_name(a) not in real]
     names = {activity_name(a) for a in chosen}
     # activities.py isn't strict: its list is typed as plain functions.
     interfaces = cast(Sequence[Callable[..., Any]], act.ALL_INVESTIGATION_ACTIVITIES)
@@ -80,35 +93,49 @@ def budget_job_activities(engine: Engine) -> list[Callable[..., Any]]:
     return list(BudgetJobActivities(PgBudgetLedger(engine)).all())
 
 
-def build_worker(client: Client, activities: Sequence[Callable[..., Any]]) -> Worker:
+def build_worker(
+    client: Client,
+    activities: Sequence[Callable[..., Any]],
+    worker_interceptors: Sequence[Interceptor] = (),
+) -> Worker:
     return Worker(
         client,
         task_queue=act.INVESTIGATION_QUEUE,
         workflows=[IncidentWorkflow, ReconciliationWorkflow, BudgetJobWorkflow],
         activities=activities,
+        interceptors=worker_interceptors,
     )
 
 
 async def run(settings: Settings, stop: asyncio.Event | None = None) -> None:
     stop = stop or asyncio.Event()
+    telemetry.setup_tracing("aisre-worker")
+    metrics = telemetry.serve_metrics()
     client = await Client.connect(
         settings.temporal_address,
         namespace=settings.temporal_namespace,
         data_converter=act.DATA_CONVERTER,
     )
     engine = make_engine(settings.database_url)
+    notifier = Notifier(engine)
     try:
-        chosen = investigation_activities(settings, engine) + budget_job_activities(engine)
-        async with build_worker(client, chosen):
+        chosen = investigation_activities(settings, engine, notifier)
+        chosen += budget_job_activities(engine)
+        async with build_worker(client, chosen, interceptors()):
             await ensure_budget_jobs(client, act.INVESTIGATION_QUEUE)
             log.info(
                 "worker on %s, relay running, scripted skills %s",
                 act.INVESTIGATION_QUEUE,
                 "on" if settings.scripted_skills else "off",
             )
-            await Relay(engine, client).run(stop, on_pass=ALIVE_FILE.touch)
+            await asyncio.gather(
+                Relay(engine, client).run(stop, on_pass=ALIVE_FILE.touch),
+                notifier.run(stop),
+            )
     finally:
         engine.dispose()
+        if metrics is not None:
+            metrics.shutdown()
 
 
 def is_alive(now: float | None = None) -> bool:
