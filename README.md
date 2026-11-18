@@ -44,3 +44,39 @@ psql -U postgres -d aisre -v ON_ERROR_STOP=1 -f db/schema-tests.sql
 ```
 
 `uv run alembic downgrade base` drops everything in `public` and keeps the roles. It is for development and CI only: it deletes all data.
+
+## Run the local stack
+
+Needs Docker with Compose. `compose.yaml` runs PostgreSQL 17.12, Temporal 1.32.2 (schema set up by `temporal-sql-tool`, in its own databases on the same PostgreSQL), the Temporal UI 2.58.1, the migration job, the API and the worker with its outbox relay. Ports are bound to 127.0.0.1; change them in `.env` if one is taken.
+
+```
+cp .env.example .env
+docker compose up -d --build     # healthy in about a minute; `docker compose ps` to check
+docker compose down -v           # stop and delete the data
+```
+
+| Service | Address |
+| --- | --- |
+| API | http://127.0.0.1:8000 (`/livez`, `/readyz`, `/v1/incidents`) |
+| Temporal UI | http://127.0.0.1:8233 |
+| Temporal frontend | 127.0.0.1:7233 |
+| PostgreSQL | 127.0.0.1:55432, database `aisre` |
+
+**Development-only sign-in.** M0 has no identity system yet, so the API takes the caller's name from `X-Aisre-Dev-Caller` (and an optional organisation UUID from `X-Aisre-Dev-Org`). Anyone can claim any name, so the API refuses to start unless `AISRE_ENV` is `development` or `test`. Real tokens replace it at M1 (`src/aisre/api/auth.py`). Writes also need an `Idempotency-Key` of 8 to 128 characters:
+
+```
+curl -X POST http://127.0.0.1:8000/v1/incidents -H 'Content-Type: application/json' \
+  -H 'X-Aisre-Dev-Caller: alice' -H 'Idempotency-Key: demo-0000001' \
+  --data @tests/fixtures/reference-incident/alert.json
+```
+
+The service and environment must be in the organisation's catalogue (`services`, `environments`); otherwise the answer is `404 unknown_service`.
+
+**Integration tests** run from the host against the stack, with test settings:
+
+```
+AISRE_ENV=test \
+AISRE_DATABASE_URL=postgresql+psycopg://aisre_app:fake-app-password@127.0.0.1:55432/aisre \
+AISRE_TEMPORAL_ADDRESS=127.0.0.1:7233 \
+uv run pytest -q -m integration
+```

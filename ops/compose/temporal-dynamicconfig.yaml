@@ -1,0 +1,3 @@
+# Temporal dynamic configuration for the local Compose stack (compose.yaml). The server
+# refuses to start without a file; nothing is overridden at M0.
+{}
