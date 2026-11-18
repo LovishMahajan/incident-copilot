@@ -76,7 +76,7 @@ jobs:
           [ "$n" -le "$SECURITY_SKIPS_ALLOWED" ]
 
   schema:
-    name: Schema tests on PostgreSQL ${{ matrix.postgres }}
+    name: Migrations and schema tests on PostgreSQL ${{ matrix.postgres }}
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     strategy:
@@ -98,16 +98,38 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - name: Use the server's own psql
         run: echo "PSQL=docker exec -i ${{ job.services.postgres.id }} psql -v ON_ERROR_STOP=1 -q" >> "$GITHUB_ENV"
+      - uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2 # v10.3.3
+        with:
+          version: ${{ env.UV_VERSION }}
+      - name: Install
+        run: uv sync --python "$PYTHON_VERSION" --locked
       - name: Create the owner role and database (schema.sql header)
         run: |
           $PSQL -U postgres -c "CREATE ROLE aisre_owner LOGIN CREATEROLE"
           $PSQL -U postgres -c "CREATE DATABASE aisre OWNER aisre_owner"
-      - name: Load schema.sql as aisre_owner
-        run: $PSQL -U aisre_owner -d aisre < db/schema.sql
+      - name: Migrate from empty, as aisre_owner
+        env:
+          AISRE_MIGRATION_DATABASE_URL: postgresql+psycopg://aisre_owner@127.0.0.1:5432/aisre
+        run: |
+          uv run alembic upgrade head
+          n=$($PSQL -U postgres -d aisre -tA -c "SELECT count(*) FROM information_schema.tables
+                WHERE table_schema = 'public' AND table_type = 'BASE TABLE'")
+          echo "public tables: $n (expected 37)"
+          [ "$n" -eq 37 ]
       - name: Run schema-tests.sql
         run: |
           $PSQL -U postgres -d aisre < db/schema-tests.sql | tee schema-tests.log
           { echo "### PostgreSQL ${{ matrix.postgres }}"; echo; tail -n 1 schema-tests.log; } >> "$GITHUB_STEP_SUMMARY"
+      - name: Integration tests (Temporal joins with the Compose stack; until then those skip)
+        env:
+          AISRE_DATABASE_URL: postgresql+psycopg://aisre_app@127.0.0.1:5432/aisre
+        run: |
+          uv run pytest -q -rs -m integration | tee integration.log
+          { echo; echo "Integration skips:"; grep '^SKIPPED' integration.log | sed 's/^/- /' || echo "None."; } >> "$GITHUB_STEP_SUMMARY"
+      - name: Downgrade to empty and upgrade again
+        env:
+          AISRE_MIGRATION_DATABASE_URL: postgresql+psycopg://aisre_owner@127.0.0.1:5432/aisre
+        run: uv run alembic downgrade base && uv run alembic upgrade head
 
   secrets:
     name: Secret scan
