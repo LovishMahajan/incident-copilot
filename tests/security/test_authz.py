@@ -274,11 +274,14 @@ def test_st20_cancel_severity_and_note_routes_refuse_and_log(
     assert event["event"] == "aisre.authz.denied" and event["permission"] == perm
 
 
-def test_st20_audit_export_route_arrives_with_t1_20():
-    pytest.skip(
-        "Viewer reads the full audit export needs the route T1.20 adds with the write-once "
-        "audit copy; it will declare audit:export with aisre.api.permissions.requires"
-    )
+def test_st20_a_viewer_cannot_read_the_full_audit_export(token_api, token_issuer, caplog):
+    """T1.20's route: audit:export is the Incident lead's alone (ADR-50)."""
+    token = token_issuer[0].token("mallory", ["aisre:viewer"])
+    with caplog.at_level("INFO", logger="aisre.audit"):
+        r = token_api.get(INCIDENT + "/audit/export", headers={"Authorization": f"Bearer {token}"})
+    assert r.status_code == 403 and r.json()["code"] == "forbidden"
+    (event,) = [json.loads(m) for m in caplog.messages]
+    assert event["event"] == "aisre.authz.denied" and event["permission"] == "audit:export"
 
 
 # ---------------------------------------------------------------- ST-21

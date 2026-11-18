@@ -1,4 +1,10 @@
-"""Artifact 7.4 (T1.5): the signed timeline export, `GET /v1/incidents/{id}/timeline/export`.
+"""Artifact 7.4 (T1.5, T1.20): the signed exports.
+
+`GET /v1/incidents/{id}/timeline/export` (incident:read) reads the Incident Record.
+`GET /v1/incidents/{id}/audit/export` (audit:export, ADR-50) reads the write-once audit copy
+(aisre.record.audit_copy), never the record: the timeline as copied, every audit line naming
+the incident (reads, denials), and the failed sign-ins from the incident's opening to now. It
+says whether the copy has caught up with the record (`copy_complete`, by the last seq).
 
 One JSON document: every event as a CloudEvent with its stored `hash` and `prev_hash` (the
 audit chain, schema.sql section 12), the chain's head, the faults `verify_timeline_chain`
@@ -21,7 +27,7 @@ import hashlib
 import json
 import os
 from collections.abc import Mapping
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from typing import Any
 from uuid import UUID
 
@@ -30,7 +36,9 @@ from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey,
 from cryptography.hazmat.primitives.serialization import Encoding, PublicFormat
 from sqlalchemy import Connection, text
 
+from aisre.contracts import IncidentView
 from aisre.record import timeline
+from aisre.record.audit_copy import LOG, WriteOnceStore, copied_timeline, read_log_lines
 
 KEY_VAR = "AISRE_EXPORT_SIGNING_KEY"
 PAGE = 500
@@ -120,4 +128,33 @@ def timeline_document(
         "events": events,
         "chain_head": events[-1]["hash"] if events else None,
         "chain_faults": faults,
+    }
+
+
+def audit_document(
+    store: WriteOnceStore, view: IncidentView, exported_by: str, now: datetime | None = None
+) -> dict[str, Any]:
+    """The unsigned audit export, read back from the write-once copy."""
+    now = now or datetime.now(UTC)
+    opened = view.created_at.astimezone(UTC)
+    events = copied_timeline(store, view.incident_id)
+    access = read_log_lines(store, f"{LOG}incident/{view.incident_id}/")
+    sign_ins: list[dict[str, Any]] = []
+    day = opened.date()
+    while day <= now.date():
+        for line in read_log_lines(store, f"{LOG}auth/{day.isoformat()}/"):
+            if str(line.get("time", "")) >= opened.isoformat():
+                sign_ins.append(line)
+        day += timedelta(days=1)
+    copied_to = max((int(e["seq"]) for e in events), default=0)
+    return {
+        "kind": "aisre.audit_export.v1",
+        "incident_id": str(view.incident_id),
+        "exported_at": now.isoformat(),
+        "exported_by": exported_by,
+        "source": "write-once audit copy",
+        "copy_complete": copied_to >= view.last_event_seq,
+        "timeline": events,
+        "access_log": sorted(access, key=lambda r: str(r.get("time", ""))),
+        "failed_sign_ins": sorted(sign_ins, key=lambda r: str(r.get("time", ""))),
     }
