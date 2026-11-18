@@ -1,7 +1,7 @@
 # Artifact 12.1, 12.3 (T1.1): the local Prometheus. Loads the platform's alert rules from
-# ops/alerts.yml and scrapes the OpenTelemetry collector. The API and worker expose `/metrics`
-# on an internal port from T1.19; their scrape jobs are added then. No Alertmanager yet (T4.6),
-# so alerts show as firing in Prometheus and go nowhere.
+# ops/alerts.yml and scrapes the OpenTelemetry collector, and the API's and worker's own
+# `/metrics` (T1.19), served on AISRE_METRICS_PORT (9464) inside the Compose network only.
+# No Alertmanager yet (T4.6), so alerts show as firing in Prometheus and go nowhere.
 global:
   scrape_interval: 15s
   evaluation_interval: 15s
@@ -16,3 +16,9 @@ scrape_configs:
   - job_name: otel-collector
     static_configs:
       - targets: ["otel-collector:8889"]
+  - job_name: api
+    static_configs:
+      - targets: ["api:9464"]
+  - job_name: worker
+    static_configs:
+      - targets: ["worker:9464"]

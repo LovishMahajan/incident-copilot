@@ -12,7 +12,8 @@
 # instance (ADR-51). Every published port is bound to 127.0.0.1.
 #
 # M1 (T1.1), none of it needing a key or a network beyond this machine:
-#   minio, minio-bucket   object store for bulky artifacts (ADR-57); the job creates the bucket
+#   minio, minio-bucket   object store for bulky artifacts (ADR-57) and the write-once audit copy
+#                         (T1.20); the job creates both buckets, the audit one with Object Lock
 #   otel-collector        OTLP in; metrics out to Prometheus (Artifact 12.2)
 #   prometheus            scrapes the collector and loads ops/alerts.yml (Artifact 12.3)
 #   token-issuer          FAKE identity system: signs short-lived tokens; the API verifies
@@ -22,6 +23,13 @@
 #   fake-monitoring       FAKE monitoring source serving tests/fixtures scenarios
 #                         (ops/fakes/monitoring.py)
 # The fakes are for local use only: anyone who reaches the issuer can mint any identity.
+#
+# Wired from M1 (T1.10, T1.17, T1.19, T1.20): the worker runs the real Evidence Collector against
+# fake-monitoring and the Knowledge Retriever over the synthetic runbook corpus, which the
+# one-shot corpus-seed job ingests (tests/fixtures/runbooks); the hypothesise, diagnose,
+# review and draft_patch steps stay scripted. API and worker send spans to otel-collector and
+# serve /metrics on AISRE_METRICS_PORT inside the network, which Prometheus scrapes; both
+# write the audit copy to the locked bucket.
 #
 # Images are pinned by tag, checked on Docker Hub on 2026-11-18. Artifact 13.3 asks for
 # digests; tags are what this pass verified, and digests replace them before M0 closes.
@@ -40,7 +48,7 @@ x-fake: &fake
 x-app: &app
   build: .
   image: aisre-app:dev
-  depends_on:
+  depends_on: &app-depends
     postgres:
       condition: service_healthy
     temporal:
@@ -53,6 +61,17 @@ x-app: &app
     # The object store's bucket exists before anything can write an artifact (T1.1).
     minio-bucket:
       condition: service_completed_successfully
+
+# API and worker alike: spans to the collector, /metrics for Prometheus (T1.19), and the
+# write-once audit copy (T1.20) in its Object Lock bucket.
+x-app-wiring: &app-wiring
+  OTEL_EXPORTER_OTLP_ENDPOINT: ${OTEL_EXPORTER_OTLP_ENDPOINT:-http://otel-collector:4318}
+  AISRE_METRICS_PORT: ${AISRE_METRICS_PORT:-9464}
+  AISRE_AUDIT_STORE_URL: ${AISRE_AUDIT_STORE_URL:-http://minio:9000}
+  AISRE_AUDIT_STORE_BUCKET: ${AISRE_AUDIT_STORE_BUCKET:-aisre-audit}
+  AISRE_AUDIT_STORE_ACCESS_KEY: ${AISRE_AUDIT_STORE_ACCESS_KEY:-}
+  AISRE_AUDIT_STORE_SECRET_KEY: ${AISRE_AUDIT_STORE_SECRET_KEY:-}
+  AISRE_AUDIT_STORE_LOCK_DAYS: ${AISRE_AUDIT_STORE_LOCK_DAYS:-}
 
 services:
   postgres:
@@ -172,6 +191,7 @@ services:
   api:
     <<: *app
     environment:
+      <<: *app-wiring
       AISRE_ENV: ${AISRE_ENV:-development}
       AISRE_DATABASE_URL: ${AISRE_DATABASE_URL}
       AISRE_LOG_LEVEL: ${AISRE_LOG_LEVEL:-INFO}
@@ -180,6 +200,8 @@ services:
       AISRE_OIDC_ISSUER: ${AISRE_OIDC_ISSUER:-}
       AISRE_OIDC_AUDIENCE: ${AISRE_OIDC_AUDIENCE:-}
       AISRE_OIDC_JWKS_URL: ${AISRE_OIDC_JWKS_URL:-}
+      # Unset: each start signs exports with a fresh key (development and test only).
+      AISRE_EXPORT_SIGNING_KEY: ${AISRE_EXPORT_SIGNING_KEY:-}
     command:
       ["uvicorn", "--factory", "aisre.api.app:create_app", "--host", "0.0.0.0", "--port", "8000"]
     ports:
@@ -196,7 +218,15 @@ services:
 
   worker:
     <<: *app
+    depends_on:
+      <<: *app-depends
+      # The corpus is in before the first incident; also lets `up --wait` count the job.
+      corpus-seed:
+        condition: service_completed_successfully
+      fake-monitoring:
+        condition: service_healthy
     environment:
+      <<: *app-wiring
       AISRE_ENV: ${AISRE_ENV:-development}
       AISRE_DATABASE_URL: ${AISRE_DATABASE_URL}
       AISRE_TEMPORAL_ADDRESS: ${AISRE_TEMPORAL_ADDRESS}
@@ -204,6 +234,12 @@ services:
       AISRE_LOG_LEVEL: ${AISRE_LOG_LEVEL:-INFO}
       AISRE_SCRIPTED_SKILLS: ${AISRE_SCRIPTED_SKILLS:-false}
       AISRE_SCRIPTED_STEP_SECONDS: ${AISRE_SCRIPTED_STEP_SECONDS:-0}
+      # The real Evidence Collector and Knowledge Retriever (T1.10, T1.17). Empty: scripted.
+      AISRE_EVIDENCE_SOURCES: ${AISRE_EVIDENCE_SOURCES:-}
+      AISRE_OBJECT_STORE_URL: ${AISRE_OBJECT_STORE_URL:-}
+      AISRE_OBJECT_STORE_BUCKET: ${AISRE_OBJECT_STORE_BUCKET:-aisre-artifacts}
+      AISRE_OBJECT_STORE_ACCESS_KEY: ${AISRE_OBJECT_STORE_ACCESS_KEY:-}
+      AISRE_OBJECT_STORE_SECRET_KEY: ${AISRE_OBJECT_STORE_SECRET_KEY:-}
     command: ["python", "-m", "aisre.workflow.worker"]
     healthcheck:
       # The worker touches this file after every relay pass (aisre.workflow.worker).
@@ -212,6 +248,27 @@ services:
       timeout: 5s
       retries: 12
 
+  corpus-seed:
+    # DEVELOPMENT ONLY (T1.17): the synthetic runbook corpus, into the development
+    # organisation. The image holds no tests/, so the folder is mounted. Each run builds a new
+    # immutable revision and activates it if the labelled query set still passes.
+    <<: *app
+    depends_on:
+      postgres:
+        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
+    environment:
+      AISRE_ENV: ${AISRE_ENV:-development}
+      AISRE_DATABASE_URL: ${AISRE_DATABASE_URL}
+    volumes:
+      - ./tests/fixtures/runbooks:/opt/runbooks:ro
+    command:
+      [
+        "python", "-m", "aisre.retrieval.corpus", "/opt/runbooks",
+        "--org", "00000000-0000-7000-8000-000000000001",
+      ]
+    restart: "no"
 
   minio:
     image: bitnamilegacy/minio:2025.7.23-debian-12-r5
@@ -240,14 +297,21 @@ services:
       MINIO_ROOT_USER: ${MINIO_ROOT_USER}
       MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD}
       BUCKET: ${AISRE_OBJECT_STORE_BUCKET:-aisre-artifacts}
+      AUDIT_BUCKET: ${AISRE_AUDIT_STORE_BUCKET:-aisre-audit}
       MC_CONFIG_DIR: /tmp/mc
     entrypoint: ["sh", "-euc"]
     # Idempotent: an existing bucket is left as it is. Versioning keeps overwritten objects.
+    # The audit bucket (T1.20) has Object Lock, which can only be turned on at creation (it
+    # implies versioning); the copier sets COMPLIANCE retention per object when
+    # AISRE_AUDIT_STORE_LOCK_DAYS is set. `retention info --default` fails on a bucket without
+    # locking, so the job fails rather than leave the copy unprotected.
     command:
       - |
         mc alias set local http://minio:9000 "$$MINIO_ROOT_USER" "$$MINIO_ROOT_PASSWORD" >/dev/null
         mc mb --ignore-existing "local/$$BUCKET"
         mc version enable "local/$$BUCKET"
+        mc mb --ignore-existing --with-lock "local/$$AUDIT_BUCKET"
+        mc retention info --default "local/$$AUDIT_BUCKET" >/dev/null
     restart: "no"
 
   otel-collector:
