@@ -147,8 +147,14 @@ INCIDENT = "/v1/incidents/01a1ee90-ae44-7289-aa2b-4d9ef6e077ab"
         ("PATCH", INCIDENT, "405"),
         ("DELETE", INCIDENT, "405"),
         ("PUT", f"{INCIDENT}/notes", "405"),
+        ("GET", "/icons.js", "static"),
+        ("GET", "/readyz", "$api_upstream"),
+        ("HEAD", "/readyz", "$api_upstream"),
+        ("GET", "/livez", "$api_upstream"),
         ("POST", "/livez", "405"),
-        ("GET", "/readyz", "404"),
+        ("POST", "/readyz", "405"),
+        ("DELETE", "/readyz", "405"),
+        ("GET", "/readyz/x", "404"),
     ],
 )
 def test_proxy_enforces_read_only_methods(method: str, path: str, expected: str) -> None:
@@ -209,9 +215,42 @@ def test_page_loads_only_its_own_files() -> None:
     assert "on" + "click=" not in html.lower()
 
 
+def test_health_probes_are_exact_and_read_only() -> None:
+    for path in ("/readyz", "/livez"):
+        loc = route(path)
+        assert (loc.modifier, loc.pattern) == ("=", path)
+        assert loc.allowed() == {"GET", "HEAD"}
+        assert loc.upstream() == "$api_upstream"
+
+
+SCRIPTS = sorted(DEMO.glob("*.js"))
+
+
+def test_every_script_is_served() -> None:
+    assert {p.name for p in SCRIPTS} >= {"app.js", "icons.js"}
+    for p in SCRIPTS:
+        assert outcome("GET", f"/{p.name}") == "static", p.name
+
+
+@pytest.mark.parametrize("script", SCRIPTS, ids=lambda p: p.name)
 @pytest.mark.parametrize(
     "sink",
     ["innerHTML", "outerHTML", "insertAdjacentHTML", "eval(", "new Function", "document.write"],
 )
-def test_app_js_has_no_html_sink_or_eval(sink: str) -> None:
-    assert sink not in (DEMO / "app.js").read_text()
+def test_scripts_have_no_html_sink_or_eval(script: Path, sink: str) -> None:
+    assert sink not in script.read_text()
+
+
+@pytest.mark.parametrize("name", ["index.html", *(p.name for p in SCRIPTS)])
+def test_no_approve_or_apply_control(name: str) -> None:
+    """Advisory release (ADR-44) and a read-only viewer (ADR-70): nothing offers to act."""
+    text = (DEMO / name).read_text()
+    for word in (
+        "Approve",
+        "Apply fix",
+        "Apply Fix",
+        "Reject",
+        "Cancel incident",
+        "Close incident",
+    ):
+        assert word not in text, word
