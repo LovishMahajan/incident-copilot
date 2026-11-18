@@ -21,6 +21,7 @@ RUN uv sync --locked --no-dev --no-install-project
 
 COPY src ./src
 COPY db ./db
+COPY prompts ./prompts
 COPY alembic.ini ./
 RUN uv sync --locked --no-dev --no-editable
 

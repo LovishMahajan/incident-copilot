@@ -10,7 +10,8 @@ Idempotent on the diagnosis ID: a retried step finds its row and writes nothing.
 
 `confidence` is the level code scored from the cited observations (ADR-53), never the model's.
 Low is never established (schema.sql), so a draft the model calls established that scores low is
-stored as inconclusive, with the reason in `stop_reason`; its review can only confirm that.
+stored as inconclusive, with the reason in `stop_reason`; its review can only confirm that. Every
+inconclusive row's `stop_reason` starts "Root cause not established", whatever the model wrote.
 
 `record_review` writes the review's part once (ADR-69): `reviewed`, `final_outcome`,
 `final_confidence` from ReviewResult.stored_fields, and the issues as `review_notes`, with
@@ -47,7 +48,9 @@ from aisre.record.tables import incidents
 
 ACTOR = "system:diagnosis-engine"
 SOURCE = "/aisre/worker/diagnosis-engine"
-LOW_NOT_ESTABLISHED = "scored low from the cited observations: not established (ADR-53)"
+NOT_ESTABLISHED = "Root cause not established"  # what an inconclusive diagnosis records (ADR-46)
+LOW_NOT_ESTABLISHED = f"{NOT_ESTABLISHED}: scored low from the cited observations (ADR-53)"
+UNDECIDED = f"{NOT_ESTABLISHED}: the evidence did not decide between the hypotheses"
 
 
 def skill_inputs(
@@ -160,7 +163,7 @@ def store_diagnosis(
             now,
         )
     fields: dict[str, Any] = draft.stored_fields()
-    stop_reason = None
+    stop_reason = None if established else UNDECIDED
     if draft.outcome == "established" and not established:
         fields["outcome"], stop_reason = "inconclusive", LOW_NOT_ESTABLISHED
     lead_id = hypothesis_id(diagnosis_id, lead) if lead is not None else None

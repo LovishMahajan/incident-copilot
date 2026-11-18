@@ -3,10 +3,15 @@
 from __future__ import annotations
 
 import asyncio
+import json
+import threading
 import uuid
 from datetime import datetime, timedelta, timezone
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 import pytest
+from monitoring_scenarios import copy_reference
+from skill_rig import ScriptedTransport, collected, investigate, skills
 from support import draft_json
 
 from aisre.agent.agent_contracts import DiagnosisDraft
@@ -14,7 +19,8 @@ from aisre.agent.tool_registry import REGISTRY, ToolGate, ToolRefused
 from aisre.agent.validation import UnsafeOutput, check_output
 from aisre.evidence.collector import Call, Scope, collect
 from aisre.evidence.sources import SourceResult, SourceSet
-from aisre.gateway.adapters import render_context
+from aisre.gateway.adapters import HttpResponse, render_context
+from aisre.workflow import activities as act
 
 NOW = datetime(2026, 11, 1, 9, 0, tzinfo=timezone.utc)
 METADATA = "http://169.254.169.254/latest/meta-data/"
@@ -105,11 +111,75 @@ def test_st29_a_link_in_a_log_line_stays_text_inside_the_data_block():
     assert '<data ref="evidence:1" kind="log">\nsee http://canary.example/x\n</data>' in rendered
 
 
-def test_st29_canary_server_needs_a_running_system():
-    pytest.skip(
-        "Showing no request reaches a canary needs a deployed investigation and a canary server; the "
-        "reference modules hold no HTTP client to observe"
-    )
+class Canary:
+    """A server that counts every request it gets. Nothing should ever reach it."""
+
+    def __init__(self) -> None:
+        hits = self.hits = []
+
+        class Handler(BaseHTTPRequestHandler):
+            def log_message(self, *args) -> None:
+                pass
+
+            def do_GET(self) -> None:
+                hits.append(self.path)
+                self.send_response(200)
+                self.end_headers()
+
+            do_POST = do_HEAD = do_GET
+
+        self.server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+        threading.Thread(target=self.server.serve_forever, daemon=True).start()
+        self.url = f"http://localhost:{self.server.server_address[1]}/fix-me"
+
+    def close(self) -> None:
+        self.server.shutdown()
+        self.server.server_close()
+
+
+def test_st29_no_request_reaches_a_canary_named_in_evidence_or_in_model_output(tmp_path):
+    """A canary link in a log line goes through the real collector and the real skills, and a
+    model answer that repeats it is stopped by the output check, never fetched or retried."""
+    canary = Canary()
+    try:
+        root = copy_reference(tmp_path)
+        logs = root / "reference-incident/logs.ndjson"
+        logs.write_text(
+            logs.read_text().replace(
+                "payment gateway did not answer within 3000 ms",
+                f"payment gateway did not answer within 3000 ms, see {canary.url}",
+            )
+        )
+        inputs = collected(root)
+        assert canary.url in json.dumps([e.summary for e in inputs.evidence])
+        s, _, transport = investigate(inputs)  # the scripted answers name no link
+        assert s.stop_reason == "critic accepted"
+        assert canary.url in transport.bodies[0]["messages"][0]["content"]  # data, inside a block
+
+        def repeat_the_link(body):
+            h = {
+                "statement": f"Follow {canary.url}",
+                "category": "unknown",
+                "claims": [{"text": "t", "evidence_ids": [str(inputs.evidence[0].evidence_id)]}],
+                "confirm_test": "c",
+                "refute_test": "r",
+            }
+            text = json.dumps({"hypotheses": [h, h]})
+            msg = {"model": body["model"], "content": [{"type": "text", "text": text}]}
+            return HttpResponse(200, msg | {"stop_reason": "end_turn", "usage": {}}, {})
+
+        sk, _, sent = skills(inputs, ScriptedTransport(override=repeat_the_link))
+        inp = act.SkillIn(
+            str(inputs.context.incident_id),
+            "k:s1",
+            evidence_ids=[str(e.evidence_id) for e in inputs.evidence],
+        )
+        result = asyncio.run(sk.hypothesise(inp))
+        assert result.failure.code == "invalid_output" and "link" in result.failure.detail
+        assert len(sent.bodies) == 1
+        assert canary.hits == []
+    finally:
+        canary.close()
 
 
 # ---------------------------------------------------------------- ST-30

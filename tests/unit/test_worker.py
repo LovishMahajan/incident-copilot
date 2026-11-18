@@ -5,10 +5,13 @@ from __future__ import annotations
 import json
 import os
 import time
+from pathlib import Path
 
 from aisre.workflow import activities as act
 from aisre.workflow import worker
 from aisre.workflow.record_activities import EvidenceActivities
+
+ROOT = Path(__file__).parents[2]
 
 
 def test_worker_registers_the_investigation_queue_only():
@@ -68,3 +71,31 @@ def test_without_sources_the_script_still_answers():
     chosen = _activities({})
     collect = next(a for a in chosen if worker.activity_name(a) == "collect_evidence")
     assert collect.__module__ == "aisre.workflow.scripted"
+
+
+def test_the_real_skills_replace_the_scripts_once_the_gateway_is_configured():
+    from sqlalchemy import create_engine
+
+    from aisre.agent.skills.activities import ModelSkills
+    from aisre.config import Settings
+    from aisre.gateway.transport import AnthropicTransport
+
+    env = {
+        "AISRE_ENV": "test",
+        "AISRE_SCRIPTED_SKILLS": "true",
+        "AISRE_PROVIDER_URL": "http://fake-provider:8080",
+        "AISRE_PROVIDER_API_KEY": "fake-provider-key",
+        "AISRE_PROMPTS_DIR": str(ROOT / "prompts"),
+    }
+    settings = Settings.from_env(env)
+    transport = worker.provider_transport(settings)
+    assert isinstance(transport, AnthropicTransport)
+    assert "fake-provider-key" not in repr(transport) + repr(settings)
+    engine = create_engine("postgresql+psycopg://aisre_app@127.0.0.1:1/aisre")  # never connects
+    chosen = worker.investigation_activities(settings, engine, transport=transport)
+    by_name = {worker.activity_name(a): a for a in chosen}
+    assert len(by_name) == len(chosen)
+    for name in ("hypothesise", "diagnose", "review_diagnosis"):
+        assert isinstance(by_name[name].__self__, ModelSkills)
+    assert by_name["draft_patch"].__module__ == "aisre.workflow.scripted"  # until M2
+    assert worker.provider_transport(Settings.from_env({"AISRE_ENV": "test"})) is None

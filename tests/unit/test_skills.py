@@ -8,69 +8,30 @@ FR-11, FR-14 to FR-16, FR-45.
 
 from __future__ import annotations
 
-import asyncio
 import json
 from typing import Any
 
 import pytest
 from monitoring_scenarios import copy_reference
-from skill_rig import ScriptedTransport, collected, skills
+from pydantic import SecretStr
+from skill_rig import (
+    SCRIPTS,
+    ScriptedTransport,
+    collected,
+    investigate,
+    model_provider,
+    run,
+    skill_in,
+    skills,
+)
 
 from aisre.agent.agent_contracts import Confidence, EvidenceKind, HypothesesOut
-from aisre.agent.coordinator import AgentState, Step, apply_result, next_step
-from aisre.agent.skills import reasoning
 from aisre.agent.validation import check_output
 from aisre.gateway.adapters import HttpResponse
 from aisre.gateway.gateway_contracts import TASK_MODEL_ALIAS
-from aisre.workflow import activities as act
+from aisre.gateway.transport import AnthropicTransport
 
 WITHHELD = ("release.json", "config-diff.txt")
-
-
-def run(coro: Any) -> Any:
-    return asyncio.run(coro)
-
-
-def skill_in(inputs: reasoning.Inputs, key: str, **kw: Any) -> act.SkillIn:
-    ids = [str(e.evidence_id) for e in inputs.evidence]
-    return act.SkillIn(str(inputs.context.incident_id), key, evidence_ids=ids, **kw)
-
-
-def investigate(inputs: reasoning.Inputs, transport: Any = None) -> tuple[AgentState, Any, Any]:
-    """The coordinator's loop over the three skills, from evidence already collected."""
-    sk, store, transport = skills(inputs, transport)
-    s = AgentState(started_at=inputs.context.started_at)
-    s.baseline_done = s.knowledge_done = True
-    s.evidence_ids = [str(e.evidence_id) for e in inputs.evidence]
-    hyps = diagnosis = critic = None
-    n = 0
-    while (step := next_step(s, inputs.context.started_at)) not in (
-        Step.FINISH_ESTABLISHED,
-        Step.FINISH_INCONCLUSIVE,
-    ):
-        n += 1
-        if step == Step.HYPOTHESISE:
-            result = run(sk.hypothesise(skill_in(inputs, f"k:s{n}")))
-            hyps = result.output
-        elif step == Step.DIAGNOSE:
-            result = run(sk.diagnose(skill_in(inputs, f"k:s{n}", hypotheses=hyps, critic=critic)))
-            diagnosis = result.output
-        elif step == Step.CRITIQUE:
-            result = run(
-                sk.review_diagnosis(
-                    skill_in(
-                        inputs,
-                        f"k:s{n}",
-                        diagnosis=diagnosis.draft,
-                        diagnosis_id=str(diagnosis.diagnosis_id),
-                    )
-                )
-            )
-            critic = result.output.verdict if result.output else None
-        else:
-            raise AssertionError(step)
-        apply_result(s, step, result)
-    return s, store, transport
 
 
 def test_reference_incident_gets_a_cited_established_diagnosis_naming_the_changed_setting():
@@ -217,3 +178,18 @@ def test_scripts_answers_pass_the_output_check():
     _, store, _ = investigate(inputs)
     for saved in store.diagnoses.values():
         check_output(saved["draft"])
+
+
+def test_the_real_transport_reaches_the_fake_provider_as_compose_runs_it():
+    """The worker's path in Compose: the Anthropic SDK transport over HTTP to the fake provider."""
+    server = model_provider.serve(model_provider.Provider(model_provider.load_scripts(SCRIPTS)))
+    transport = AnthropicTransport(
+        SecretStr("fake-provider-key"), f"http://127.0.0.1:{server.server_address[1]}"
+    )
+    try:
+        s, store, _ = investigate(collected(), transport)
+    finally:
+        server.shutdown()
+        server.server_close()
+    assert s.stop_reason == "critic accepted" and s.confidence == "high"
+    assert len(store.diagnoses) == 1

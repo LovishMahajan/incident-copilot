@@ -26,8 +26,12 @@
 #
 # Wired from M1 (T1.10, T1.17, T1.19, T1.20): the worker runs the real Evidence Collector against
 # fake-monitoring and the Knowledge Retriever over the synthetic runbook corpus, which the
-# one-shot corpus-seed job ingests (tests/fixtures/runbooks); the hypothesise, diagnose,
-# review and draft_patch steps stay scripted. API and worker send spans to otel-collector and
+# one-shot corpus-seed job ingests (tests/fixtures/runbooks). From T1.18, hypothesise, diagnose
+# and review are the real skills, calling fake-provider through the real Anthropic transport
+# (AISRE_PROVIDER_URL, AISRE_PROVIDER_API_KEY); draft_patch stays scripted until M2. To replay
+# the reference incident's honesty variant (change history withheld), point the worker at
+# `.../scenarios/reference-incident:without=release.json,config-diff.txt` (README).
+# API and worker send spans to otel-collector and
 # serve /metrics on AISRE_METRICS_PORT inside the network, which Prometheus scrapes; both
 # write the audit copy to the locked bucket.
 #
@@ -225,6 +229,8 @@ services:
         condition: service_completed_successfully
       fake-monitoring:
         condition: service_healthy
+      fake-provider:
+        condition: service_healthy
     environment:
       <<: *app-wiring
       AISRE_ENV: ${AISRE_ENV:-development}
@@ -240,6 +246,9 @@ services:
       AISRE_OBJECT_STORE_BUCKET: ${AISRE_OBJECT_STORE_BUCKET:-aisre-artifacts}
       AISRE_OBJECT_STORE_ACCESS_KEY: ${AISRE_OBJECT_STORE_ACCESS_KEY:-}
       AISRE_OBJECT_STORE_SECRET_KEY: ${AISRE_OBJECT_STORE_SECRET_KEY:-}
+      # The real skills through the Model Gateway (T1.18). No key: scripted, if enabled.
+      AISRE_PROVIDER_URL: ${AISRE_PROVIDER_URL:-}
+      AISRE_PROVIDER_API_KEY: ${AISRE_PROVIDER_API_KEY:-}
     command: ["python", "-m", "aisre.workflow.worker"]
     healthcheck:
       # The worker touches this file after every relay pass (aisre.workflow.worker).

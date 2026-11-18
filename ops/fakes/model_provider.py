@@ -1,14 +1,14 @@
 """LOCAL USE ONLY (Artifact 13.5 T1.1): a fake model provider in the Anthropic Messages API shape.
 
 Lets the Model Gateway's real transport run with no key and no cost: point its base URL here
-and send any non-empty `x-api-key`. Answers are scripted from JSON files, so every run gives
-the same result.
+and send any non-empty key, as `x-api-key` or as `Authorization: Bearer` (the SDK's 2.x form).
+Answers are scripted from JSON files, so every run gives the same result.
 
     POST /v1/messages          Messages API request -> message, or an error in the API's shape
     GET  /_fake/requests       the last 100 request bodies, newest last (headers left out)
     GET  /healthz
 
-Checks what the real API refuses: a missing `x-api-key` is 401 `authentication_error`; a
+Checks what the real API refuses: no key in either header is 401 `authentication_error`; a
 missing `anthropic-version`, or a body without `model`, `max_tokens` and `messages`, is 400
 `invalid_request_error`.
 
@@ -26,8 +26,8 @@ strings matches when every one appears:
 `answer` is a JSON answer, sent as the one text block, as structured output returns it. Its
 strings may hold `{{ref:<regex>}}`: the ID of the first data block in the user message, as the
 platform renders evidence (`<data ref="evidence:<id>" ...>`), whose text matches the regular
-expression. That is how a fixed script cites evidence collected at run time. A placeholder
-nothing matches makes the answer a 500 `api_error` naming it.
+expression. That is how a fixed script cites evidence collected at run time. A script whose
+placeholders nothing fills doesn't match, and the next one is tried.
 
 A message's `id`, `type`, `role` and `model` (echoed from the request) are filled in, and
 `usage` defaults to a rough count (4 characters a token). FAKE_PROVIDER_PORT sets the port
@@ -109,7 +109,8 @@ class Provider:
             self.count += 1
             n = self.count
         request_id = f"req_fake_{n:06d}"
-        if not headers.get("x-api-key"):
+        bearer = headers.get("authorization", "").removeprefix("Bearer ").strip()
+        if not headers.get("x-api-key") and not bearer:
             return (
                 401,
                 error_body("authentication_error", "x-api-key header is required", request_id),
@@ -136,7 +137,20 @@ class Provider:
             )
         self.requests.append(req)
         text = json.dumps([req.get("system"), req["messages"], req.get("tools")])
-        script = next((s for s in self.scripts if matches(s, text)), None)
+        blocks = DATA_BLOCK.findall(user_text(req))
+        script, response = None, {}
+        for candidate in self.scripts:
+            if not matches(candidate, text):
+                continue
+            response = dict(candidate.get("response", {}))
+            if "answer" in candidate:
+                try:
+                    answer = render(candidate["answer"], blocks)
+                except LookupError:
+                    continue  # this script needs evidence the request doesn't hold
+                response["content"] = [{"type": "text", "text": json.dumps(answer)}]
+            script = candidate
+            break
         if script is None:
             return (
                 500,
@@ -151,14 +165,6 @@ class Provider:
                 error_body(err["type"], err["message"], request_id),
                 extra,
             )
-        response = dict(script.get("response", {}))
-        if "answer" in script:
-            try:
-                answer = render(script["answer"], DATA_BLOCK.findall(user_text(req)))
-            except LookupError as e:
-                message = f"script {script['name']}: no data block matches {e}"
-                return 500, error_body("api_error", message, request_id), {}
-            response["content"] = [{"type": "text", "text": json.dumps(answer)}]
         content = response.get("content", [])
         usage = {"input_tokens": len(text) // 4, "output_tokens": len(json.dumps(content)) // 4}
         message = {

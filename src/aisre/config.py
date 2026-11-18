@@ -56,6 +56,9 @@ ENV_VARS: dict[str, str] = {
     "audit_store_secret_key": "AISRE_AUDIT_STORE_SECRET_KEY",
     "audit_store_lock_days": "AISRE_AUDIT_STORE_LOCK_DAYS",
     "export_signing_key": "AISRE_EXPORT_SIGNING_KEY",
+    "provider_url": "AISRE_PROVIDER_URL",
+    "provider_api_key": "AISRE_PROVIDER_API_KEY",
+    "prompts_dir": "AISRE_PROMPTS_DIR",
     "otlp_endpoint": "OTEL_EXPORTER_OTLP_ENDPOINT",
     "metrics_port": "AISRE_METRICS_PORT",
 }
@@ -105,6 +108,13 @@ class Settings(BaseModel):
     audit_store_lock_days: int | None = Field(default=None, ge=1)
     # Ed25519 seed, base64, that signs exports. Required in production (aisre.api.export).
     export_signing_key: SecretStr | None = None
+    # The Model Gateway (T1.8, T1.18): the provider's key, and its base URL (unset: the
+    # provider's own). With a key, the worker's hypothesise, diagnose and review_diagnosis are the
+    # real skills, ahead of any script. Locally, the URL is Compose's fake provider.
+    provider_url: str | None = Field(default=None, pattern=r"^https?://")
+    provider_api_key: SecretStr | None = None
+    # prompts/<task>/v<N>.md (ADR-63), relative to the working directory: /app in the image.
+    prompts_dir: str = Field(default="prompts", min_length=1)
     # Telemetry (T1.19): the collector's OTLP/HTTP endpoint and the /metrics port. Unset: off.
     otlp_endpoint: str | None = Field(default=None, pattern=r"^https?://")
     metrics_port: int | None = Field(default=None, ge=0, le=65535)
