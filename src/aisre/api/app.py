@@ -10,6 +10,9 @@ event, the alert and the outbox row that starts the workflow; or, for a duplicat
 alert attached to the open incident (200, `deduplicated: true`). The relay in the worker
 delivers the outbox row; this process never talks to Temporal (ADR-19).
 
+Every `/v1` route names its caller through aisre.api.auth: a verified bearer token, or the
+development-only header when no token verifier is configured (T1.3).
+
 Routes are plain `def`: the Incident Record is synchronous, so FastAPI runs them on its thread
 pool (see aisre.record). Errors are RFC 9457 problem details (aisre.api.problems).
 """
@@ -28,8 +31,9 @@ from pydantic import ValidationError
 from sqlalchemy import Engine, text
 from starlette.exceptions import HTTPException
 
+from aisre.api import audit
 from aisre.api.alerts import to_incident_create
-from aisre.api.auth import Caller, dev_caller, require_development
+from aisre.api.auth import Authenticator, Caller, current_caller
 from aisre.api.problems import ApiError, field_errors, problem_response
 from aisre.config import Settings
 from aisre.contracts import CloudEvent, IncidentAccepted, IncidentView, Page
@@ -47,13 +51,15 @@ CREATE_INCIDENT = "POST /v1/incidents"
 REQUEST_ID_HEADER = "X-Request-ID"
 TIMELINE_PAGE_MAX = 500
 
-CallerDep = Annotated[Caller, Depends(dev_caller)]
+CallerDep = Annotated[Caller, Depends(current_caller)]
 
 
 def create_app(settings: Settings | None = None, engine: Engine | None = None) -> FastAPI:
-    """The API. Refuses to build outside development and test (aisre.api.auth)."""
+    """The API. Without a token verifier, refuses to build outside development and test
+    (aisre.api.auth)."""
     settings = settings or Settings.from_env()
-    require_development(settings.env)
+    authenticator = Authenticator(settings)
+    audit.install_handler()
     db = engine or make_engine(settings.database_url)
 
     @asynccontextmanager
@@ -63,6 +69,7 @@ def create_app(settings: Settings | None = None, engine: Engine | None = None) -
             db.dispose()
 
     app = FastAPI(title="AI SRE platform API", version="0.1.0", lifespan=lifespan)
+    app.state.authenticator = authenticator
     _install_errors(app)
 
     @app.post("/v1/incidents", status_code=201, response_model=IncidentAccepted)

@@ -83,3 +83,23 @@ def pytest_configure(config: pytest.Config) -> None:
             returncode=GUARD_EXIT_CODE,
         )
     os.environ.setdefault("AISRE_ENV", "test")
+
+
+@pytest.fixture(scope="session")
+def token_issuer():
+    """The fake token issuer (ops/fakes/token_issuer.py), serving on a free local port.
+
+    Returns (issuer, jwks_url): `issuer.token(sub, groups, ...)` mints a token, and
+    `issuer.sign(claims, header)` signs anything, for forged-token tests (T1.3)."""
+    import importlib.util
+    from pathlib import Path
+
+    path = Path(__file__).parents[1] / "ops/fakes/token_issuer.py"
+    spec = importlib.util.spec_from_file_location("fake_token_issuer", path)
+    assert spec and spec.loader
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    issuer = module.Issuer("http://issuer.test", "aisre-api")
+    server = module.serve(issuer)
+    yield issuer, f"http://127.0.0.1:{server.server_address[1]}/jwks"
+    server.shutdown()
