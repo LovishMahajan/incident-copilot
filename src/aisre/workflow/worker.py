@@ -13,8 +13,9 @@ with aisre.workflow.scripted's fixed results, so an incident runs to `handed_ove
 the worker refuses that in production, as Settings does. Every other activity is the interface
 in activities.py, which raises if called. Without scripts, a workflow stops at the slot, retrying.
 
-Evidence (T1.10): with `AISRE_EVIDENCE_SOURCES` set, `collect_evidence` is the real Evidence
-Collector (record_activities.EvidenceActivities), ahead of any script. The variable is JSON for
+Evidence (T1.10, T1.17): with `AISRE_EVIDENCE_SOURCES` set, `collect_evidence` and
+`retrieve_knowledge` are the real Evidence Collector and Knowledge Retriever
+(record_activities.EvidenceActivities), ahead of any script. The variable is JSON for
 aisre.evidence.sources.SourceSet.from_config, which names the adapter answering each READ tool,
 for example `{"sources": {"*": {"adapter": "fake_monitoring", "url":
 "http://fake-monitoring:8080/v1/scenarios/reference-incident"}}}`. Snapshots go to the object
@@ -78,7 +79,8 @@ def activity_name(fn: Callable[..., Any]) -> str:
 def evidence_activities(
     settings: Settings, engine: Engine, environ: Mapping[str, str] | None = None
 ) -> list[Callable[..., Any]]:
-    """T1.10: the real Evidence Collector, when its sources are configured; else none."""
+    """T1.10, T1.17: the real Evidence Collector and Knowledge Retriever, when the evidence
+    sources are configured; else none."""
     env = os.environ if environ is None else environ
     config = env.get("AISRE_EVIDENCE_SOURCES")
     if not config:

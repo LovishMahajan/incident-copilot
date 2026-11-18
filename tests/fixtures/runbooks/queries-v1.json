@@ -1,0 +1,1092 @@
+{
+ "version": "v1",
+ "synthetic": true,
+ "note": "SYNTHETIC labelled query set for the synthetic corpus in this folder (Artifact 10.13). scope_trap says which filter the query tests, if any.",
+ "queries": [
+  {
+   "query_id": "q-e01",
+   "query": "ORDER_TAX_RATE_BPS",
+   "kind": "exact_identifier",
+   "service": "orders-api",
+   "groups": [
+    "orders-team"
+   ],
+   "relevant": [
+    [
+     "rb-orders-api",
+     [
+      "Orders API runbook",
+      "ValueError in compute_totals"
+     ]
+    ]
+   ],
+   "scope_trap": "fraud runbook (security only) and the deprecated runbook also match",
+   "labelled_by": "synthetic (T1.17)",
+   "labelled_at": "2026-11-18T00:00:00Z"
+  },
+  {
+   "query_id": "q-e02",
+   "query": "OrdersApiHighErrorRate",
+   "kind": "exact_identifier",
+   "service": "orders-api",
+   "groups": [
+    "orders-team"
+   ],
+   "relevant": [
+    [
+     "rb-orders-api",
+     [
+      "Orders API runbook",
+      "HTTP 500 after deploy"
+     ]
+    ]
+   ],
+   "scope_trap": null,
+   "labelled_by": "synthetic (T1.17)",
+   "labelled_at": "2026-11-18T00:00:00Z"
+  },
+  {
+   "query_id": "q-e03",
+   "query": "ValueError compute_totals",
+   "kind": "exact_identifier",
+   "service": "orders-api",
+   "groups": [
+    "orders-team"
+   ],
+   "relevant": [
+    [
+     "rb-orders-api",
+     [
+      "Orders API runbook",
+      "ValueError in compute_totals"
+     ]
+    ],
+    [
+     "pi-2026-031",
+     [
+      "Past incident 2026-031 orders rounding setting",
+      "What happened"
+     ]
+    ]
+   ],
+   "scope_trap": null,
+   "labelled_by": "synthetic (T1.17)",
+   "labelled_at": "2026-11-18T00:00:00Z"
+  },
+  {
+   "query_id": "q-e04",
+   "query": "deployctl config revert orders-api",
+   "kind": "exact_identifier",
+   "service": "orders-api",
+   "groups": [
+    "orders-team"
+   ],
+   "relevant": [
+    [
+     "rb-orders-api",
+     [
+      "Orders API runbook",
+      "Config revert"
+     ]
+    ]
+   ],
+   "scope_trap": null,
+   "labelled_by": "synthetic (T1.17)",
+   "labelled_at": "2026-11-18T00:00:00Z"
+  },
+  {
+   "query_id": "q-e05",
+   "query": "cfg-42",
+   "kind": "exact_identifier",
+   "service": "orders-api",
+   "groups": [
+    "orders-team"
+   ],
+   "relevant": [
+    [
+     "rb-orders-api",
+     [
+      "Orders API runbook",
+      "Config revert"
+     ]
+    ]
+   ],
+   "scope_trap": null,
+   "labelled_by": "synthetic (T1.17)",
+   "labelled_at": "2026-11-18T00:00:00Z"
+  },
+  {
+   "query_id": "q-e06",
+   "query": "TimeoutError payment gateway 3000 ms",
+   "kind": "exact_identifier",
+   "service": "orders-api",
+   "groups": [
+    "orders-team"
+   ],
+   "relevant": [
+    [
+     "rb-orders-api",
+     [
+      "Orders API runbook",
+      "Payment gateway timeouts"
+     ]
+    ]
+   ],
+   "scope_trap": "payments-api runbook also has TimeoutError",
+   "labelled_by": "synthetic (T1.17)",
+   "labelled_at": "2026-11-18T00:00:00Z"
+  },
+  {
+   "query_id": "q-e07",
+   "query": "orders-db connection reset",
+   "kind": "exact_identifier",
+   "service": "orders-api",
+   "groups": [
+    "orders-team"
+   ],
+   "relevant": [
+    [
+     "rb-orders-api",
+     [
+      "Orders API runbook",
+      "orders-db connection resets"
+     ]
+    ]
+   ],
+   "scope_trap": null,
+   "labelled_by": "synthetic (T1.17)",
+   "labelled_at": "2026-11-18T00:00:00Z"
+  },
+  {
+   "query_id": "q-e08",
+   "query": "ORDER_ROUNDING_DIGITS",
+   "kind": "exact_identifier",
+   "service": "orders-api",
+   "groups": [
+    "orders-team"
+   ],
+   "relevant": [
+    [
+     "pi-2026-031",
+     [
+      "Past incident 2026-031 orders rounding setting",
+      "What happened"
+     ]
+    ]
+   ],
+   "scope_trap": null,
+   "labelled_by": "synthetic (T1.17)",
+   "labelled_at": "2026-11-18T00:00:00Z"
+  },
+  {
+   "query_id": "q-e09",
+   "query": "FR-ORD-9",
+   "kind": "exact_identifier",
+   "service": "orders-api",
+   "groups": [
+    "security"
+   ],
+   "relevant": [
+    [
+     "rb-orders-fraud",
+     [
+      "Orders fraud controls",
+      "Fraud rule FR-ORD-9 false positives"
+     ]
+    ]
+   ],
+   "scope_trap": null,
+   "labelled_by": "synthetic (T1.17)",
+   "labelled_at": "2026-11-18T00:00:00Z"
+  },
+  {
+   "query_id": "q-e10",
+   "query": "PAYMENTS_TIMEOUT_MS",
+   "kind": "exact_identifier",
+   "service": "payments-api",
+   "groups": [
+    "payments-team"
+   ],
+   "relevant": [
+    [
+     "rb-payments-api",
+     [
+      "Payments API runbook",
+      "PAYMENTS_TIMEOUT_MS tuning"
+     ]
+    ],
+    [
+     "pi-2026-044",
+     [
+      "Past incident 2026-044 payments timeout",
+      "What happened"
+     ]
+    ]
+   ],
+   "scope_trap": "orders-api runbook also names PAYMENTS_TIMEOUT_MS",
+   "labelled_by": "synthetic (T1.17)",
+   "labelled_at": "2026-11-18T00:00:00Z"
+  },
+  {
+   "query_id": "q-e11",
+   "query": "PaymentsApiHighErrorRate",
+   "kind": "exact_identifier",
+   "service": "payments-api",
+   "groups": [
+    "payments-team"
+   ],
+   "relevant": [
+    [
+     "rb-payments-api",
+     [
+      "Payments API runbook",
+      "HTTP 500 after deploy"
+     ]
+    ]
+   ],
+   "scope_trap": null,
+   "labelled_by": "synthetic (T1.17)",
+   "labelled_at": "2026-11-18T00:00:00Z"
+  },
+  {
+   "query_id": "q-e12",
+   "query": "PaymentsWebhookBacklog",
+   "kind": "exact_identifier",
+   "service": "payments-api",
+   "groups": [
+    "payments-team"
+   ],
+   "relevant": [
+    [
+     "rb-payments-api",
+     [
+      "Payments API runbook",
+      "Webhook backlog"
+     ]
+    ]
+   ],
+   "scope_trap": null,
+   "labelled_by": "synthetic (T1.17)",
+   "labelled_at": "2026-11-18T00:00:00Z"
+  },
+  {
+   "query_id": "q-e13",
+   "query": "declines reason code 05",
+   "kind": "exact_identifier",
+   "service": "payments-api",
+   "groups": [
+    "payments-team"
+   ],
+   "relevant": [
+    [
+     "rb-payments-api",
+     [
+      "Payments API runbook",
+      "Card authorisation declines spike"
+     ]
+    ]
+   ],
+   "scope_trap": null,
+   "labelled_by": "synthetic (T1.17)",
+   "labelled_at": "2026-11-18T00:00:00Z"
+  },
+  {
+   "query_id": "q-e14",
+   "query": "CheckoutCartLatencyHigh",
+   "kind": "exact_identifier",
+   "service": "checkout-web",
+   "groups": [
+    "checkout-team"
+   ],
+   "relevant": [
+    [
+     "rb-checkout-web",
+     [
+      "Checkout web runbook",
+      "Cart page latency"
+     ]
+    ]
+   ],
+   "scope_trap": null,
+   "labelled_by": "synthetic (T1.17)",
+   "labelled_at": "2026-11-18T00:00:00Z"
+  },
+  {
+   "query_id": "q-e15",
+   "query": "flagctl off checkout.new_address_form",
+   "kind": "exact_identifier",
+   "service": "checkout-web",
+   "groups": [
+    "checkout-team"
+   ],
+   "relevant": [
+    [
+     "rb-checkout-web",
+     [
+      "Checkout web runbook",
+      "Feature flag rollback"
+     ]
+    ]
+   ],
+   "scope_trap": null,
+   "labelled_by": "synthetic (T1.17)",
+   "labelled_at": "2026-11-18T00:00:00Z"
+  },
+  {
+   "query_id": "q-e16",
+   "query": "SESSION_COOKIE_INVALID",
+   "kind": "exact_identifier",
+   "service": "checkout-web",
+   "groups": [
+    "checkout-team"
+   ],
+   "relevant": [
+    [
+     "rb-checkout-web",
+     [
+      "Checkout web runbook",
+      "Session cookie errors"
+     ]
+    ]
+   ],
+   "scope_trap": null,
+   "labelled_by": "synthetic (T1.17)",
+   "labelled_at": "2026-11-18T00:00:00Z"
+  },
+  {
+   "query_id": "q-e17",
+   "query": "ERROR 40P01 deadlock",
+   "kind": "exact_identifier",
+   "service": "inventory-svc",
+   "groups": [
+    "inventory-team"
+   ],
+   "relevant": [
+    [
+     "rb-inventory-svc",
+     [
+      "Inventory service runbook",
+      "Stock reservation deadlocks"
+     ]
+    ],
+    [
+     "pi-2026-060",
+     [
+      "Past incident 2026-060 stock reservation deadlocks",
+      "What happened"
+     ]
+    ]
+   ],
+   "scope_trap": null,
+   "labelled_by": "synthetic (T1.17)",
+   "labelled_at": "2026-11-18T00:00:00Z"
+  },
+  {
+   "query_id": "q-e18",
+   "query": "InventoryConsumerLag",
+   "kind": "exact_identifier",
+   "service": "inventory-svc",
+   "groups": [
+    "inventory-team"
+   ],
+   "relevant": [
+    [
+     "rb-inventory-svc",
+     [
+      "Inventory service runbook",
+      "Kafka consumer lag"
+     ]
+    ]
+   ],
+   "scope_trap": null,
+   "labelled_by": "synthetic (T1.17)",
+   "labelled_at": "2026-11-18T00:00:00Z"
+  },
+  {
+   "query_id": "q-e19",
+   "query": "RESERVATION_TTL_SECONDS",
+   "kind": "exact_identifier",
+   "service": "inventory-svc",
+   "groups": [
+    "inventory-team"
+   ],
+   "relevant": [
+    [
+     "rb-inventory-svc",
+     [
+      "Inventory service runbook",
+      "Reservation TTL"
+     ]
+    ]
+   ],
+   "scope_trap": null,
+   "labelled_by": "synthetic (T1.17)",
+   "labelled_at": "2026-11-18T00:00:00Z"
+  },
+  {
+   "query_id": "q-e20",
+   "query": "SEARCH_QUERY_TIMEOUT_MS",
+   "kind": "exact_identifier",
+   "service": "search-api",
+   "groups": [
+    "search-team"
+   ],
+   "relevant": [
+    [
+     "rb-search-api",
+     [
+      "Search API runbook",
+      "Query timeouts"
+     ]
+    ]
+   ],
+   "scope_trap": null,
+   "labelled_by": "synthetic (T1.17)",
+   "labelled_at": "2026-11-18T00:00:00Z"
+  },
+  {
+   "query_id": "q-e21",
+   "query": "products alias",
+   "kind": "exact_identifier",
+   "service": "search-api",
+   "groups": [
+    "search-team"
+   ],
+   "relevant": [
+    [
+     "rb-search-api",
+     [
+      "Search API runbook",
+      "Reindex alias swap"
+     ]
+    ],
+    [
+     "pi-2026-052",
+     [
+      "Past incident 2026-052 empty search results",
+      "What happened"
+     ]
+    ]
+   ],
+   "scope_trap": null,
+   "labelled_by": "synthetic (T1.17)",
+   "labelled_at": "2026-11-18T00:00:00Z"
+  },
+  {
+   "query_id": "q-e22",
+   "query": "allocation explain API",
+   "kind": "exact_identifier",
+   "service": "search-api",
+   "groups": [
+    "search-team"
+   ],
+   "relevant": [
+    [
+     "rb-search-api",
+     [
+      "Search API runbook",
+      "Elasticsearch cluster red"
+     ]
+    ]
+   ],
+   "scope_trap": null,
+   "labelled_by": "synthetic (T1.17)",
+   "labelled_at": "2026-11-18T00:00:00Z"
+  },
+  {
+   "query_id": "q-e23",
+   "query": "AUTH_TOKEN_AUDIENCE",
+   "kind": "exact_identifier",
+   "service": "auth-service",
+   "groups": [
+    "identity-team"
+   ],
+   "relevant": [
+    [
+     "rb-auth-service",
+     [
+      "Auth service runbook",
+      "Login 401 spike"
+     ]
+    ]
+   ],
+   "scope_trap": null,
+   "labelled_by": "synthetic (T1.17)",
+   "labelled_at": "2026-11-18T00:00:00Z"
+  },
+  {
+   "query_id": "q-e24",
+   "query": "JWKS",
+   "kind": "exact_identifier",
+   "service": "auth-service",
+   "groups": [
+    "identity-team"
+   ],
+   "relevant": [
+    [
+     "rb-auth-service",
+     [
+      "Auth service runbook",
+      "JWT signing key rotation"
+     ]
+    ]
+   ],
+   "scope_trap": null,
+   "labelled_by": "synthetic (T1.17)",
+   "labelled_at": "2026-11-18T00:00:00Z"
+  },
+  {
+   "query_id": "q-e25",
+   "query": "db-failover-7",
+   "kind": "exact_identifier",
+   "service": "orders-api",
+   "groups": [
+    "orders-team"
+   ],
+   "relevant": [
+    [
+     "rb-postgres",
+     [
+      "PostgreSQL operations",
+      "Failover db-failover-7"
+     ]
+    ]
+   ],
+   "scope_trap": null,
+   "labelled_by": "synthetic (T1.17)",
+   "labelled_at": "2026-11-18T00:00:00Z"
+  },
+  {
+   "query_id": "q-e26",
+   "query": "PostgresReplicationLag",
+   "kind": "exact_identifier",
+   "service": "payments-api",
+   "groups": [
+    "payments-team"
+   ],
+   "relevant": [
+    [
+     "rb-postgres",
+     [
+      "PostgreSQL operations",
+      "Replication lag"
+     ]
+    ]
+   ],
+   "scope_trap": null,
+   "labelled_by": "synthetic (T1.17)",
+   "labelled_at": "2026-11-18T00:00:00Z"
+  },
+  {
+   "query_id": "q-e27",
+   "query": "deployctl rollback",
+   "kind": "exact_identifier",
+   "service": "checkout-web",
+   "groups": [
+    "checkout-team"
+   ],
+   "relevant": [
+    [
+     "rb-deploys",
+     [
+      "Releases and rollbacks",
+      "Rolling back a release"
+     ]
+    ]
+   ],
+   "scope_trap": null,
+   "labelled_by": "synthetic (T1.17)",
+   "labelled_at": "2026-11-18T00:00:00Z"
+  },
+  {
+   "query_id": "q-e28",
+   "query": "error_rate_by_version",
+   "kind": "exact_identifier",
+   "service": "search-api",
+   "groups": [
+    "search-team"
+   ],
+   "relevant": [
+    [
+     "rb-deploys",
+     [
+      "Releases and rollbacks",
+      "Reading error rate by version"
+     ]
+    ]
+   ],
+   "scope_trap": null,
+   "labelled_by": "synthetic (T1.17)",
+   "labelled_at": "2026-11-18T00:00:00Z"
+  },
+  {
+   "query_id": "q-e29",
+   "query": "ORDERS_DB_POOL_SIZE",
+   "kind": "exact_identifier",
+   "service": "inventory-svc",
+   "groups": [
+    "inventory-team"
+   ],
+   "relevant": [
+    [
+     "rb-postgres",
+     [
+      "PostgreSQL operations",
+      "Connection pool exhaustion"
+     ]
+    ]
+   ],
+   "scope_trap": null,
+   "labelled_by": "synthetic (T1.17)",
+   "labelled_at": "2026-11-18T00:00:00Z"
+  },
+  {
+   "query_id": "q-e30",
+   "query": "ORDER_TAX_RATE_BPS",
+   "kind": "exact_identifier",
+   "service": "orders-api",
+   "groups": [
+    "security"
+   ],
+   "relevant": [
+    [
+     "rb-orders-fraud",
+     [
+      "Orders fraud controls",
+      "ORDER_TAX_RATE_BPS tampering"
+     ]
+    ]
+   ],
+   "scope_trap": "orders-team runbook also matches; the caller holds only security",
+   "labelled_by": "synthetic (T1.17)",
+   "labelled_at": "2026-11-18T00:00:00Z"
+  },
+  {
+   "query_id": "q-p01",
+   "query": "server errors only on instances running the new version right after a release",
+   "kind": "paraphrase",
+   "service": "orders-api",
+   "groups": [
+    "orders-team"
+   ],
+   "relevant": [
+    [
+     "rb-orders-api",
+     [
+      "Orders API runbook",
+      "HTTP 500 after deploy"
+     ]
+    ]
+   ],
+   "scope_trap": "payments-api runbook and the deprecated runbook have the same section",
+   "labelled_by": "synthetic (T1.17)",
+   "labelled_at": "2026-11-18T00:00:00Z"
+  },
+  {
+   "query_id": "q-p02",
+   "query": "server errors only on the new version right after a release",
+   "kind": "paraphrase",
+   "service": "payments-api",
+   "groups": [
+    "payments-team"
+   ],
+   "relevant": [
+    [
+     "rb-payments-api",
+     [
+      "Payments API runbook",
+      "HTTP 500 after deploy"
+     ]
+    ]
+   ],
+   "scope_trap": "orders-api runbook has the same section",
+   "labelled_by": "synthetic (T1.17)",
+   "labelled_at": "2026-11-18T00:00:00Z"
+  },
+  {
+   "query_id": "q-p03",
+   "query": "how do I put back the previous value of a bad configuration setting",
+   "kind": "paraphrase",
+   "service": "orders-api",
+   "groups": [
+    "orders-team"
+   ],
+   "relevant": [
+    [
+     "rb-orders-api",
+     [
+      "Orders API runbook",
+      "Config revert"
+     ]
+    ]
+   ],
+   "scope_trap": null,
+   "labelled_by": "synthetic (T1.17)",
+   "labelled_at": "2026-11-18T00:00:00Z"
+  },
+  {
+   "query_id": "q-p04",
+   "query": "tax rate written as a percentage breaks order requests",
+   "kind": "paraphrase",
+   "service": "orders-api",
+   "groups": [
+    "orders-team"
+   ],
+   "relevant": [
+    [
+     "rb-orders-api",
+     [
+      "Orders API runbook",
+      "ValueError in compute_totals"
+     ]
+    ]
+   ],
+   "scope_trap": "the fraud runbook (security only) also mentions the tax rate",
+   "labelled_by": "synthetic (T1.17)",
+   "labelled_at": "2026-11-18T00:00:00Z"
+  },
+  {
+   "query_id": "q-p05",
+   "query": "the payment provider did not answer in time, is it the release",
+   "kind": "paraphrase",
+   "service": "orders-api",
+   "groups": [
+    "orders-team"
+   ],
+   "relevant": [
+    [
+     "rb-orders-api",
+     [
+      "Orders API runbook",
+      "Payment gateway timeouts"
+     ]
+    ]
+   ],
+   "scope_trap": "payments-api runbook covers its own timeouts",
+   "labelled_by": "synthetic (T1.17)",
+   "labelled_at": "2026-11-18T00:00:00Z"
+  },
+  {
+   "query_id": "q-p06",
+   "query": "one database connection was reset and reconnected, should I worry",
+   "kind": "paraphrase",
+   "service": "orders-api",
+   "groups": [
+    "orders-team"
+   ],
+   "relevant": [
+    [
+     "rb-orders-api",
+     [
+      "Orders API runbook",
+      "orders-db connection resets"
+     ]
+    ]
+   ],
+   "scope_trap": null,
+   "labelled_by": "synthetic (T1.17)",
+   "labelled_at": "2026-11-18T00:00:00Z"
+  },
+  {
+   "query_id": "q-p07",
+   "query": "restart every orders instance when server errors appear after a deploy",
+   "kind": "paraphrase",
+   "service": "orders-api",
+   "groups": [
+    "orders-team"
+   ],
+   "relevant": [
+    [
+     "rb-orders-api",
+     [
+      "Orders API runbook",
+      "HTTP 500 after deploy"
+     ]
+    ]
+   ],
+   "scope_trap": "only the deprecated runbook says to restart",
+   "labelled_by": "synthetic (T1.17)",
+   "labelled_at": "2026-11-18T00:00:00Z"
+  },
+  {
+   "query_id": "q-p08",
+   "query": "has an order setting that is not a number broken orders before",
+   "kind": "paraphrase",
+   "service": "orders-api",
+   "groups": [
+    "orders-team"
+   ],
+   "relevant": [
+    [
+     "pi-2026-031",
+     [
+      "Past incident 2026-031 orders rounding setting",
+      "What happened"
+     ]
+    ]
+   ],
+   "scope_trap": null,
+   "labelled_by": "synthetic (T1.17)",
+   "labelled_at": "2026-11-18T00:00:00Z"
+  },
+  {
+   "query_id": "q-p09",
+   "query": "card network timeout setting too low",
+   "kind": "paraphrase",
+   "service": "payments-api",
+   "groups": [
+    "payments-team"
+   ],
+   "relevant": [
+    [
+     "rb-payments-api",
+     [
+      "Payments API runbook",
+      "PAYMENTS_TIMEOUT_MS tuning"
+     ]
+    ]
+   ],
+   "scope_trap": null,
+   "labelled_by": "synthetic (T1.17)",
+   "labelled_at": "2026-11-18T00:00:00Z"
+  },
+  {
+   "query_id": "q-p10",
+   "query": "many more cards declined than usual",
+   "kind": "paraphrase",
+   "service": "payments-api",
+   "groups": [
+    "payments-team"
+   ],
+   "relevant": [
+    [
+     "rb-payments-api",
+     [
+      "Payments API runbook",
+      "Card authorisation declines spike"
+     ]
+    ]
+   ],
+   "scope_trap": null,
+   "labelled_by": "synthetic (T1.17)",
+   "labelled_at": "2026-11-18T00:00:00Z"
+  },
+  {
+   "query_id": "q-p11",
+   "query": "cart page slow because stock levels take long",
+   "kind": "paraphrase",
+   "service": "checkout-web",
+   "groups": [
+    "checkout-team"
+   ],
+   "relevant": [
+    [
+     "rb-checkout-web",
+     [
+      "Checkout web runbook",
+      "Cart page latency"
+     ]
+    ]
+   ],
+   "scope_trap": "inventory-svc runbook also talks about stock",
+   "labelled_by": "synthetic (T1.17)",
+   "labelled_at": "2026-11-18T00:00:00Z"
+  },
+  {
+   "query_id": "q-p12",
+   "query": "errors grow as a feature flag reaches more customers",
+   "kind": "paraphrase",
+   "service": "checkout-web",
+   "groups": [
+    "checkout-team"
+   ],
+   "relevant": [
+    [
+     "rb-checkout-web",
+     [
+      "Checkout web runbook",
+      "Feature flag rollback"
+     ]
+    ]
+   ],
+   "scope_trap": null,
+   "labelled_by": "synthetic (T1.17)",
+   "labelled_at": "2026-11-18T00:00:00Z"
+  },
+  {
+   "query_id": "q-p13",
+   "query": "customers logged out during checkout",
+   "kind": "paraphrase",
+   "service": "checkout-web",
+   "groups": [
+    "checkout-team"
+   ],
+   "relevant": [
+    [
+     "rb-checkout-web",
+     [
+      "Checkout web runbook",
+      "Session cookie errors"
+     ]
+    ]
+   ],
+   "scope_trap": null,
+   "labelled_by": "synthetic (T1.17)",
+   "labelled_at": "2026-11-18T00:00:00Z"
+  },
+  {
+   "query_id": "q-p14",
+   "query": "carts lose items before payment because held stock expires",
+   "kind": "paraphrase",
+   "service": "inventory-svc",
+   "groups": [
+    "inventory-team"
+   ],
+   "relevant": [
+    [
+     "rb-inventory-svc",
+     [
+      "Inventory service runbook",
+      "Reservation TTL"
+     ]
+    ]
+   ],
+   "scope_trap": "payments-api documents also talk about payment",
+   "labelled_by": "synthetic (T1.17)",
+   "labelled_at": "2026-11-18T00:00:00Z"
+  },
+  {
+   "query_id": "q-p15",
+   "query": "two orders lock the same items and block each other",
+   "kind": "paraphrase",
+   "service": "inventory-svc",
+   "groups": [
+    "inventory-team"
+   ],
+   "relevant": [
+    [
+     "rb-inventory-svc",
+     [
+      "Inventory service runbook",
+      "Stock reservation deadlocks"
+     ]
+    ]
+   ],
+   "scope_trap": null,
+   "labelled_by": "synthetic (T1.17)",
+   "labelled_at": "2026-11-18T00:00:00Z"
+  },
+  {
+   "query_id": "q-p16",
+   "query": "search shows no products after the nightly reindex",
+   "kind": "paraphrase",
+   "service": "search-api",
+   "groups": [
+    "search-team"
+   ],
+   "relevant": [
+    [
+     "rb-search-api",
+     [
+      "Search API runbook",
+      "Reindex alias swap"
+     ]
+    ],
+    [
+     "pi-2026-052",
+     [
+      "Past incident 2026-052 empty search results",
+      "What happened"
+     ]
+    ]
+   ],
+   "scope_trap": null,
+   "labelled_by": "synthetic (T1.17)",
+   "labelled_at": "2026-11-18T00:00:00Z"
+  },
+  {
+   "query_id": "q-p17",
+   "query": "search queries too slow with wildcard queries",
+   "kind": "paraphrase",
+   "service": "search-api",
+   "groups": [
+    "search-team"
+   ],
+   "relevant": [
+    [
+     "rb-search-api",
+     [
+      "Search API runbook",
+      "Query timeouts"
+     ]
+    ]
+   ],
+   "scope_trap": "payments-api and orders-api documents also cover timeouts",
+   "labelled_by": "synthetic (T1.17)",
+   "labelled_at": "2026-11-18T00:00:00Z"
+  },
+  {
+   "query_id": "q-p18",
+   "query": "sign-in tokens rejected with 401 after a deploy",
+   "kind": "paraphrase",
+   "service": "auth-service",
+   "groups": [
+    "identity-team"
+   ],
+   "relevant": [
+    [
+     "rb-auth-service",
+     [
+      "Auth service runbook",
+      "Login 401 spike"
+     ]
+    ]
+   ],
+   "scope_trap": "orders-api and payments-api have after-deploy sections",
+   "labelled_by": "synthetic (T1.17)",
+   "labelled_at": "2026-11-18T00:00:00Z"
+  },
+  {
+   "query_id": "q-p19",
+   "query": "stop moving traffic to the new instances while errors grow",
+   "kind": "paraphrase",
+   "service": "orders-api",
+   "groups": [
+    "orders-team"
+   ],
+   "relevant": [
+    [
+     "rb-deploys",
+     [
+      "Releases and rollbacks",
+      "Gradual rollout paused"
+     ]
+    ]
+   ],
+   "scope_trap": null,
+   "labelled_by": "synthetic (T1.17)",
+   "labelled_at": "2026-11-18T00:00:00Z"
+  },
+  {
+   "query_id": "q-p20",
+   "query": "database primary lost, promote the standby",
+   "kind": "paraphrase",
+   "service": "payments-api",
+   "groups": [
+    "payments-team"
+   ],
+   "relevant": [
+    [
+     "rb-postgres",
+     [
+      "PostgreSQL operations",
+      "Failover db-failover-7"
+     ]
+    ]
+   ],
+   "scope_trap": null,
+   "labelled_by": "synthetic (T1.17)",
+   "labelled_at": "2026-11-18T00:00:00Z"
+  }
+ ]
+}

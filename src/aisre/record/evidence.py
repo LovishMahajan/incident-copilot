@@ -179,6 +179,20 @@ def round_evidence(conn: Connection, incident_id: UUID, collection_key: str) -> 
     return [_agent_evidence(r) for r in rows]
 
 
+def search_terms(conn: Connection, incident_id: UUID, ids: Sequence[str]) -> list[str]:
+    """The identifiers the collector noted on these records (`attributes.terms`), in order, once
+    each: what the Knowledge Retriever searches for."""
+    if not ids:
+        return []
+    e = evidence
+    found = conn.execute(
+        select(e.c.attributes["terms"])
+        .where(e.c.incident_id == incident_id, e.c.evidence_id.in_([UUID(i) for i in ids]))
+        .order_by(e.c.collected_at, e.c.evidence_id)
+    ).scalars()
+    return list(dict.fromkeys(t for terms in found if terms for t in terms))
+
+
 def change_history(conn: Connection, incident_id: UUID) -> list[dict[str, Any]]:
     """Every change the incident's earlier rounds stored, as `attributes.change` holds it
     (aisre.evidence.facts.ChangeInfo), for the tier rules of a later round."""
