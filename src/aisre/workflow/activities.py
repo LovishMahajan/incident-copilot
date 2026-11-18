@@ -55,6 +55,7 @@ from aisre.workflow.states import InvalidTransition
 # Task queues (Artifact 6: the worker process and the dispatcher process)
 INVESTIGATION_QUEUE = "aisre-investigation"
 DISPATCHER_QUEUE = "aisre-dispatcher"
+TEST_RUNNER_QUEUE = "aisre-test-runner"  # run_sandbox_test and the reaper only (ADR-71)
 
 DATA_CONVERTER = pydantic_data_converter
 MAX_INVESTIGATIONS = 5  # running at once, across all workers (8.1)

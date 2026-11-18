@@ -59,6 +59,7 @@ def test_passwords_stay_out_of_repr():
 def test_task_queues_match_the_workflow():
     assert Settings.investigation_task_queue == act.INVESTIGATION_QUEUE
     assert Settings.dispatcher_task_queue == act.DISPATCHER_QUEUE
+    assert Settings.test_runner_task_queue == act.TEST_RUNNER_QUEUE
 
 
 def test_config_does_not_import_temporalio():

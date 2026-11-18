@@ -61,6 +61,9 @@ ENV_VARS: dict[str, str] = {
     "prompts_dir": "AISRE_PROMPTS_DIR",
     "otlp_endpoint": "OTEL_EXPORTER_OTLP_ENDPOINT",
     "metrics_port": "AISRE_METRICS_PORT",
+    "sandbox_runtime": "AISRE_SANDBOX_RUNTIME",
+    "sandbox_image": "AISRE_SANDBOX_IMAGE",
+    "sandbox_repos": "AISRE_SANDBOX_REPOS",
 }
 
 
@@ -118,15 +121,27 @@ class Settings(BaseModel):
     # Telemetry (T1.19): the collector's OTLP/HTTP endpoint and the /metrics port. Unset: off.
     otlp_endpoint: str | None = Field(default=None, pattern=r"^https?://")
     metrics_port: int | None = Field(default=None, ge=0, le=65535)
+    # The Test Runner (M2, ADR-71): the sandbox runtime, `runsc` (gVisor), or `runc` only in
+    # development and test; the sandbox image by digest (ops/sandbox/build.sh); and JSON naming
+    # each repository's local git mirror, which the checkout is read from.
+    sandbox_runtime: Literal["runsc", "runc"] = "runsc"
+    sandbox_image: str | None = Field(
+        default=None, pattern=r"^([\w./:-]+@sha256:[0-9a-f]{64}|sha256:[0-9a-f]{64})$"
+    )
+    sandbox_repos: Json[dict[str, str]] | None = None
 
-    # Fixed: equal to aisre.workflow.activities.INVESTIGATION_QUEUE and DISPATCHER_QUEUE.
+    # Fixed: equal to aisre.workflow.activities.INVESTIGATION_QUEUE, DISPATCHER_QUEUE and
+    # TEST_RUNNER_QUEUE.
     investigation_task_queue: ClassVar[str] = "aisre-investigation"
     dispatcher_task_queue: ClassVar[str] = "aisre-dispatcher"
+    test_runner_task_queue: ClassVar[str] = "aisre-test-runner"
 
     @model_validator(mode="after")
     def no_scripts_in_production(self) -> Settings:
         if self.scripted_skills and self.env == "production":
             raise ValueError("AISRE_SCRIPTED_SKILLS is for development and test, never production")
+        if self.sandbox_runtime == "runc" and self.env not in ("development", "test"):
+            raise ValueError("AISRE_SANDBOX_RUNTIME=runc is for development and test (ADR-71)")
         return self
 
     @model_validator(mode="after")
