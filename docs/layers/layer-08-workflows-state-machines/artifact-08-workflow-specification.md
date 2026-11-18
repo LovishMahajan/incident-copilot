@@ -3,7 +3,7 @@
 - **Layer:** 8, Distributed Workflows and State Machines
 - **Built from:** Artifacts 6 and 7
 - **Status:** Proposed: gaps resolved and reference code aligned 2026-11-02 per [decisions.md](../../decisions.md); pending team sign-off
-- **Sources:** [decisions.md](../../decisions.md), [conversation.md](conversation.md), [files/workflow.py](files/workflow.py), [files/activities.py](files/activities.py), [files/states.py](files/states.py), [files/test_workflow.py](files/test_workflow.py), [System Design](../../reference/system-design.md), [Technical specification](../../reference/technical-specification.md), [Layer 7 schema](../layer-07-data-apis-events/files/schema-tables.sql), [Layer 7 contracts](../layer-07-data-apis-events/files/contracts.py)
+- **Sources:** [decisions.md](../../decisions.md), [conversation.md](conversation.md), the code in [src/aisre/workflow/](../../../src/aisre/workflow/) and [tests/unit/test_workflow.py](../../../tests/unit/test_workflow.py) (ADR-67), their filed copies [files/workflow.py](files/workflow.py), [files/activities.py](files/activities.py), [files/states.py](files/states.py), [files/test_workflow.py](files/test_workflow.py), [System Design](../../reference/system-design.md), [Technical specification](../../reference/technical-specification.md), [db/schema.sql](../../../db/schema.sql), [Layer 7 contracts](../layer-07-data-apis-events/files/contracts.py)
 
 ## Required sections
 
@@ -24,7 +24,7 @@
 
 *Answers Q8.1–Q8.3, Q8.10, Q8.12–Q8.16.*
 
-Code: [files/workflow.py](files/workflow.py), `IncidentWorkflow`; the order is visible in one place, `IncidentWorkflow._lifecycle`. This artifact states the amended design, and the reference code in `files/` implements it. What the code can't yet prove is listed under Decisions and conflicts, in Reference code status.
+Code: [files/workflow.py](files/workflow.py), `IncidentWorkflow`; the order is visible in one place, `IncidentWorkflow._lifecycle`. This artifact states the amended design. The code the team builds on is [src/aisre/workflow/](../../../src/aisre/workflow/) (ADR-67), and `files/` holds the filed copy this artifact was written against. The workflow, the state tables and the coordinator loop are implemented and tested. The activity bodies are not: `activities.py` defines their interfaces, and the bodies are built from M0 on. The ADR-69 behaviour below is in the workflow and tested in [tests/unit/test_workflow.py](../../../tests/unit/test_workflow.py) (2026-11-17); where a real caller is still missing, the text says so. What the code can't yet prove is listed under Decisions and conflicts, in Reference code status.
 
 **Why a workflow.** One workflow per incident, written as ordinary sequential code that calls activities for each step ([Q8.1](conversation.md)). Progress must live outside the process ([Q8.2](conversation.md)). An HTTP request can't carry this work because of timeouts, duplicates, no survival across restarts, no waiting, and wasted capacity, so intake returns in milliseconds and the workflow runs separately ([Q8.3](conversation.md)). Temporal replaces background threads and database flags; the fallback, a PostgreSQL job queue behind the same Workflow Orchestrator interface, stays recorded in ADR-06 ([Q8.12](conversation.md)). Temporal is self-hosted on a single node, in its own database on the same PostgreSQL instance (ADR-51).
 
@@ -52,6 +52,10 @@ Code: [files/workflow.py](files/workflow.py), `IncidentWorkflow`; the order is v
 | Close | The API records closure; a `lead_decision` signal ends the run | `closed` |
 
 Every business step also goes through `record_transition`; `notify` and `hand_over` run where needed.
+
+**Patch candidates (ADR-69, implemented and tested).** One candidate is one `draft_patch` activity and its own action, with its own `action_id` and test (ADR-47). A diagnosis gets up to 3 candidates (`activities.MAX_PATCH_CANDIDATES`), drafted one at a time, and `SkillIn.candidate_no` carries the number. The next is drafted only when the previous one's test outcome is `failed`. Any other outcome that isn't a pass (`not_reproduced`, `inconclusive`, `crashed`, `timeout`, or a sandbox error) hands over at once. When none passes, the incident goes `testing` → `handed_over`. Each failed candidate's action ends `test_failed`, while the incident stays `testing` for the next one.
+
+**Incident version (ADR-69, implemented and tested).** The workflow never trusts the incident `version` it holds. It sends the last version it saw, because `record_transition` needs an expected version, and `record_transition` returns the new one. A stale-version refusal raises `StaleVersion`, which Temporal doesn't retry; the workflow reloads with `load_incident` and writes again with the same `transition_id`, because a person can confirm severity through the API while the workflow runs. It reloads at most 5 times for one write. After that it hands over with the reason "incident record kept changing", through `inconclusive` when it was still investigating. If the hand-over write is also refused as stale, the run fails, because nothing more can be recorded (tested).
 
 **The investigating phase is the coordinator's loop** (ADR-52). The workflow owns durability, and the Layer 9 coordinator owns the investigation's decisions:
 
@@ -122,7 +126,7 @@ Every business step also goes through `record_transition`; `notify` and `hand_ov
 
 **Concurrency.** 5 investigations run at once across all workers, queued up to 50 by severity, and the rest are never dropped (System Design section 9). A per-worker setting can't enforce a global limit, and Temporal task priority orders work without capping it, so the limiter is a PostgreSQL queue table:
 
-1. `acquire_investigation_slot` inserts the incident into `investigation_queue` ([schema.sql](../layer-07-data-apis-events/files/schema.sql): incident, severity, queued time, granted time) and notifies on-call that it is queued.
+1. `acquire_investigation_slot` inserts the incident into `investigation_queue` ([schema.sql](../layer-07-data-apis-events/files/schema.sql): incident, severity, queued time, granted time; the canonical [db/schema.sql](../../../db/schema.sql) adds the run ID, ADR-69) and notifies on-call that it is queued.
 2. In one locked transaction it grants a slot only if fewer than 5 are granted and this incident is first in order: severity (confirmed, else proposed), then oldest. A service already holding 4 slots waits, and the next eligible incident takes the slot (NFR-44, provisional). Otherwise it raises the retryable `NoSlot`, and Temporal asks again every 15 s (provisional).
 3. The incident stays `open` while queued. The 15-minute limit starts at the grant.
 4. `record_transition` deletes the row in the same transaction that takes the incident out of `investigating`, so a crash can't leak a slot.
@@ -141,7 +145,7 @@ Skill activities take `SkillIn` and return `SkillResult[...]`, which carries a t
 | Activity | Queue | Input → output | Idempotency key | Job |
 | --- | --- | --- | --- | --- |
 | `load_incident` | Investigation | `IncidentIn` → `IncidentSnapshot`, or none if there is no record | `idempotency_key` | Read the incident |
-| `acquire_investigation_slot` | Investigation | `IncidentIn` → none | `idempotency_key` | Queue by severity; grant one of 5 slots |
+| `acquire_investigation_slot` | Investigation | `SlotIn` → none | `idempotency_key` | Queue by severity, under the run ID `SlotIn.run_id` carries (ADR-69); grant one of 5 slots |
 | `read_spend_state` | Investigation | `IncidentIn` → `SpendOut` | `idempotency_key` | Read whether the daily limit puts this investigation in evidence-only mode (ADR-55) |
 | `record_transition` | Investigation | `TransitionIn` → `TransitionOut` | `transition_id` | Check the table and expected version; write status, timeline event and queue-row removal in one transaction |
 | `notify` | Investigation | `NotifyIn` → none | `notification_id` | Send a notification |
@@ -155,7 +159,7 @@ Skill activities take `SkillIn` and return `SkillResult[...]`, which carries a t
 | `run_sandbox_test` | Investigation | `TestIn` → `TestOut` | `test_key` | Fresh isolated environment: reproduce first, apply, check, destroy. Beyond 3 copies at once it queues (ADR-56) |
 | `request_approval` | Investigation | `ApprovalRequestIn` → `ApprovalRequestOut` | `request_key` | Open the approval request, set `approvers_needed` (ADR-49), create the rollback action |
 | `escalate_approval` | Investigation | `ApprovalRequestIn` → none | `request_key` | Notify the next approver |
-| `close_approval_request` | Investigation | `ApprovalRequestIn` → none | `request_key` | Close as expired, withdrawn or voided |
+| `close_approval_request` | Investigation | `ApprovalRequestIn` → none | `request_key` | Close as expired, withdrawn or voided: `ApprovalRequestIn.close_reason` names which. A voided close also carries `close_detail`, the dispatcher's reason, and writes `aisre.approval.voided.v1` (ADR-69). The body isn't built |
 | `dispatch_change` | Dispatcher | `DispatchIn` → `DispatchOut` | `action_id`, which is the execution key (ADR-47) | Reload the action and signatures; verify; record intent and `applying`; apply once; record the outcome |
 | `reconcile_execution` | Dispatcher | `DispatchIn` → `DispatchOut` | `action_id`, which is the execution key | Look up the key, compare the live service with the target; read-only |
 | `verify_recovery` | Investigation | `VerifyIn` → `VerifyOut` | `verification_key` | Read monitoring directly for the hold period |
@@ -486,10 +490,10 @@ This section applies in Release B (ADR-44). The rules are in ADR-49.
 | 4 | The approval's signature is valid | No | Yes |
 | 5 | The approval is unexpired (within 15 minutes) | Yes | Yes |
 | 6 | The service's version and configuration are unchanged since approval | No | Yes |
-| 7 | No cancellation or revocation was requested | Cancellation | Yes, as a revocation (8.7) |
+| 7 | No cancellation or revocation was requested | Cancellation | Yes: a revocation, or a stop request on the incident (8.7, ADR-69) |
 | 8 | Recovery criteria and baseline are recorded (ADR-66) | No | Yes |
 
-**If the service changed after approval.** The dispatcher refuses, the approval is voided, and an alert is raised. The action is immutable and names its base revision, so it can't be asked for again: action `approved` → `withdrawn`, incident `executing` → `handed_over`. A new attempt is a re-investigation with a new action (ADR-47, ADR-49).
+**If the service changed after approval.** The dispatcher refuses and returns a void-required result. The workflow closes the approval request as voided, with the close reason, and writes `aisre.approval.voided.v1`: the dispatcher's role can write only `aisre.execution.*` events, so the workflow writes this one. Security and the approver are alerted through the Notifier. The same applies to a signature or digest mismatch (Artifact 5, ST-01, ST-02, ST-13). Built and tested: the refusal, `DispatchOut.void_approval`, the workflow's call to `close_approval_request` with close reason `voided` and the dispatcher's reason, and a hand-over whose audience adds the approvers and security. Not built: the activity body that writes the event, the Notifier and an alert rule (Artifact 13, T3.6). A request the API already closed as `decided` keeps that reason, since it is write-once, and the event is the record of the void (ADR-69). The action is immutable and names its base revision, so it can't be asked for again: action `approved` → `withdrawn`, incident `executing` → `handed_over`. A new attempt is a re-investigation with a new action (ADR-47, ADR-49).
 
 **Revocation.** `POST /v1/actions/{id}/revocations` works until the dispatcher records intent (ADR-49). A `revoked` decision while waiting removes that person's approval from the count. After the incident enters `executing`, the dispatcher sees it and refuses.
 
@@ -516,7 +520,7 @@ Tests: `test_happy_path_reaches_closed` (duplicate approval), `test_unanswered_a
 | --- | --- | --- |
 | Before any change: `open`, `investigating`, `diagnosed`, `inconclusive`, `testing`, `awaiting_approval` | Cancel the running activity, then stop at the safe point: between steps, or while waiting for approval. Close any open approval request, withdraw the action, destroy the sandbox, record who asked and why | `cancelled`, final for the platform (ADR-46). A later problem is a new incident |
 | During a production write: `executing`, `reconciling`, `not_recovered` | The write runs to its outcome: the dispatcher activity is shielded and the workflow waits. The API records the request as an event, with who and when; the workflow writes nothing for it | Depends on the outcome, below |
-| `verifying` | No `cancelled` transition; `verify_recovery` runs in `_protected` | `recovered`, `handed_over` or `not_recovered` |
+| `verifying` | No `cancelled` transition; `verify_recovery` runs in `_protected`. A cancel never skips the rollback of a failed fix: once a change is applied, the verify and rollback path always completes, and the cancel takes effect after it. The rollback's approval wait runs to approved, rejected or expired on its original clock (ADR-69; `test_cancel_during_rollback_wait_never_skips_the_rollback`) | `recovered`, `handed_over` or `not_recovered` |
 | `recovered`, `handed_over` | A person owns it; cancellation changes nothing | Unchanged |
 
 **After a write completes with a cancel pending** ([Q8.37](conversation.md))
@@ -528,9 +532,9 @@ Tests: `test_happy_path_reaches_closed` (duplicate approval), `test_unanswered_a
 
 `cancelled` is not an allowed transition from a state where a change may have happened: the record can't say "cancelled" then. Rollback is a separate, explicit, approved action, never a side effect of "cancel".
 
-**Cancelling after `executing` starts but before intent.** The API records a cancellation against an `approved` action as a revocation, in the same transaction. The dispatcher refuses it (ADR-49), so nothing is sent: action `approved` → `withdrawn`, incident `executing` → `handed_over`.
+**Cancelling after approval but before intent (ADR-69).** The cancel is a stop request, not a revocation. Anyone with the cancel permission can raise it, including a person who never approved, and the API records it against the incident as a `stop_requests` row. The dispatcher refuses an action whose incident has a stop raised since the action was created, so nothing is sent: action `approved` → `withdrawn`, incident `executing` → `handed_over`. No approval is changed. A revocation still withdraws only the caller's own approval (8.6). Only a person's cancel is a stop: a Temporal-level cancel before intent isn't one, and waits for the outcome as before. A rollback is never stopped. Built and tested: the workflow path (`test_cancel_after_approval_before_intent_is_a_stop_not_a_revocation`), the dispatcher's check, the table and `action.request_stop`. Not built: the cancellation route that writes the row (Artifact 13, T3.5).
 
-Action on cancellation: `withdrawn`, from proposed, testing or awaiting approval at a safe point, or from approved through that revocation ([Q8.36](conversation.md)).
+Action on cancellation: `withdrawn`, from proposed, testing or awaiting approval at a safe point, or from approved through that stop request ([Q8.36](conversation.md)).
 
 **Writes are shielded.** A Temporal-level cancel can't interrupt `record_transition`: the write is shielded in every state, so the outcome is always recorded before `run` handles the cancel (C20). `_act` shields every non-cancellable activity, so `notify` and `hand_over` survive a Temporal cancel too. Test: `test_temporal_cancel_during_transition_write_records_outcome`.
 
@@ -583,7 +587,7 @@ Temporal's Python sandbox enforces most of these. The rest are checked in code r
 | Activity implementation, or a timeout value read at call time | Safe; nothing needed |
 | Adding, removing or reordering activity calls or waits | `workflow.patched("<change-id>")`; once no old workflow runs, `workflow.deprecate_patch` and remove the old branch |
 | Large redesign | New workflow type (`IncidentWorkflowV2`); old workflows finish on the old type |
-| Every deploy | CI replays a sample of recent production histories against the new code with Temporal's `Replayer`; any nondeterminism fails the build |
+| Every deploy | Planned for M0, when CI exists: CI replays a sample of recent histories against the new code with Temporal's `Replayer`, and any nondeterminism fails the build. Today the only replay check is the unit test below, run by hand |
 
 Each run lasts at most 24 hours, so old branches are removed within a day of a change.
 
@@ -618,7 +622,7 @@ A reconcile that finds no intent row means nothing was sent: the action is still
 
 When the activity is retried or the workflow resumes, the dispatcher sees the `started` attempt and reconciles first; it never applies the change again blindly. The event is `aisre.execution.completed.v1` with outcome `unknown`. Only reconciliation, or the incident lead's outcome resolution (ADR-49, event `aisre.execution.outcome_resolved.v1`), can leave `outcome_unknown`.
 
-**An unknown outcome blocks the deployment** (ADR-47). The block follows from the action's status, so it needs no separate write: a new attempt on a deployment is refused while another action there is `outcome_unknown`, or `applying` with an unresolved attempt (Layer 7 schema). It blocks every further change on that deployment, not just that key. A definite reconciliation result clears it. If the outcome stays unknown, it holds until a person records the actual state.
+**An unknown outcome blocks the deployment** (ADR-47). It blocks every further change on that deployment, not just that key. The block is its own row per deployment in `deployment_blocks`, not derived from attempt rows (ADR-69). An `unresolved` row opens with each intent and clears when that attempt settles, so a definite reconciliation result clears it. A change that lands after `not_applied` puts the block back as a `late_apply` row, and only an outcome resolution by the Incident lead clears that one. The action stays `not_applied`, which is final: the block row and the resolution are the record that the change landed. This is in the schema and the in-memory dispatcher, and tested; the real dispatcher's SQL for the block writes isn't built (Artifact 13, T3.7).
 
 **`reconcile_execution`** ([Q8.34](conversation.md), [Q8.48](conversation.md)), on the dispatcher queue, read-only:
 
@@ -670,7 +674,7 @@ A verdict of `inconclusive` means too little data: hand over, no rollback, and a
 | Incident `open`, with no running workflow, no queue row and no pending outbox row | Alert |
 | Running workflow whose incident is `closed` or `cancelled` | Alert |
 | Workflow's `current_state` differs from the incident record | Alert; the record wins |
-| `investigation_queue` row whose incident has left `investigating` or `open` | Remove the row, freeing the slot |
+| `investigation_queue` row whose run has ended | Remove the row, freeing the slot. The row carries its run ID, so a re-investigation's row isn't removed while the incident is `handed_over` from the earlier run (ADR-69: `investigation_queue.run_id`, and `reconciliation_findings` with the live runs; `test_reconciliation_keeps_the_queue_row_of_a_run_that_is_still_waiting`) |
 | `handed_over` or `recovered`, with no running workflow | Normal: the run ended and a person owns it |
 
 If Temporal is down the schedule doesn't run, and the outbox alert in 8.10 covers that period.
@@ -694,6 +698,7 @@ Tests: `test_unknown_outcome_is_reconciled_not_retried`, `test_still_unknown_aft
 | Budget limit reached, or daily spend at 100% | Running investigations finish their current step, then stop: `investigating` → `inconclusive` → `handed_over`. New ones are evidence-only | ADR-46, ADR-55 |
 | Security or data risk found | Stops at once: `investigating` → `handed_over` | ADR-46, ADR-54 |
 | Test not reproduced or partial | `handed_over`, no approval requested | `test_not_reproduced_never_requests_approval` |
+| Test failed | The next candidate is drafted as a new action, up to 3 per diagnosis; then `handed_over` | ADR-69, `test_a_failed_test_drafts_the_next_candidate_as_its_own_action`, `test_three_failed_candidates_end_the_attempt` |
 | Approval unanswered | Escalate at 15 min, expire at 60 min, hand over | `test_unanswered_approval_escalates_then_expires` |
 | Dispatcher crash mid-write | Intent stays recorded; reconcile first | Q8.32 |
 | Dispatch timeout | `unknown`, reconciled, never retried | `test_unknown_outcome_is_reconciled_not_retried` |
@@ -813,10 +818,10 @@ The answers that state an assumptions line, Q8.1 and Q8.2, say "None needed". Th
 | 8.10 gap: activity exhaustion | One table in 8.10 | Layer decision (proposed) |
 | New: stop verdict mapping | Only the coordinator's security or data-risk stops go `investigating` → `handed_over`; the rest, time, budget and invalid-output limits included, go through `inconclusive`. `FINISH_INCONCLUSIVE` carries a stop kind on `state.stop_kind`, because an enum member can't carry one per stop | ADR-46, ADR-52 |
 | New: Release A's passed action | `testing` → `withdrawn`, reason `release_a_recommendation`. The table has no other exit, and `test_failed` would be false | Layer decision (proposed) |
-| New: dispatcher outcomes | `applied`, `not_applied`, `refused`, `unknown`, from Layer 11. `failed` is dropped | Layer decision (proposed) |
+| New: dispatcher outcomes | `DispatchOut.outcome` is `applied`, `not_applied`, `refused` or `unknown`, from Layer 11: the dispatcher never returns `failed` to the workflow. The stored attempt type, `execution_outcome` in the schema and `ExecutionOutcome` in the contracts, keeps `started` and `failed` for the attempt row, and reconciliation treats a `failed` row like an `unknown` one | Layer decision (proposed) |
 | New: dispatch failed with no intent | Reconcile finds no intent row: action `approved` → `withdrawn`, incident hands over | Layer decision (proposed) |
-| New: cancel before intent | Recorded by the API as a revocation, so the dispatcher needs no incident read | Layer decision (proposed) |
-| New: deployment block | Follows from the action's status in the Layer 7 schema; cleared by a definite reconciliation result or a person | ADR-47, ADR-64 |
+| New: cancel before intent | Was: recorded by the API as a revocation. Now a stop request against the incident, because a person who didn't approve can't revoke. The dispatcher refuses an action whose incident has a stop | ADR-69 |
+| New: deployment block | Was: follows from the action's status in the Layer 7 schema; cleared by a definite reconciliation result or a person. Now held per deployment in its own table; a late apply puts it back, and only the incident lead's outcome resolution clears it | ADR-47, ADR-64, ADR-69 |
 | New: rollback action timing | Created by `request_approval`, so the conditional approval can sign it; withdrawn if never needed | ADR-48; Layer decision (proposed) for the timing |
 | New: checking the rollback | Verified while the incident stays `not_recovered`, or `reconciling` if its outcome was unknown, with no `verifying` state. The result triggers nothing | ADR-48 |
 | New: closure | The API records `closed` (Artifact 7 returns `200`), and works after the run ends | Layer decision (proposed) |
@@ -831,10 +836,18 @@ The answers that state an assumptions line, Q8.1 and Q8.2, say "None needed". Th
 | New: failure codes in the loop | A secret in model output is `security_risk`; links and commands are `invalid_output`. An `ActivityError` in the loop is `deadline_passed` on a timeout, otherwise `store_failed` | Layer decision (proposed) |
 | New: cancel during a fresh rollback wait | Withdraws the rollback and hands over | Layer decision (proposed) |
 | New: Release B with no sandbox | It runs the test, which hands over | Layer decision (proposed) |
+| Patch candidates: one patch and one action per diagnosis | Up to 3 candidates per diagnosis, each its own action, the next drafted only when the previous test fails | ADR-69 |
+| Cached incident version | Never cached. `record_transition` returns the new version, and a stale refusal is reloaded and retried | ADR-69 |
+| Cancel during `executing` or `verifying` could skip a rollback | A cancel never skips the rollback of a failed fix; it takes effect after the verify and rollback path | ADR-69 |
+| Queue row removed while a re-investigation waits | The row carries its run ID and is removed only when that run has ended | ADR-69 |
+| Who voids an approval on a mismatch | The dispatcher returns a void-required result; the workflow closes the request as voided and writes `aisre.approval.voided.v1`. Built up to the activity body that writes the event | ADR-69 |
+| CI replay of histories | Planned for M0; no CI exists yet | ADR-68 |
 
 `Where Claude and ChatGPT disagreed` in [conversation.md](conversation.md) is TBD, so no disagreements are recorded here.
 
-**Reference code status.** [files/test_workflow.py](files/test_workflow.py) has 104 passing tests on Temporal's time-skipping test server, including sandboxed runs and a replay of a revision round and a fresh rollback approval. Nineteen deliberate mutants of `workflow.py` and `states.py` were all caught. What remains:
+**Needs the team:** Claude vs ChatGPT disagreements and the agent used per conversation, Owner: Team, settled when: conversation logs are filled in (the share link needs sign-in).
+
+**Reference code status.** [tests/unit/test_workflow.py](../../../tests/unit/test_workflow.py) runs on Temporal's time-skipping test server (125 passing on 2026-11-17; 104 in the filed copy, [files/test_workflow.py](files/test_workflow.py)), including sandboxed runs and a replay of a revision round and a fresh rollback approval. Nineteen deliberate mutants of `workflow.py` and `states.py` were all caught. What remains:
 
 | Item | What remains |
 | --- | --- |
@@ -842,7 +855,7 @@ The answers that state an assumptions line, Q8.1 and Q8.2, say "None needed". Th
 | Tool and output checks | `precheck_requests` and `checked_result` are tested with the real ToolGate and validation. Real activities must call them |
 | Reconciliation job | The real schedule, the `reconcile_workflows` body and the gauge write (8.9) |
 | Dispatcher activities | Layer 11's behaviour is mapped by `dispatch_out`. An unreachable dispatcher leaves the action `applying` (8.10) |
-| Telemetry | The relay's `aisre_event_available_seconds` isn't observed, because no relay exists in these files. `aisre_verification_outcomes_total` has no caller, because `verify_recovery` is an interface |
+| Telemetry | The relay's `aisre_event_available_seconds` isn't observed, because no relay exists yet. `aisre_verification_outcomes_total` has no caller, because `verify_recovery` is an interface |
 
 ## Acceptance checks
 

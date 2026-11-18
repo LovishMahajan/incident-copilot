@@ -8,7 +8,9 @@ Layer 9 coordinator's loop: pure next_step, one activity per step, its result fe
 writes the incident's status and timeline event — Temporal's own history is never the
 product's timeline (Q8.24). The dispatcher writes action `applying` and its outcomes (ADR-51),
 so the workflow only tracks those in memory. A failed fix is undone by a separate rollback
-action with its own approval and execution key, never by cancellation (ADR-48).
+action with its own approval and execution key, never by cancellation (ADR-48), and a cancel
+never skips that rollback (ADR-69). The incident's version is only the last one seen: people
+change the record while the workflow runs, so a stale write is reloaded and retried (ADR-69).
 
 activities pulls in Pydantic and Layer 9's contracts, so it passes through the sandbox.
 coordinator and states are pure; coordinator is imported plainly so the sandbox checks that.
@@ -17,7 +19,7 @@ coordinator and states are pure; coordinator is imported plainly so the sandbox 
 from __future__ import annotations
 
 import asyncio
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import datetime, timedelta
 from typing import Callable, NamedTuple, Optional
 
@@ -50,8 +52,10 @@ INVESTIGATION_LIMIT = LIMITS.investigation      # from the slot grant
 APPROVAL_ESCALATE_AFTER = timedelta(minutes=15)
 APPROVAL_EXPIRES_AFTER = timedelta(minutes=60)
 APPROVAL_VALID_FOR = timedelta(minutes=15)      # a granted approval must be used within this
+STALE_RETRIES = 5                               # reloads of the incident version for one write (ADR-69)
 WORKFLOW_LIMIT = timedelta(hours=24)
 LIMIT_REASON = "24-hour workflow limit reached"
+TEMPORAL_CANCEL = "temporal-cancel"             # request_id of a cancel that came from Temporal, not a person
 
 
 # ---------------------------------------------------------------------------
@@ -59,7 +63,7 @@ LIMIT_REASON = "24-hour workflow limit reached"
 # ---------------------------------------------------------------------------
 DB_RETRY = RetryPolicy(initial_interval=timedelta(seconds=1), backoff_coefficient=2.0,
                        maximum_interval=timedelta(seconds=30), maximum_attempts=0,  # until schedule_to_close, where set
-                       non_retryable_error_types=["InvalidTransition"])
+                       non_retryable_error_types=["InvalidTransition", "StaleVersion"])
 TOOL_RETRY = RetryPolicy(initial_interval=timedelta(seconds=2), backoff_coefficient=2.0,
                          maximum_interval=timedelta(seconds=20), maximum_attempts=3)
 NO_RETRY = RetryPolicy(maximum_attempts=1)       # forbidden: the sandbox and production writes
@@ -91,6 +95,7 @@ STEP_PLANS: dict[Step, StepPlan] = {
 FINISH_STEPS = (Step.FINISH_ESTABLISHED, Step.FINISH_INCONCLUSIVE)
 WITHDRAWABLE = (A.PROPOSED, A.TESTING, A.AWAITING_APPROVAL)
 ROLLBACK_AUDIENCE = ["on_call", "incident_lead", "approvers"]
+VOID_AUDIENCE = ROLLBACK_AUDIENCE + ["security"]  # a voided approval: ST-01, ST-02, ST-13
 
 
 # ---------------------------------------------------------------------------
@@ -149,6 +154,7 @@ class IncidentWorkflow:
         self.action_digest: Optional[str] = None
         self.hold_seconds: int = 0
         self.rollback_state: Optional[A] = None
+        self.abandoning = False                         # set once the run is handing over
         self.rollback_id: Optional[str] = None
         self.rollback_digest: Optional[str] = None
         self.version: int = 0
@@ -242,7 +248,8 @@ class IncidentWorkflow:
 
     async def _lifecycle(self, snap: act.IncidentSnapshot) -> None:
         # ---- Queue for a slot (the incident stays as it is until the grant)
-        await self._cancellable(act.acquire_investigation_slot, act.IncidentIn(self.incident_id, f"{self.run_key}:slot"),
+        await self._cancellable(act.acquire_investigation_slot,
+                                act.SlotIn(self.incident_id, f"{self.run_key}:slot", workflow.info().workflow_id),
                                 timeout_s=10, retry=SLOT_RETRY, unlimited=True)
         granted_at = workflow.now()                   # the investigation limit starts here
 
@@ -258,33 +265,44 @@ class IncidentWorkflow:
         await self._to(I.DIAGNOSED, "reviewed diagnosis established")
         await self._safe_point()
 
-        # ---- Patch and test
-        step_key = self._step_key()
-        try:
-            res = await self._cancellable(act.draft_patch, act.SkillIn(
-                self.incident_id, step_key, evidence_ids=list(s.evidence_ids), diagnosis=self.diagnosis.draft,
-                diagnosis_id=str(self.diagnosis.diagnosis_id)), timeout_s=300, retry=MODEL_RETRY, heartbeat_s=20)
-        except ActivityError:
-            return await self._hand_over("no fix drafted: draft_patch failed")
-        if res.failure is not None:
-            return await self._hand_over(f"no fix drafted: {res.failure.detail}")
-        patch = res.output
-        self.action_id, self.patch_sha256, self.action_state = patch.action_id, patch.patch_sha256, A.PROPOSED
-        self.action_kind, self.hold_seconds = patch.action_kind, patch.hold_seconds
-        await self._safe_point()
-        if not snap.remediation_enabled and not patch.sandbox_available:
-            return await self._hand_over("sandbox unavailable; untested draft handed over", action_to=A.WITHDRAWN)
-        await self._to(I.TESTING, "patch drafted", action_to=A.TESTING)
-        try:
-            test = await self._cancellable(
-                act.run_sandbox_test,
-                act.TestIn(patch.action_id, patch.patch_sha256, test_key=f"{self.action_id}:test:1"),
-                timeout_s=900, heartbeat_s=20, retry=NO_RETRY)
-        except ActivityError:
-            return await self._hand_over("fix not proven: sandbox test failed", action_to=A.TEST_FAILED)
-        await self._safe_point()
-        if not (test.reproduced and test.outcome == "passed"):
-            return await self._hand_over(f"fix not proven: {test.outcome}", action_to=A.TEST_FAILED)
+        # ---- Patch and test: up to 3 candidates, each its own action, the next one drafted only
+        # when the previous one's test fails (ADR-69)
+        for candidate_no in range(1, act.MAX_PATCH_CANDIDATES + 1):
+            why = "no fix drafted" if candidate_no == 1 else f"fix not proven: failed; no candidate {candidate_no}"
+            step_key = self._step_key()
+            try:
+                res = await self._cancellable(act.draft_patch, act.SkillIn(
+                    self.incident_id, step_key, evidence_ids=list(s.evidence_ids), diagnosis=self.diagnosis.draft,
+                    diagnosis_id=str(self.diagnosis.diagnosis_id), candidate_no=candidate_no),
+                    timeout_s=300, retry=MODEL_RETRY, heartbeat_s=20)
+            except ActivityError:
+                return await self._hand_over(f"{why}: draft_patch failed")
+            if res.failure is not None:
+                return await self._hand_over(f"{why}: {res.failure.detail}")
+            patch = res.output
+            self.action_id, self.patch_sha256, self.action_state = patch.action_id, patch.patch_sha256, A.PROPOSED
+            self.action_kind, self.hold_seconds = patch.action_kind, patch.hold_seconds
+            await self._safe_point()
+            if not snap.remediation_enabled and not patch.sandbox_available:
+                return await self._hand_over("sandbox unavailable; untested draft handed over", action_to=A.WITHDRAWN)
+            if candidate_no == 1:
+                await self._to(I.TESTING, "patch drafted", action_to=A.TESTING)
+            else:                                     # the incident is `testing` already
+                await self._write(self.state, f"candidate {candidate_no} drafted", action_to=A.TESTING)
+            try:
+                test = await self._cancellable(
+                    act.run_sandbox_test,
+                    act.TestIn(patch.action_id, patch.patch_sha256, test_key=f"{self.action_id}:test:1"),
+                    timeout_s=900, heartbeat_s=20, retry=NO_RETRY)
+            except ActivityError:
+                return await self._hand_over("fix not proven: sandbox test failed", action_to=A.TEST_FAILED)
+            await self._safe_point()
+            if test.reproduced and test.outcome == "passed":
+                break
+            # Only a fix that ran and failed earns another candidate; anything else is the sandbox's answer.
+            if test.outcome != "failed" or candidate_no == act.MAX_PATCH_CANDIDATES:
+                return await self._hand_over(f"fix not proven: {test.outcome}", action_to=A.TEST_FAILED)
+            await self._write(self.state, f"candidate {candidate_no} failed its test", action_to=A.TEST_FAILED)
         if not snap.remediation_enabled:              # Release A: people change production (ADR-44)
             return await self._hand_over("release_a_recommendation", action_to=A.WITHDRAWN)
 
@@ -299,21 +317,27 @@ class IncidentWorkflow:
         decision = await self._await_decision(out.approvers_needed)
         await self._safe_point()
         if decision == "expired":
-            await self._close_open_request()
+            await self._close_open_request("expired")
             return await self._hand_over("approval expired; no action taken", action_to=A.EXPIRED)
         if decision == "rejected":
             return await self._hand_over("fix rejected by approver", action_to=A.REJECTED)
 
         # ---- Execute (protected: cancellation waits for the outcome) (8.7)
         # The dispatcher reloads everything and refuses an approval past valid_until, a revoked
-        # one, a changed patch fingerprint or a changed service state. It records `applying`.
+        # one, a changed patch fingerprint, a changed service state or a stop. It records `applying`.
         self.open_request = None
         await self._to(I.EXECUTING, "approved; dispatching", action_to=A.APPROVED)
         if self._rejected():                          # arrived during that write (ADR-49)
             return await self._hand_over("rejected after approval, before intent", action_to=A.WITHDRAWN)
+        # A person's cancel before intent is a stop, not a revocation: no approval is withdrawn
+        # (ADR-69). A Temporal cancel is not a person's request, and waits for the outcome as before.
+        if self.cancel is not None and self.cancel.request_id != TEMPORAL_CANCEL:
+            return await self._hand_over(f"stopped by {self.cancel.requested_by} before intent: {self.cancel.reason}",
+                                         action_to=A.WITHDRAWN)
         out = await self._execute(self.action_id)
         if out.outcome != "applied":
-            return await self._hand_over(self._not_applied_reason(out), action_to=self._unapplied_state(out))
+            return await self._hand_over(self._not_applied_reason(out), action_to=self._unapplied_state(out),
+                                         audience=VOID_AUDIENCE if out.void_approval else None)
         await self._safe_point()
 
         # ---- Verify (8.9 covers the rollback path)
@@ -397,7 +421,8 @@ class IncidentWorkflow:
             raise HandOverNow("approval could not be requested") from e
 
     async def _await_decision(self, approvers_needed: int) -> str:
-        """Returns approved, rejected, expired or cancelled. Escalates at 15 min, expires at 60."""
+        """Returns approved, rejected, expired or cancelled. Escalates at 15 min, expires at 60.
+        A rollback's wait is never `cancelled`: a cancel doesn't skip the rollback (ADR-69)."""
         self.approvers_needed = approvers_needed
         await self._notify("approval_needed", ["approvers"])
         settled = await self._wait(self._decided, APPROVAL_ESCALATE_AFTER)
@@ -407,14 +432,19 @@ class IncidentWorkflow:
             except ActivityError as e:
                 raise HandOverNow("approval could not be escalated") from e
             settled = await self._wait(self._decided, APPROVAL_EXPIRES_AFTER - APPROVAL_ESCALATE_AFTER)
-        if self.cancel is not None:
+        if self._stopped():
             return "cancelled"
         if not settled:
             return "expired"
         return "rejected" if self._rejected() else "approved"
 
     def _decided(self) -> bool:
-        return self.cancel is not None or self._rejected() or self._valid_approvals() >= self.approvers_needed
+        return self._stopped() or self._rejected() or self._valid_approvals() >= self.approvers_needed
+
+    def _stopped(self) -> bool:
+        """A cancel ends the fix's approval wait. Once a change is applied the state is protected,
+        and the cancel waits for the rollback path to finish (ADR-69)."""
+        return self.cancel is not None and self.state not in PROTECTED_INCIDENT
 
     def _rejected(self) -> bool:
         return any(d == "rejected" for d, _ in self.decisions.values())
@@ -423,11 +453,12 @@ class IncidentWorkflow:
         oldest = workflow.now() - APPROVAL_VALID_FOR  # an older approval stops counting (ADR-49)
         return sum(1 for d, at in self.decisions.values() if d == "approved" and at >= oldest)
 
-    async def _close_open_request(self) -> None:
+    async def _close_open_request(self, reason: str) -> None:
         if self.open_request is None:
             return
         try:
-            await self._act(act.close_approval_request, self.open_request, timeout_s=30, retry=DB_RETRY)
+            await self._act(act.close_approval_request, replace(self.open_request, close_reason=reason),
+                            timeout_s=30, retry=DB_RETRY)
         except ActivityError:
             pass                                      # the path is chosen; the API refuses late approvals
         self.open_request = None
@@ -439,6 +470,12 @@ class IncidentWorkflow:
         try:
             out = await self._protected(act.dispatch_change, act.DispatchIn(action_id), timeout_s=300)
             self._follow(action_id, out)
+            if out.outcome == "refused" and out.void_approval:
+                # ST-01, ST-02, ST-13: what was approved is not what is stored. The dispatcher can't
+                # write the approval's events (ADR-51), so the request is closed as voided from here.
+                self.open_request = act.ApprovalRequestIn(action_id, self.awaited[1], f"{action_id}:approval:1",
+                                                          close_detail=out.refusal_reason)
+                await self._close_open_request(act.VOIDED)
         except ActivityError:
             out = None                                # no answer: never assumed, action state unknown here
         if out is None or out.outcome == "unknown":
@@ -495,8 +532,8 @@ class IncidentWorkflow:
         out = await self._request_approval(self.rollback_id, self.rollback_digest)
         decision = "approved" if out.conditional_approval else await self._await_decision(out.approvers_needed)
         if decision != "approved":
-            await self._close_open_request()
-            to = {"rejected": A.REJECTED, "expired": A.EXPIRED, "cancelled": A.WITHDRAWN}[decision]
+            await self._close_open_request("expired")   # a rejection closed it already; closing is idempotent
+            to = {"rejected": A.REJECTED, "expired": A.EXPIRED}[decision]
             return await self._hand_over(f"fix did not hold; rollback {decision}; person decides next step",
                                          rollback_to=to, audience=ROLLBACK_AUDIENCE)
         self.open_request = None
@@ -504,7 +541,8 @@ class IncidentWorkflow:
         out = await self._execute(self.rollback_id)
         if out.outcome != "applied":
             return await self._hand_over(f"fix did not hold; rollback: {self._not_applied_reason(out)}",
-                                         rollback_to=self._unapplied_state(out), audience=ROLLBACK_AUDIENCE)
+                                         rollback_to=self._unapplied_state(out),
+                                         audience=VOID_AUDIENCE if out.void_approval else ROLLBACK_AUDIENCE)
         await self._write(self.state, "rollback applied", action_to=A.UNDONE)
         verdict = await self._verify(self.rollback_id, out.attempt_id)   # reported; triggers nothing
         await self._hand_over(f"fix did not hold; rollback applied, check {verdict or 'gave no result'}; "
@@ -568,20 +606,25 @@ class IncidentWorkflow:
 
     def _note_cancel(self) -> None:
         if self.cancel is None:
-            self.cancel = CancelSignal("temporal-cancel", "system", "workflow cancellation")
+            self.cancel = CancelSignal(TEMPORAL_CANCEL, "system", "workflow cancellation")
 
     async def _wait(self, condition, timeout: Optional[timedelta]) -> bool:
         """Durable wait: no process is held; a timer lives in Temporal's history."""
-        try:
-            await workflow.wait_condition(condition, timeout=timeout)
-            return True
-        except asyncio.TimeoutError:
-            return False
-        except asyncio.CancelledError:
-            self._note_cancel()
-            if self.state in PROTECTED_INCIDENT:      # a rollback's wait: the caller sees self.cancel
+        deadline = workflow.now() + timeout if timeout is not None else None
+        while True:
+            try:
+                left = deadline - workflow.now() if deadline is not None else None
+                if left is not None and left <= timedelta(0):
+                    return False
+                await workflow.wait_condition(condition, timeout=left)
                 return True
-            raise Cancelled() from None
+            except asyncio.TimeoutError:
+                return False
+            except asyncio.CancelledError:
+                self._note_cancel()
+                if self.state not in PROTECTED_INCIDENT:
+                    raise Cancelled() from None
+                # A rollback's wait goes on to its own end: the cancel takes effect after it (ADR-69).
 
     async def _limit_timer(self) -> None:
         """The whole-run limit (ADR-46). Work stops at the next safe point; a write in flight
@@ -613,16 +656,36 @@ class IncidentWorkflow:
         if rollback_to is not None:
             check_action(self.rollback_state, rollback_to, ROLLBACK_KIND)
         self.step += 1
-        out = await self._act(act.record_transition, act.TransitionIn(
-            incident_id=self.incident_id, transition_id=f"{self.run_key}:t{self.step}",
-            from_state=self.state.value, to_state=target.value, expected_version=self.version,
-            reason=reason, action_id=self.action_id,
-            action_from=self.action_state.value if action_to else None,
-            action_to=action_to.value if action_to else None,
-            second_action_id=self.rollback_id if rollback_to else None,
-            second_action_from=self.rollback_state.value if rollback_to else None,
-            second_action_to=rollback_to.value if rollback_to else None),
-            timeout_s=10, retry=DB_RETRY, unlimited=True)
+        stale = 0
+        while True:
+            try:
+                out = await self._act(act.record_transition, act.TransitionIn(
+                    incident_id=self.incident_id, transition_id=f"{self.run_key}:t{self.step}",
+                    from_state=self.state.value, to_state=target.value, expected_version=self.version,
+                    reason=reason, action_id=self.action_id,
+                    action_from=self.action_state.value if action_to else None,
+                    action_to=action_to.value if action_to else None,
+                    second_action_id=self.rollback_id if rollback_to else None,
+                    second_action_from=self.rollback_state.value if rollback_to else None,
+                    second_action_to=rollback_to.value if rollback_to else None),
+                    timeout_s=10, retry=DB_RETRY, unlimited=True)
+                break
+            except ActivityError as e:
+                # A person changed the incident, e.g. confirmed its severity: take the record's
+                # version and write again. The record still checks the transition itself (ADR-69).
+                stale += 1
+                if getattr(e.cause, "type", None) != "StaleVersion":
+                    raise
+                if stale > STALE_RETRIES:
+                    if self.abandoning:
+                        raise                           # the hand-over itself can't be recorded
+                    raise HandOverNow(f"incident record kept changing: {target.value} not recorded") from e
+                snap = await self._act(act.load_incident,
+                                       act.IncidentIn(self.incident_id, f"{self.run_key}:t{self.step}:reload{stale}"),
+                                       timeout_s=10, retry=DB_RETRY, unlimited=True)
+                if snap is None:
+                    raise
+                self.version = snap.version
         self.version = out.new_version
         self.state = target
         if action_to is not None:
@@ -653,13 +716,14 @@ class IncidentWorkflow:
     async def _abandon(self, reason: str) -> None:
         """Hands over from wherever the run stopped. `open` and `investigating` have to pass
         through their table paths; `recovered` and `handed_over` have nothing left to do."""
+        self.abandoning = True
         if self.state == I.OPEN:
             await self._to(I.INVESTIGATING, reason)
         if self.state == I.INVESTIGATING:
             await self._to(I.INCONCLUSIVE, reason)
         if self.state in (I.RECOVERED, I.HANDED_OVER):
             return
-        await self._close_open_request()
+        await self._close_open_request("withdrawn")
         await self._hand_over(reason, action_to=A.WITHDRAWN if self.action_state in WITHDRAWABLE else None)
 
     async def _wait_for_close(self) -> None:
@@ -669,7 +733,7 @@ class IncidentWorkflow:
         # At 24 h or on `reinvestigate` the run ends without a write; closure still works.
 
     async def _finish_cancelled(self) -> None:
-        await self._close_open_request()
+        await self._close_open_request("withdrawn")
         action_to = A.WITHDRAWN if self.action_state in WITHDRAWABLE else None
         reason = f"cancelled by {self.cancel.requested_by}: {self.cancel.reason}" if self.cancel else "cancelled"
         await self._to(I.CANCELLED, reason, action_to=action_to)

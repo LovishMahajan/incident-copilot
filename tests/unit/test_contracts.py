@@ -342,7 +342,7 @@ def diagnosis(**overrides):
                   confidence="medium", summary="Config change broke checkout", claims=[],
                   hypotheses=[first, second], ruled_out=["Capacity is normal"],
                   missing_evidence=[], stop_reason=None, reviewed=True, review_notes=None,
-                  produced_by="diagnosis-engine")
+                  produced_by="diagnosis-engine", final_outcome=None, final_confidence=None)
     return c.Diagnosis(**{**fields, **overrides})
 
 
@@ -358,6 +358,26 @@ def test_established_diagnosis_needs_a_leading_hypothesis_it_lists():
         diagnosis(leading_hypothesis_id=uuid4())
     with pytest.raises(ValidationError):
         diagnosis(outcome="inconclusive")
+
+
+def test_a_diagnosis_capped_to_low_reads_as_inconclusive():
+    """ADR-69: scored medium, capped to low at review. The diagnoser's values stay; the final ones are shown."""
+    d = diagnosis(final_outcome="inconclusive", final_confidence="low")
+    assert (d.outcome.value, d.confidence.value, d.final_outcome.value, d.final_confidence.value) == (
+        "established", "medium", "inconclusive", "low")
+    assert diagnosis(final_outcome="established", final_confidence="high").final_outcome.value == "established"
+
+
+@pytest.mark.parametrize("change", [
+    {"final_outcome": "inconclusive"}, {"final_confidence": "low"},                    # a pair, or neither
+    {"final_outcome": "established", "final_confidence": "low"},                       # ADR-53
+    {"final_outcome": "inconclusive", "final_confidence": "low", "reviewed": False},   # written at review
+    {"final_outcome": "established", "final_confidence": "high", "outcome": "inconclusive",
+     "leading_hypothesis_id": None, "confidence": "low"},                              # a review can't establish
+])
+def test_final_outcome_and_confidence_follow_the_schema_checks(change):
+    with pytest.raises(ValidationError):
+        diagnosis(**change)
 
 
 def test_low_confidence_is_never_established():

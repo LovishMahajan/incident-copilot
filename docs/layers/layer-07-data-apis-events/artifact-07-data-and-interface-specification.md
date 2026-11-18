@@ -3,14 +3,14 @@
 - **Layer:** 7, Data Architecture, APIs and Event Design
 - **Built from:** Artifacts 4 and 6
 - **Status:** Proposed: gaps resolved and reference code aligned 2026-11-02 per [decisions.md](../../decisions.md); pending team sign-off
-- **Sources:** [conversation.md](conversation.md), [files/schema.mmd](files/schema.mmd), [files/schema-tables.sql](files/schema-tables.sql), [files/contracts.py](files/contracts.py), [files/schema.sql](files/schema.sql) (proposed), [files/schema-tests.sql](files/schema-tests.sql) (proposed), [technical-specification.md](../../reference/technical-specification.md), [Layer 6 conversation](../layer-06-system-architecture/conversation.md), [decisions.md](../../decisions.md)
+- **Sources:** [conversation.md](conversation.md), the canonical [db/schema.sql](../../../db/schema.sql), [db/schema-tests.sql](../../../db/schema-tests.sql) and [src/aisre/contracts.py](../../../src/aisre/contracts.py) (ADR-64, ADR-67), the filed copies in `files/`: [files/schema.mmd](files/schema.mmd), [files/schema-tables.sql](files/schema-tables.sql), [files/contracts.py](files/contracts.py), [files/schema.sql](files/schema.sql) (proposed), [files/schema-tests.sql](files/schema-tests.sql) (proposed), [technical-specification.md](../../reference/technical-specification.md), [Layer 6 conversation](../layer-06-system-architecture/conversation.md), [decisions.md](../../decisions.md)
 
 ## Required sections
 
 | Required section | Questions this section answers | Done |
 | --- | --- | --- |
 | 7.1 Entity relationship diagram | Q7.1–Q7.17, Q7.18, Q7.19, Q7.22 | Yes |
-| 7.2 PostgreSQL schema | Q7.18–Q7.27 | Yes |
+| 7.2 PostgreSQL schema | Q7.18–Q7.27 | Partial |
 | 7.3 Pydantic contracts | Q7.3–Q7.6, Q7.8–Q7.10, Q7.26, Q7.28, Q7.29, Q7.31–Q7.34, Q7.38, Q7.45 | Yes |
 | 7.4 API specification | Q7.28–Q7.41 | Yes |
 | 7.5 Event schemas | Q7.16, Q7.42, Q7.44–Q7.46 | Yes |
@@ -27,7 +27,7 @@
 
 `idempotency_keys` stands alone; it's keyed by caller, operation and key.
 
-The image and [files/schema.mmd](files/schema.mmd) are the team's originals. They show the 22 tables as first drawn. The canonical definition, with every column, is [files/schema.sql](files/schema.sql) (ADR-64), and the rows below follow it.
+The image and [files/schema.mmd](files/schema.mmd) are the team's originals. They show the 22 tables as first drawn. The canonical definition, with every column, is [db/schema.sql](../../../db/schema.sql) (ADR-64), and the rows below follow it. [files/schema.sql](files/schema.sql) is the filed copy this artifact was written against (ADR-67).
 
 | Object | Stored as | Key points | Question |
 | --- | --- | --- | --- |
@@ -63,13 +63,27 @@ The image and [files/schema.mmd](files/schema.mmd) are the team's originals. The
 
 *Answers Q7.18–Q7.27.*
 
-**The canonical schema is [files/schema.sql](files/schema.sql) (proposed, ADR-64).** It has 34 tables, 19 enumerated types, all the constraints, indexes and triggers, and a separate role block. The team's original tab is [files/schema-tables.sql](files/schema-tables.sql) (22 tables, 16 types, no indexes or triggers), and it stays unchanged as the record. The first Alembic migration is `schema.sql`.
+**The canonical schema is [db/schema.sql](../../../db/schema.sql) (proposed, ADR-64).** [files/schema.sql](files/schema.sql) is the filed copy, which a change in `db/` doesn't update (ADR-67). Alembic migrations take over from `db/schema.sql` at M0. `db/schema.sql` has 37 tables, 19 enumerated types, all the constraints, indexes and triggers, and a separate role block. The filed copy has 34 tables: it predates the three ADR-69 tables. The team's original tab is [files/schema-tables.sql](files/schema-tables.sql) (22 tables, 16 types, no indexes or triggers), and it stays unchanged as the record. The first Alembic migration is `schema.sql`.
+
+**Added by ADR-69 (2026-11-17).** These are in `db/schema.sql` and tested by checks O1 to O41 of `schema-tests.sql`. They aren't in the filed copy. The table list below includes them.
+
+| Addition | Holds | ADR-69 row |
+| --- | --- | --- |
+| `tool_calls` table: `tool_call_id`, `incident_id`, `tool`, `skill`, `call_sha256`, `params`, `new_evidence`, `evidence_ids`, `called_at` | Every tool call the ToolGate let through for an incident: per-incident budgets, repeat detection and the stored result for a repeat. Append-only | Tool call log |
+| `stop_requests` table: `stop_request_id`, `incident_id`, `requested_by`, `reason`, `requested_at` | A person's stop. `check_execution_attempt` refuses intent for a fix whose incident has a stop raised at or after the action was created. A rollback is never stopped. Append-only; `requested_by` is never `system:` | Stop request |
+| `deployment_blocks` table: key `(attempt_id, reason)`, `action_id`, `reason` (`unresolved` or `late_apply`), `target_deployment`, `opened_at`, `cleared_at`, `cleared_by`, `observed_revision`, `resolution_reason` | The unknown-outcome block, held per deployment and no longer derived from attempt rows. The trigger `track_deployment_block` opens an `unresolved` row with each intent and clears it when the attempt settles. The dispatcher adds a `late_apply` row when a change lands after `not_applied`, and only a person's resolution clears that one. No delete; the four clearing columns are write-once | Unknown-outcome block |
+| `diagnoses.final_outcome`, `diagnoses.final_confidence` | The reviewed result, written once at review and set together, on a reviewed row only. APIs show these, so a diagnosis capped to low reads as inconclusive | Final confidence |
+| `investigation_queue.run_id` | The run a queue row belongs to: `incident-<id>`, or `incident-<id>-rN` for a re-investigation, checked against the row's incident. Reconciliation removes a row only when its run has ended | Re-investigation queue |
+| Dispatcher `SELECT` on `fence_state`, `fence_reasons`, `stop_requests`, `deployment_blocks` | Lets the dispatcher check the fence, a stop and a block before it writes intent | Dispatcher and fence |
+| Check on `actions.hold_seconds`, in `check_action_transition` | Never below its service's `hold_seconds` | Per-service hold |
+
+What the schema can't supply is the caller. The cancellation route that writes a `stop_requests` row, the PostgreSQL-backed tool call store and the real dispatcher's SQL for a late-apply block aren't built ([Artifact 13](../layer-13-implementation-planning/artifact-13-complete-implementation-plan.md), 13.4).
 
 **Tested on PostgreSQL 17.11**, not on the PostgreSQL 16 the Technical specification names, because 17 is what was installed. It uses no feature newer than version 15. Test on 16 before M1 if production runs 16.
 
-[files/schema-tests.sql](files/schema-tests.sql) (proposed) re-runs every check below: load `schema.sql` as `aisre_owner`, then run the tests as a superuser.
+[db/schema-tests.sql](../../../db/schema-tests.sql) (proposed; filed copy in [files/](files/schema-tests.sql)) re-runs every check below: load `schema.sql` as `aisre_owner`, then run the tests as a superuser.
 
-| Proved on a real cluster (182 checks, 182 passing, on PostgreSQL 17.11) | Result |
+| Proved on a real cluster (223 checks, 223 passing, on PostgreSQL 17.11, 2026-11-17) | Result |
 | --- | --- |
 | Illegal transition | Rejected, including `open` → `executing`, and `diagnosed` → `awaiting_approval` (removed by ADR-46) |
 | Legal transition | A full flow from `open` to `closed` passes, using the application and dispatcher roles |
@@ -88,6 +102,10 @@ The image and [files/schema.mmd](files/schema.mmd) are the team's originals. The
 | Manual fence | Refused without a non-empty `why` (ADR-50) |
 | High-impact rule | `action_is_high_impact` derives it from kind, confirmed severity, the catalogue and other deployments, so a false `high_impact` flag can't give a one-approver request (ADR-49) |
 | Withdrawn action | Can't move to `applying`, and takes no attempt |
+| Stop request (ADR-69) | Intent is refused for a fix whose incident has a stop raised since the action was created. An older stop doesn't refuse a later action, and a rollback is never stopped |
+| Deployment block (ADR-69) | Opens with intent and clears when the attempt settles. A `late_apply` row blocks the deployment again after `not_applied`, the dispatcher can't clear it as `system:`, and a person's resolution clears it once |
+| Tool call log, queue run ID, final confidence, hold (ADR-69) | `tool_calls` and `stop_requests` are append-only. A queue row needs a `run_id` that names its own incident. `final_outcome` and `final_confidence` are set together, once, on a reviewed row, and never `established` with `low`. An action's hold below its service's is refused |
+| Dispatcher and the fence (ADR-69) | The dispatcher role reads `fence_state` and `fence_reasons` |
 | The tests themselves | With 5 rules deliberately removed, 8 checks failed as they should. In a later run, with the conditional-approval exemption, evidence purge, `why` check and `doc_id` guard undone, 9 checks failed as they should |
 
 | Group | Table | Holds | Key rules in the file |
@@ -100,13 +118,16 @@ The image and [files/schema.mmd](files/schema.mmd) are the team's originals. The
 | Evidence and reasoning | `evidence` | One record per item, any kind | `attributes` JSONB; `content_sha256`; window check; `gap_reason` set exactly when `kind = gap`; `strength_tier` 1–8; `content_removed_at` and `content_removed_reason` set together, once |
 | Evidence and reasoning | `hypotheses` | Causes for an incident | Unique `(incident_id, ordinal)`; `version` |
 | Evidence and reasoning | `hypothesis_evidence` | Links between hypotheses and evidence | Primary key `(hypothesis_id, evidence_id, relation)` |
-| Evidence and reasoning | `diagnoses` | A new row per revision | Unique `(incident_id, revision)`; same-incident foreign key; leading hypothesis required if established |
+| Evidence and reasoning | `diagnoses` | A new row per revision, with the review's `final_outcome` and `final_confidence` (ADR-69) | Unique `(incident_id, revision)`; same-incident foreign key; leading hypothesis required if established; the two final columns are set together, once, on a reviewed row, and `established` only if `outcome` is `established` and the final confidence isn't `low` |
+| Evidence and reasoning | `tool_calls` | Every tool call the ToolGate let through (ADR-69) | Append-only; `call_sha256` covers the tool and its validated parameters; `evidence_ids` is the stored result for a repeat; indexed on `(incident_id, call_sha256)` |
 | Change | `actions` | Proposed changes, with recovery criteria, target deployment, base revision, `expected_after_revision` and digests | Same-incident foreign key to `diagnoses`; `version`; `expected_after_revision` required; `parent_action_id` set exactly when kind is `rollback`; `action_digest` required from `awaiting_approval` on |
 | Change | `patches` | Diff reference and `patch_sha256` | One per action |
 | Change | `test_runs` | Reproduction and test result | Foreign key to `actions`; `patch_sha256`; six outcomes (ADR-64) |
 | Approval | `approval_requests` | Requester, escalation, expiry, approvers needed, close reason | `approvers_needed` is 1 or 2, and 2 for a high-impact action; at most one open request per action |
 | Approval | `approval_decisions` | One row per decision | Unique `(approval_request_id, decided_by, decision)`; `action_digest` must match the action; signature, `valid_until`, two-factor and a sign-in within 15 minutes for approvals; reason for rejections and revocations; no self-approval; the platform never approves |
 | Execution and verification | `execution_attempts` | Each attempt, with `execution_key` and `action_digest` | Unique `(execution_key, attempt_no)`; key equals `action_id`; one applied and one open attempt per key; `reconciliation` marks a looked-up result, where nothing was sent; `resolved_by`, `observed_revision` and `resolution_reason` come together, on a reconciliation row only, and `resolved_by` is never `system:` |
+| Execution and verification | `stop_requests` | A person's stop on an incident (ADR-69) | Append-only; reason required; `requested_by` is never `system:`; applies to fixes created before it, never to a rollback |
+| Execution and verification | `deployment_blocks` | The unknown-outcome block, one row per attempt and reason (ADR-47, ADR-69) | `reason` is `unresolved` or `late_apply`; no delete; clearing columns write-once; a `late_apply` row is cleared only by a person, with the observed revision and a reason |
 | Execution and verification | `verifications` | Criteria, measurements, result | `hold_seconds` at least 60 |
 | Model use | `model_attempts` | Every model call | `step_attempt_no` between 1 and 3; task is `hypothesise`, `diagnose`, `critique` or `draft_patch`; indexed by `input_sha256` for result reuse (ADR-61) |
 | Model use | `incident_budgets` | Limits, used, reserved and spent | One row per incident; checks reject any overrun; only reservation and correction triggers write to it |
@@ -118,7 +139,7 @@ The image and [files/schema.mmd](files/schema.mmd) are the team's originals. The
 | Support | `outbox` | Messages to the workflow engine | Unique `message_id`; `outbox_id` gives the order |
 | Support | `idempotency_keys` | API write keys | Primary key `(caller_id, operation, idem_key)`; state in progress or completed |
 | Retrieval | `documents`, `chunks`, `index_revisions`, `index_revision_documents` | The corpus and immutable index revisions (ADR-62) | Append-only; the worker ranks; `model_attempts` records the revision searched; `documents.doc_type` is `runbook` or `past_incident`, required; `index_revision_documents.stale` is required, per build, because chunks are shared between revisions |
-| Scheduling | `investigation_queue` | Investigation slots (8.1) | One row per waiting or running investigation; leaves when the incident leaves `open` or `investigating` |
+| Scheduling | `investigation_queue` | Investigation slots (8.1), each with the `run_id` of the workflow run that queued it (ADR-69) | One row per waiting or running investigation; `run_id` required and must name the row's incident; leaves when the incident leaves `open` or `investigating` and its run has ended |
 | Fencing | `fence_state`, `fence_reasons` | The write fence (12.5) | One state row; the epoch never goes down. One active reason per scope; cleared reasons stay for audit; `why` required for a manual fence (ADR-50) |
 | Rules | `incident_transitions`, `action_transitions` | The allowed transitions, as data | 30 and 20 rows (ADR-46) |
 
@@ -150,11 +171,11 @@ erDiagram
 
 Enforced by database triggers (ADR-24), by the application's role having no delete rights on these tables, and by the hash chain on `timeline_events`. `schema.sql` applies this as follows:
 
-- **Also append-only:** `incident_alerts`, `dead_letters`, `artifact_deletions`, `reservation_corrections` and the retrieval tables. `TRUNCATE` is blocked too.
+- **Also append-only:** `incident_alerts`, `dead_letters`, `artifact_deletions`, `reservation_corrections`, `tool_calls`, `stop_requests` and the retrieval tables. `deployment_blocks` takes no delete, and its clearing columns are write-once. `TRUNCATE` is blocked too.
 - **An unknown attempt stays unknown.** Reconciliation adds a new row with `reconciliation = true` for what it found. A person who settles the state does so on such a row, with `resolved_by`, `observed_revision` and `resolution_reason`, and the action moves; the unknown attempt stays.
 - **Evidence content removal:** `protect_evidence` allows `content_removed_at` and `content_removed_reason` once, only on rows with `attributes.doc_id`. It overwrites `summary` and strips `attributes` to the `doc_id`, whatever the caller sent. `query`, `source_link` and `content_sha256` stay. Documents and chunks have no equivalent path: see the marker under Retention.
-- **Write-once, not a mutable column:** `verifications.accepted_by` and `accepted_at`; a request's `closed_at` and `close_reason`; `actions.action_digest` and `test_bundle_digest`, because the digest covers the passing test bundle and can only be set when testing ends.
-- **Diagnoses:** only `reviewed` and `review_notes` may change. A new conclusion is a new revision.
+- **Write-once, not a mutable column:** `verifications.accepted_by` and `accepted_at`; a request's `closed_at` and `close_reason`; `actions.action_digest` and `test_bundle_digest`, because the digest covers the passing test bundle and can only be set when testing ends. A rollback is the exception: it skips testing, so it carries both from creation, while `proposed`, with the test and predicate digests copied from its parent (ADR-48).
+- **Diagnoses:** only `reviewed` and `review_notes` may change, and `final_outcome` and `final_confidence` are written once, at review (ADR-69). A new conclusion is a new revision.
 - **Hash chain:** per incident. Hashed by the database, over the previous hash and every event field. `verify_timeline_chain(incident_id)` walks it and lists any fault.
 
 **Other rules in the database:**
@@ -165,7 +186,9 @@ Enforced by database triggers (ADR-24), by the application's role having no dele
 | Version | Rises by exactly 1 on each change. Appending an event doesn't count as a change to the incident |
 | Gapless sequence | A counter on the incident row, updated under its row lock when an event is inserted. A rolled-back transaction uses no number |
 | Retry (ADR-47) | A new attempt needs the action in `applying`, the latest attempt for the key confirmed `not_applied`, the approvals still standing, and the same digest |
-| Unknown outcome (ADR-47) | Blocks every new attempt on that deployment, by any action, until the action's status is settled. Intent per deployment is serialised by an advisory lock |
+| Unknown outcome (ADR-47, ADR-69) | An open `deployment_blocks` row blocks every new attempt on that deployment, by any action. An `unresolved` row clears when its attempt settles; a `late_apply` row clears only by a person's resolution. Intent per deployment is serialised by an advisory lock |
+| Stop request (ADR-69) | `check_execution_attempt` refuses intent for a fix whose incident has a `stop_requests` row raised at or after the action's `created_at` |
+| Hold period (ADR-69) | `check_action_transition` refuses an action whose `hold_seconds` is below its service's |
 | Revocation, rejection (ADR-49) | Accepted until an attempt exists. A revocation withdraws only the person's own approval |
 | Rollback (ADR-48) | Copies the parent's test and predicate digests; starts from the revision the parent produced. A conditional approval is accepted while the rollback is `proposed`, and its `valid_until` must be the parent approval's + hold + 15 minutes |
 | Budget | Inserting a reservation updates the budget row, so its row lock and checks refuse any overrun; the application can't write the budget directly. A settled reservation never changes: a `reservation_corrections` row moves the difference instead |
@@ -175,8 +198,8 @@ Enforced by database triggers (ADR-24), by the application's role having no dele
 | Role | May | May not |
 | --- | --- | --- |
 | `aisre_owner` | Run migrations | Serve traffic |
-| `aisre_app` (API, worker) | Read all; insert; update versioned tables, requests, reservations, outbox, keys, the investigation queue and fence state; set the two content-removed columns on `evidence`; delete freed investigation slots | Delete anything else; write `execution_attempts` or `incident_budgets` |
-| `aisre_dispatcher` (ADR-51) | Read actions, patches, approvals, verification results; write `execution_attempts`; set action `status` for `applying` and its outcomes, by a trigger-limited grant on `status` and `version`; add `aisre.execution.*` events; store the release process's response as an artifact | Change any other action column or status, read anything else, write other event types |
+| `aisre_app` (API, worker) | Read all; insert, including `tool_calls` and `stop_requests`; update versioned tables, requests, reservations, outbox, keys, the investigation queue and fence state; set the two content-removed columns on `evidence`; delete freed investigation slots | Delete anything else; write `execution_attempts`, `deployment_blocks` or `incident_budgets` |
+| `aisre_dispatcher` (ADR-51) | Read actions, patches, approval requests and decisions, execution attempts, verification results and the action transition table; read `fence_state`, `fence_reasons`, `stop_requests` and `deployment_blocks` (ADR-69); write `execution_attempts`; add a `late_apply` row to `deployment_blocks` and set its four clearing columns; set action `status` for `applying` and its outcomes, by a trigger-limited grant on `status` and `version`; add `aisre.execution.*` events; store the release process's response as an artifact | Change any other action column or status, read anything else, write other event types |
 | `aisre_retention` (Technical specification section 10) | Read all; delete expired rows; record object-store deletions | Update anything; delete a record before it is due |
 
 **Retention (ADR-57):** `artifacts_due_for_deletion` lists object-store content past `retain_until`, holding back snapshots cited by a hypothesis for a year. The job deletes the content and writes `artifact_deletions`; the row stays, because append-only records point at it. A snapshot whose evidence is marked content removed is due at once, whatever cites it. `purge_incident` removes an incident's whole record, reservation corrections included, once it has been closed or cancelled for a year and every artifact has expired. Dead letters go when `retain_until` passes, and delivered outbox rows after 7 days.
@@ -207,14 +230,14 @@ Enforced by database triggers (ADR-24), by the application's role having no dele
 
 *Answers Q7.3–Q7.6, Q7.8–Q7.10, Q7.26, Q7.28, Q7.29, Q7.31–Q7.34, Q7.38, Q7.45.*
 
-Full definitions: [files/contracts.py](files/contracts.py), which implements ADR-46, ADR-49, ADR-52 and ADR-64; the team's original is in git commit 013bcf4. [files/test_contracts.py](files/test_contracts.py) (95 tests, passing) compares the enums with `schema.sql` and `states.py`, and the event payload models with 7.5. It compares the enums by parsing and by import; loading the schema is `schema-tests.sql`'s job. These models are the single definition of every object that crosses a boundary: API requests and responses, model output, and events. Every contract extends `Strict`: unknown fields are rejected and values are frozen.
+Full definitions: [src/aisre/contracts.py](../../../src/aisre/contracts.py), which implements ADR-46, ADR-49, ADR-52 and ADR-64; [files/contracts.py](files/contracts.py) is the filed copy, and the team's original is in git commit 013bcf4. [tests/unit/test_contracts.py](../../../tests/unit/test_contracts.py) (filed copy: [files/test_contracts.py](files/test_contracts.py), 95 tests when filed, 101 on 2026-11-17) compares the enums with `schema.sql` and `states.py`, and the event payload models with 7.5. It compares the enums by parsing and by import; loading the schema is `schema-tests.sql`'s job. These models are the single definition of every object that crosses a boundary: API requests and responses, model output, and events. Every contract extends `Strict`: unknown fields are rejected and values are frozen.
 
 | Group | Models | Used for |
 | --- | --- | --- |
 | Enumerations | `IncidentStatus`, `ActionStatus`, `Severity`, `EvidenceKind`, `Confidence`, `HypothesisStatus`, `ActionKind`, `ArtifactKind`, and the other types that cross a boundary | Mirror the PostgreSQL types in `schema.sql` exactly |
 | Incident intake | `IncidentCreate`, `IncidentAccepted` | `POST /v1/incidents` |
 | Incident state | `IncidentView`, `BudgetView` | `GET /v1/incidents/{incident_id}` |
-| Domain records | `EvidenceRecord` (with `content_removed_at`, `content_removed_reason`), `EvidenceLink`, `Hypothesis`, `Diagnosis` (with `reviewed`, `review_notes`, `produced_by`, `category`, `claims`, `ruled_out`) | Stored, returned by the API, and used by the worker |
+| Domain records | `EvidenceRecord` (with `content_removed_at`, `content_removed_reason`), `EvidenceLink`, `Hypothesis`, `Diagnosis` (with `reviewed`, `review_notes`, `produced_by`, `category`, `claims`, `ruled_out`, and the nullable `final_outcome` and `final_confidence`, ADR-69) | Stored, returned by the API, and used by the worker |
 | Actions | `ActionView` (with `expected_after_revision`), `RecoveryCriterion`, `PatchView`, `TestRunView` | One action, with its patch and latest test |
 | Model output | `DiagnosisDraft` in Layer 9's `agent_contracts.py`, replacing `ModelDiagnosisOutput` and `ModelHypothesis` (ADR-52) | What the model must return for the `diagnose` task; validated by the Model Gateway |
 | Approval and cancellation | `ApprovalCreate`, `RejectionCreate`, `RevocationCreate`, `ApprovalDecisionView`, `CancellationCreate` | Approve, reject, revoke and cancel calls |
@@ -226,7 +249,8 @@ Full definitions: [files/contracts.py](files/contracts.py), which implements ADR
 
 Rules carried by the models:
 
-- `Diagnosis`: an established diagnosis needs a leading hypothesis, an inconclusive one has none, and the leading hypothesis must be one of those listed.
+- `Diagnosis`: an established diagnosis needs a leading hypothesis, an inconclusive one has none, and the leading hypothesis must be one of those listed. `final_outcome` and `final_confidence` are set together, only on a reviewed diagnosis, and `final_outcome` is `established` only when `outcome` is and the final confidence isn't `low` (ADR-69).
+- The approval request's close reason and a patch's candidate number aren't API contracts. They are the workflow's activity inputs, `ApprovalRequestIn.close_reason` and `SkillIn.candidate_no` in `src/aisre/workflow/activities.py` (Artifact 8), and `PatchIn.candidate_no` in `src/aisre/remediation/patch.py`.
 - `ApprovalCreate`: the approver names the exact action through `action_digest` (ADR-49), and may add `rollback_action_digest` to sign the rollback's conditional approval in the same call (ADR-48). The version travels in `If-Match`; there is no body field (ADR-64).
 - `RejectionCreate`: a reason is mandatory, and it sends `If-Match` too.
 - `OutcomeResolutionCreate`: `outcome` is `applied` or `not_applied` only, with `observed_revision` and `reason`. It lands on a reconciliation row of `execution_attempts`, with the caller as `resolved_by`.
@@ -274,7 +298,11 @@ Rules carried by the models:
 - Cursor pagination.
 - Changes to versioned objects need `If-Match`, and no body field carries the version (ADR-64). Cancellation and notes don't send it: neither changes a versioned object, and a cancel mustn't lose a race with the workflow.
 - Every write needs `Idempotency-Key`.
-- The OpenAPI document is generated from the contracts and checked in the build.
+- The OpenAPI document is generated from the contracts and checked in the build (planned for M0).
+
+**Not built yet.** This section specifies the API. No HTTP layer exists: the routes, token verification, the idempotency-key store's handling and the OpenAPI build arrive with `src/aisre/api/` at M0 (thin intake, read and timeline) and M1 (the rest), and the approval and outcome-resolution routes at M3 ([Artifact 13](../layer-13-implementation-planning/artifact-13-complete-implementation-plan.md)). The contracts and the `idempotency_keys` table exist.
+
+**Fence and restore (ADR-69):** no HTTP endpoints in the first version. A Platform admin lifts a fence and runs a restore through the CLI, and an Incident lead sets a manual fence through the CLI too (ADR-50).
 
 **Intake (ADR-58):**
 
@@ -295,7 +323,9 @@ Rules carried by the models:
 - A high-impact action needs two different approvers. Each approval arrives as its own signal.
 - A fix's rollback is shown alongside it, and its conditional approval is signed in the same call (ADR-48).
 
-**Re-investigation (ADR-46):** only from `handed_over`, otherwise `409`. It starts workflow `incident-<id>-r2`; no automatic path exists.
+**Re-investigation (ADR-46):** only from `handed_over`, otherwise `409`. It starts workflow `incident-<id>-r<N>`, where N is the incident's `investigation_run`: 2 for the first re-investigation, 3 for the next. No automatic path exists.
+
+**Cancellation after approval (ADR-69):** a cancel during `awaiting_approval`, or before the dispatcher records intent, is a stop request, not a revocation. Anyone with `incident:cancel` can raise it, and the dispatcher refuses an action whose incident has a stop. A revocation still withdraws only the caller's own approval. A cancel never skips the rollback of a failed fix.
 
 ## 7.5 Event schemas
 
@@ -372,7 +402,7 @@ Each type's `data` is a Pydantic model in `contracts.py`.
 | Element | Rule |
 | --- | --- |
 | Written | In the same transaction as the change it announces |
-| Message kinds | `start_workflow` (a re-investigation uses `incident-<incident_id>-r2`, ADR-46); `signal_workflow` (approval, rejection, revocation, cancellation, severity confirmation, closure) |
+| Message kinds | `start_workflow` (a re-investigation uses `incident-<incident_id>-r<N>`, N being `investigation_run`, ADR-46); `signal_workflow` (approval, rejection, revocation, cancellation, severity confirmation, closure) |
 | Message identity | `message_id` (stable); workflow ID `incident-<incident_id>`; signals carry the decision's or request's ID |
 | Claiming | `FOR UPDATE SKIP LOCKED`, batches of 50, ordered by `outbox_id`; one incident's rows in order |
 | Delivery | At least once; "already started" counts as success; the workflow ignores signal IDs already seen |
@@ -382,6 +412,7 @@ Each type's `data` is a Pydantic model in `contracts.py`.
 | Latency target | p95 ≤ 1 s (NFR-31) |
 | Where it runs | Inside the worker process; any number of instances |
 | When to replace | Only the delivery step, and only under the conditions in Q7.64 |
+| Built | The `outbox` table and its rules are in `db/schema.sql`. The relay (`src/aisre/workflow/relay.py`) and the API transaction that writes the rows are planned for M0 (ADR-67) |
 
 ## 7.8 Idempotency rules
 
@@ -418,7 +449,7 @@ Each type's `data` is a Pydantic model in `contracts.py`.
     - Then wait for a database notification for this incident, and read the new rows.
 - **Heartbeat:** a comment line every 15 seconds, so proxies don't close the connection.
 - **`retry: 3000`** on connect.
-- **The stream ends** when the incident is closed, after the final event.
+- **The stream ends** when the incident is closed or cancelled, the two terminal states, after the final event.
 - **Limits:**
     - a maximum number of open streams per user (provisional: 10)
     - streams re-check permission every 5 minutes, and close if access was removed
@@ -498,6 +529,15 @@ The 22 table names and all column names and types match between [files/schema.mm
 | Rejection permission `action:approve` vs ADR-50 (Responders may reject) | `action:reject` | ADR-50 |
 | Dispatcher also writes artifacts, beyond ADR-51's list | Allowed: Q7.12 stores its raw response as a write-once artifact | Layer decision (proposed) |
 | Gap in 7.2: `schema.sql` existed in no source | Written and tested | ADR-64 |
+| Which `schema.sql` is canonical | `db/schema.sql`. The copy in `files/` is the filed version and isn't updated by code changes | ADR-64, ADR-67 |
+| Digests are set when testing ends, but a rollback never tests | A rollback carries its digests from creation, copied from its parent | ADR-48, ADR-64 |
+| Re-investigation workflow ID fixed at `-r2` | `-r<N>`, from `investigation_run`, so a second re-investigation has its own ID | ADR-46, Layer decision (proposed) |
+| Stream end: closed only | Closed or cancelled, both terminal | ADR-46 |
+| Fence and restore endpoints | None in the first version; CLI only | ADR-69 |
+| API, relay and OpenAPI build described as present | Marked not built, with their milestones | ADR-67, ADR-68 |
+| Final confidence can't be stored; tool calls, the deployment block, the stop request and the queue's run had no storage | `diagnoses.final_outcome` and `final_confidence`, `tool_calls`, `deployment_blocks`, `stop_requests` and `investigation_queue.run_id`, in `db/schema.sql` (7.2) | ADR-69 |
+| Dispatcher can't read the fence | Its role has `SELECT` on `fence_state` and `fence_reasons` | ADR-69 |
+| 7.2 marked complete while legal deletion of runbook text is open | 7.2 is Partial until a deletion path is decided | Layer decision (proposed) |
 | A conditional row is signed on a `proposed` rollback, but `check_approval_decision` needed `awaiting_approval` | Exempted for `conditional` rows on rollbacks; a request row was already allowed | ADR-48 |
 | Reconciliation must correct a settled reservation, but settled rows are frozen | Separate append-only `reservation_corrections`, with a budget trigger | Layer decision (proposed), implements ADR-61 |
 | Where an outcome resolution is stored | On the `execution_attempts` reconciliation row, not a new table: no new grant, and frozen and purged with the attempts | Layer decision (proposed), implements ADR-47 |
@@ -512,7 +552,7 @@ The 22 table names and all column names and types match between [files/schema.mm
 
 ## Acceptance checks
 
-- [x] Every required section above is present and complete.
+- [ ] Every required section above is present and complete.
 - [x] Every section lists the questions it answers, and every question in this layer is answered by at least one section.
 - [x] Every assumption is marked provisional and has a named owner and a condition under which it will be validated.
 - [ ] Every disagreement between Claude and ChatGPT that affected a decision is recorded with the team's resolution.

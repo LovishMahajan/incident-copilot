@@ -80,6 +80,13 @@ class ImpactFacts:
     parent_kind: Optional[str] = None      # a rollback: the kind of the action it reverses
 
 
+def check_hold(action: ImmutableAction, service_hold_seconds: int) -> None:
+    """ADR-69: an action's hold period is never below its service's catalogue value. Called where
+    the action is created; schema.sql refuses the row too."""
+    if action.hold_seconds < service_hold_seconds:
+        raise ValueError(f"hold_seconds {action.hold_seconds} is below the service's {service_hold_seconds}")
+
+
 def is_high_impact(action: ImmutableAction, impact: ImpactFacts) -> bool:
     """ADR-49. Derived from the action, target and severity, so a False flag changes nothing. A True
     flag stands: a rollback copies its parent's. Severity not yet confirmed counts as high-impact."""
@@ -229,8 +236,10 @@ class ApprovalError(Exception):
         self.code = code
 
 
-SECURITY_ALERT_CODES = {"reauth_required", "forbidden", "self_approval", "not_own_approval", "not_found",
-                        "digest_mismatch"}                 # identity, rights and binding; retries don't alert (11.6)
+SECURITY_ALERT_CODES = {"unauthenticated", "reauth_required", "forbidden", "self_approval", "not_own_approval",
+                        "not_found", "digest_mismatch"}    # identity, rights and binding; retries don't alert (11.6).
+                                                           # `unauthenticated` is the API's: no caller reaches this module
+TAMPERED = "bad signature or digest"   # evaluate's note for a stored row that fails verification (ST-01, ST-02)
 
 
 def record_decision(*, action: ImmutableAction, subject: str, decision: str, auth_time: datetime, mfa: bool,
@@ -313,6 +322,36 @@ def record_decision(*, action: ImmutableAction, subject: str, decision: str, aut
     return rows
 
 
+@dataclass(frozen=True)
+class StopRequest:
+    """One stop_requests row (ADR-69)."""
+
+    incident_id: str
+    requested_by: str
+    reason: str
+    requested_at: str
+
+
+def request_stop(*, action: ImmutableAction, subject: str, reason: str, now: datetime, directory: Directory,
+                 intent_recorded: bool) -> StopRequest:
+    """The cancellation API's core while an action waits for approval or dispatch (ADR-69). A stop is
+    not a revocation: anyone with the cancel permission raises it, no approval row changes, and the
+    dispatcher refuses the incident's fix while it stands. Like a rejection it needs no recent
+    sign-in. Once intent is recorded there is nothing left to stop."""
+    service = action.target.service
+    if subject.startswith("system:"):
+        raise ApprovalError("forbidden", "platform identities cannot raise a stop")
+    if not directory.can(subject, service, Perm.READ):
+        raise ApprovalError("not_found", "no such action")                             # ADR-58
+    if not directory.can(subject, service, Perm.CANCEL):
+        raise ApprovalError("forbidden", f"{subject} may not cancel for {service}")
+    if not reason:
+        raise ApprovalError("reason_required")
+    if intent_recorded:
+        raise ApprovalError("execution_started", "undoing the change is a rollback action")
+    return StopRequest(action.incident_id, subject, reason, now.isoformat())
+
+
 class Standing(str, Enum):
     APPROVED = "approved"
     PENDING = "pending"
@@ -331,7 +370,7 @@ def evaluate(action: ImmutableAction, decisions: list[Decision], *, now: datetim
     valid = [d for d in decisions if verify_signature(d, keys) and d.action_digest == action.digest
              and d.action_id == action.action_id]
     if len(valid) != len(decisions):
-        notes.append(f"{len(decisions) - len(valid)} decision(s) ignored: bad signature or digest")
+        notes.append(f"{len(decisions) - len(valid)} decision(s) ignored: {TAMPERED}")
     if any(d.decision == "rejected" for d in valid):
         return Standing.REJECTED, notes + ["a rejection always wins (Q11.60)"], None
     revoked = {d.revokes for d in valid if d.decision == "revoked"}

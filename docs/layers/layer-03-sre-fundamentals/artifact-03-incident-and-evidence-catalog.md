@@ -377,6 +377,7 @@ Prefer the **smallest, most reversible action** that targets the confirmed cause
 | Alternatives ruled out | `orders-db`: one reconnect, on the old version, after the first failure, and the changed value isn't a database setting. Payment gateway: a known signature at its normal rate |
 | Fix | `config_revert` to `825` (`cfg-41`), without redeploying code. Reverting the commit is acceptable. Rolling back the release is acceptable, but it is high-impact (ADR-49) |
 | Who changes production | A person by hand in Release A; the dispatcher on a signed approval in Release B (ADR-44) |
+| Recovery predicate | `rate_500_total` at most 0.2% each minute, with at least 50 requests a minute, held for 10 minutes (provisional, ADR-66). The baseline median is 0.082% |
 
 Configuration is versioned with the release and can be reverted on its own in the fixture. For a real service this stays an assumption, listed below.
 
@@ -434,9 +435,9 @@ Tiers 1 to 3 are mechanism evidence, 4 to 7 supporting, and 8 weak.
 | --- | --- | --- |
 | High | Tier 1–3, no unresolved contradicting evidence | Established |
 | Medium | Tier 4, or two independent tier 5–7 observations, no unresolved contradiction | Established |
-| Low | Anything else, or any `confidence_cap` from the critic | Inconclusive, no patch |
+| Low | Anything else | Inconclusive, no patch |
 
-The bar is Medium.
+Final confidence is the lower of the scored level and the critic's `confidence_cap`, so a cap can lower a result but never raise it (ADR-53). The bar is Medium.
 
 **Why timing alone is not proof** ([Q3.27](conversation.md)): timing shows correlation, not cause. Other changes coincide; the deployment itself is a disruption, since restarting instances can expose an unrelated, existing fault; a shared trigger may explain both; deployments are frequent, so overlaps happen by chance; and clock differences can create false alignment. Proof needs evidence that links the change to the failure mechanism, and the absence of contradicting evidence.
 
@@ -618,6 +619,8 @@ Each incident has one record, with a timestamped entry for every stage change, t
 | Escalation values | Values in 3.10. Platform limits don't vary by severity. Times for people do, and they are provisional. | Layer decision (proposed) |
 | Reference incident design | Synthetic `orders-api`, `sev2`, gradual rollout, one changed value read on the failing path. | Layer decision (proposed) |
 | Resuming after a source returns | Q3.36's resume applies during the investigation. After hand-over, a person requests re-investigation. | ADR-46, Layer decision (proposed) |
+| Confidence cap wording | 3.8 said any critic cap gives Low. Final confidence is the lower of the scored level and the cap. | ADR-53 |
+| Recovery predicate for the reference incident | The 0.2% predicate was only in Assumptions. 3.7 now states it with the reference result. | Layer decision (proposed) |
 | Who approves and accepts in the demo | Q1.17's "the engineer" can't be the releasing author acting alone, and the incident lead accepts recovery. | ADR-49, ADR-66 |
 
 ## Acceptance checks

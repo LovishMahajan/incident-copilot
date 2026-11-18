@@ -90,7 +90,7 @@ class MemoryStore:
 
     def __init__(self):
         self.actions, self.decided, self.verdicts, self.patches = {}, {}, {}, {}
-        self.statuses, self.impacts = {}, {}
+        self.statuses, self.impacts, self.stops = {}, {}, {}
 
     def add(self, a: ImmutableAction, decisions=(), content: Optional[bytes] = None) -> "MemoryStore":
         self.actions[a.action_id], self.decided[a.action_id] = a, list(decisions)
@@ -115,6 +115,9 @@ class MemoryStore:
 
     def impact(self, action_id):
         return self.impacts.get(action_id, ORDINARY)
+
+    def stop(self, action_id):
+        return self.stops.get(self.actions[action_id].incident_id)
 
     def patch_content(self, patch_sha256):
         return self.patches[patch_sha256]
@@ -223,6 +226,7 @@ def request(**over) -> ModelRequest:
 # confirms each one exists with this label, and that the README names it on that case's row.
 SCHEMA_CHECKS: dict[str, dict[str, str]] = {
     "ST-02": {"D4": "UPDATE on approval_decisions", "D5": "DELETE on approval_decisions", "F2": "wrong digest"},
+    "ST-05": {"O1": "the dispatcher reads the fence epoch and its reasons"},
     "ST-06": {"F3": "self-approval", "F4": "the platform never approves"},
     "ST-09": {"F5": "stale sign-in"},
     "ST-10": {"F6": "approval valid for over 15 minutes", "F12": "attempt with a revoked second approval"},
@@ -244,9 +248,12 @@ SCHEMA_CHECKS: dict[str, dict[str, str]] = {
     "ST-35": {"I3": "reservation over the cost cap", "I9": "token cap", "I10": "call cap"},
     "ST-37": {"E1": "a further attempt after applied is refused",
               "E2": "second applied for a key fails on the partial unique index",
-              "G1": "second open attempt refused by the guard"},
+              "G1": "second open attempt refused by the guard",
+              "O26": "the dispatcher puts the block back after a late apply",
+              "O28": "the late apply blocks the deployment, with no attempt row open"},
     "ST-38": {"G3": "no retry after unknown without reconciliation", "G5": "unknown outcome blocks the whole deployment",
-              "G13": "no further attempt once the action is not_applied"},
+              "G13": "no further attempt once the action is not_applied",
+              "O38": "an unknown outcome keeps the block"},
     "ST-39": {"H3b": "a plain approval on a proposed rollback is refused",
               "H4": "conditional approval with the wrong lifetime", "H2": "a rollback must copy its parent"},
     "ST-40": {"G5": "unknown outcome blocks the whole deployment"},

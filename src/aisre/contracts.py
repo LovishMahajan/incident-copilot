@@ -378,9 +378,19 @@ class Diagnosis(Strict):
     reviewed: bool
     review_notes: str | None
     produced_by: str = Field(description="Component and model attempt")
+    final_outcome: DiagnosisOutcome | None = Field(
+        description="Set once, at review (ADR-69). Show this, not `outcome`: capped to low reads as inconclusive")
+    final_confidence: Confidence | None = Field(description="The lower of the scored level and the critic's cap (ADR-53)")
 
     @model_validator(mode="after")
     def leading_matches_outcome(self) -> Diagnosis:
+        if (self.final_outcome is None) != (self.final_confidence is None):
+            raise ValueError("final_outcome and final_confidence are set together, at review")
+        if self.final_outcome is not None and not self.reviewed:
+            raise ValueError("only a reviewed diagnosis has a final outcome")
+        if self.final_outcome == DiagnosisOutcome.established and (
+                self.outcome != DiagnosisOutcome.established or self.final_confidence == Confidence.low):
+            raise ValueError("final established needs an established diagnosis above low confidence (ADR-53)")
         established = self.outcome == DiagnosisOutcome.established
         if established != (self.leading_hypothesis_id is not None):
             raise ValueError("an established diagnosis needs a leading hypothesis; an inconclusive one has none")

@@ -9,6 +9,7 @@ import hashlib
 import json
 import re
 import time
+import typing
 import uuid
 from dataclasses import replace
 from datetime import datetime, timedelta, timezone
@@ -24,7 +25,7 @@ from aisre.retrieval.context import Item, PromptRegistry, PromptVersion, assembl
 from aisre.agent.coordinator import Limits
 from aisre.gateway.gateway import (BudgetLedger, CircuitBreaker, FleetBudget, GatewayConfig, IncidentBudget, ModelGateway, Price,
                      Reservation)
-from aisre.gateway.gateway_contracts import (Capability, ModelRequest, ResultStatus, StopReason, ToolProposal, ToolSpec, Usage,
+from aisre.gateway.gateway_contracts import (TASK_MODEL_ALIAS, Capability, ModelRequest, ResultStatus, StopReason, ToolProposal, ToolSpec, Usage,
                                escape_data, estimate_tokens)
 from aisre.retrieval.retrieval import (Document, IndexRevision, LabelledQuery, SearchHit, activation_gate, chunk_document,
                        evaluate_revision, mrr, ndcg_at_k, purge_document, recall_at_k, resolve_labels, stale_report,
@@ -111,6 +112,17 @@ def test_claude_model_and_effort_per_alias_merge_with_format():
     assert opus["model"] == "claude-opus-5-5" and opus["output_config"]["effort"] == "medium"
     assert opus["output_config"]["format"]["type"] == "json_schema"
     assert sonnet["model"] == "claude-sonnet-5-5" and sonnet["output_config"] == {"effort": "high"}
+
+
+@pytest.mark.parametrize("task,alias,model", [("diagnose", "default", "claude-opus-5-5"), ("critique", "default", "claude-opus-5-5"),
+                                              ("hypothesise", "standard", "claude-sonnet-5-5"),
+                                              ("draft_patch", "standard", "claude-sonnet-5-5")])
+def test_each_task_gets_its_model_unless_the_request_names_one(task, alias, model):
+    """ADR-69: set in code until prompts/ exists. Until then every task ran on `default`."""
+    r = req(task=task)
+    assert r.model_alias == alias and ClaudeAdapter().build(r)["model"] == model
+    assert req(task=task, model_alias="default").model_alias == "default"
+    assert set(TASK_MODEL_ALIAS) == set(typing.get_args(ModelRequest.model_fields["task"].annotation))
 
 
 def test_identity_records_prompt_fingerprint_and_provider_request_id():

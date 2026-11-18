@@ -27,7 +27,7 @@ uv run pytest -q
 
 ## Load and test the schema
 
-Needs PostgreSQL 16 or later. `schema.sql` loads as the owning role in an empty database, and `schema-tests.sql` runs as a superuser straight after.
+Tested on PostgreSQL 17.11 only. The Technical specification targets 16, which hasn't been tested; the schema uses no feature newer than version 15. `schema.sql` loads as the owning role in an empty database, and `schema-tests.sql` runs as a superuser straight after.
 
 ```
 psql -U postgres -c "CREATE ROLE aisre_owner LOGIN CREATEROLE"

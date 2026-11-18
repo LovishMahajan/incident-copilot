@@ -3,7 +3,7 @@
 - **Layer:** 10, Inference Engineering and Knowledge Retrieval
 - **Built from:** Artifacts 2 and 9
 - **Status:** Proposed: gaps resolved and reference code aligned 2026-11-02 per [decisions.md](../../decisions.md); pending team sign-off
-- **Sources:** [conversation.md](conversation.md), [files/gateway_contracts.py](files/gateway_contracts.py), [files/adapters.py](files/adapters.py), [files/gateway.py](files/gateway.py), [files/retrieval.py](files/retrieval.py), [files/context.py](files/context.py), [files/test_layer10.py](files/test_layer10.py), [System Design](../../reference/system-design.md), [Technical Specification](../../reference/technical-specification.md), Layer [4](../layer-04-requirements/conversation.md), [6](../layer-06-system-architecture/conversation.md), [7](../layer-07-data-apis-events/conversation.md) (and [schema-tables.sql](../layer-07-data-apis-events/files/schema-tables.sql)), [8](../layer-08-workflows-state-machines/conversation.md) and [12](../layer-12-reliability-evaluation/conversation.md) conversations, [decisions.md](../../decisions.md), Anthropic public documentation (listed in 10.1)
+- **Sources:** [conversation.md](conversation.md), the code in [src/aisre/gateway/](../../../src/aisre/gateway/), [src/aisre/retrieval/](../../../src/aisre/retrieval/) and [tests/unit/test_layer10.py](../../../tests/unit/test_layer10.py) (ADR-67), their filed copies [files/gateway_contracts.py](files/gateway_contracts.py), [files/adapters.py](files/adapters.py), [files/gateway.py](files/gateway.py), [files/retrieval.py](files/retrieval.py), [files/context.py](files/context.py), [files/test_layer10.py](files/test_layer10.py), [System Design](../../reference/system-design.md), [Technical Specification](../../reference/technical-specification.md), Layer [4](../layer-04-requirements/conversation.md), [6](../layer-06-system-architecture/conversation.md), [7](../layer-07-data-apis-events/conversation.md) (and [schema-tables.sql](../layer-07-data-apis-events/files/schema-tables.sql)), [8](../layer-08-workflows-state-machines/conversation.md) and [12](../layer-12-reliability-evaluation/conversation.md) conversations, [decisions.md](../../decisions.md), Anthropic public documentation (listed in 10.1)
 
 ## Required sections
 
@@ -17,7 +17,7 @@
 | 10.6 Concurrency policy | Q10.30, Q10.31 | Partial |
 | 10.7 Retry and timeout policy | Q10.17–Q10.20, Q10.32, Q10.33, Q10.37–Q10.39 | Yes |
 | 10.8 Token accounting | Q10.25, Q10.26, Q10.34–Q10.36 | Yes |
-| 10.9 BM25 ingestion and search | Q10.40–Q10.42, Q10.45–Q10.50, Q10.52–Q10.56 | Yes |
+| 10.9 BM25 ingestion and search | Q10.40–Q10.42, Q10.45–Q10.50, Q10.52–Q10.56 | Partial |
 | 10.10 Chunking strategy | Q10.43, Q10.44 | Yes |
 | 10.11 Context assembly | Q10.57–Q10.63 | Yes |
 | 10.12 Prompt versioning | Q10.23, Q10.64 | Yes |
@@ -66,7 +66,7 @@ Sections 10.1–10.8 cover running models reliably. Sections 10.9–10.13 cover 
 
 These are first-party API prices; other platforms may price separately. The `PRICE` values in `test_layer10.py` are test fixtures, not these prices.
 
-**Proposed model per task (provisional).** Owner: SRE lead. Validated when the first frozen-suite run meets the ADR-65 gates at these settings.
+**Model per task (ADR-69, provisional).** Owner: SRE lead. Validated when the first frozen-suite run meets the ADR-65 gates at these settings. The mapping from task to alias is set in code until `prompts/` exists, when each prompt version carries its alias (10.12). The mapping is `TASK_MODEL_ALIAS` in `gateway_contracts.py`: `ModelRequest.model_alias` defaults from the task, and an explicit value wins (`test_each_task_gets_its_model_unless_the_request_names_one`).
 
 | Task | Alias | Model | Why |
 | --- | --- | --- | --- |
@@ -144,7 +144,7 @@ Code: [files/gateway_contracts.py](files/gateway_contracts.py).
 | Refusing unsafe requests | Interpreting refusals; never retrying them blindly |
 | — | Prompts, context, versions, identity, evaluation, redaction |
 
-**One interface.** The Model Gateway exposes one call, `call(ModelRequest) → ModelResult`. Skills never see a provider format, and never name a provider or model: they ask for a model alias (`default`), which configuration resolves to one pinned provider and model ([Q10.2](conversation.md), [Q10.10](conversation.md)).
+**One interface.** The Model Gateway exposes one call, `call(ModelRequest) → ModelResult`. Skills never see a provider format, and never name a provider or model: they ask for a model alias (`default` or `standard`, by task, 10.1), which configuration resolves to one pinned provider and model ([Q10.2](conversation.md), [Q10.10](conversation.md)).
 
 **ModelRequest** ([Q10.13](conversation.md)):
 
@@ -161,7 +161,7 @@ Code: [files/gateway_contracts.py](files/gateway_contracts.py).
 | `deadline_epoch_s` | The investigation's absolute deadline |
 | `call_timeout_s` | Per-call limit (≤ 60 s) |
 | `step_attempts_used` | Keeps a skill's re-call after `CONTEXT_EXCEEDED` inside the step's 3 attempts |
-| `model_alias` | Resolved to a pinned model by configuration |
+| `model_alias` | `default` or `standard`, chosen by task (10.1, ADR-69). Resolved to a pinned model by configuration |
 
 **ModelResult** ([Q10.14](conversation.md)): `request_id`, `attempt`; `status`, `stop_reason`; `content` blocks and `parsed`; `validation_errors`, `refusal_detail`, `error`; `usage`; `cost_micros`, `latency_ms`; `identity`; `provider_request_id`. Each attempt is stored as a `model_attempts` row, with the columns ADR-64 adds.
 
@@ -307,7 +307,7 @@ Code: `IncidentBudget`, `BudgetLedger` in [files/gateway.py](files/gateway.py).
 
 | Fleet limit | Value | Alert | At 100% |
 | --- | --- | --- | --- |
-| Daily spend, all incidents | $16.67 | 80% | New investigations are evidence-only; running ones finish their current step, then stop and hand over (ADR-55) |
+| Daily spend, all incidents | $16.67 | 80%, 100% | New investigations are evidence-only; running ones finish their current step, then stop and hand over (ADR-55) |
 | Monthly spend, all incidents | $500 | 50%, 80%, 100% | The same (Layer decision) |
 
 **Lifecycle of a call** ([Q10.27](conversation.md), [Q10.29](conversation.md)):
@@ -346,7 +346,7 @@ Hundreds of incidents therefore produce a queue, not hundreds of simultaneous ca
 
 If no slot comes free before the deadline, the result is `DEADLINE_PASSED`, and the reservation is released because the call was never sent.
 
-**Needs measurement:** historical peak concurrency, Owner: SRE lead, settled when: past incident records are checked ([System Design](../../reference/system-design.md), section 10).
+**Needs measurement:** historical peak concurrency, Owner: Platform owner (as in the [decision register](../../decisions.md)), settled when: past incident records are checked ([System Design](../../reference/system-design.md), section 10).
 
 ## 10.7 Retry and timeout policy
 
@@ -712,7 +712,7 @@ A label that no longer resolves fails the run until the owner relabels it.
 
 **Decisions.** All decisions in this layer are in the sections above.
 
-**Verification.** The 83 tests in `test_layer10.py` pass against `files/`, which implements this artifact. Six spot mutations (temperature, the 16,000 limit, the one truncation retry, the breaker, expiry, tool proposals) each failed the suite. The Partial items are in Reference code status below.
+**Verification.** [tests/unit/test_layer10.py](../../../tests/unit/test_layer10.py) runs against `src/aisre/`, which implements this artifact (ADR-67). It has 92 passing tests on 2026-11-17 (88 on 2026-11-02, not the 83 this line once gave); every suite's result is in [code-changes-required.md](../../code-changes-required.md). Six spot mutations (temperature, the 16,000 limit, the one truncation retry, the breaker, expiry, tool proposals) each failed the suite. The Partial items are in Reference code status below.
 
 **Needs the team:** disagreements between Claude and ChatGPT. `conversation.md` records none, Owner: Team, settled when: conversation logs are filled in.
 
@@ -763,6 +763,9 @@ Limits in code that section 9 does not list: per-call output ≤ 16,000 (`max_ou
 | Deletion versus evaluate-before-activate (new) | Deletion activates at once, gate afterwards; removing content is the safer failure | Layer decision (proposed) |
 | Immutable revisions versus purge (new) | Legal or safety purge is the one recorded exception | Layer decision (proposed) |
 | Monthly ceiling at 100% (new) | Same as daily: evidence-only for new investigations, running ones stop after their step | Layer decision (proposed) |
+| Model per task | `diagnose` and `critique` use `default` (Opus 5.5); `hypothesise` and `draft_patch` use `standard` (Sonnet 5.5). Set in code until `prompts/` exists | ADR-69 |
+| Daily spend alerts | 80% and 100%, as `ops/alerts.yml` and NFR-14 have them. 10.5 listed only 80% | ADR-55, ADR-56 |
+| 10.9 marked complete while legal deletion of runbook text is open | 10.9 is Partial until a deletion path is decided | Layer decision (proposed) |
 | Provider spend cap 429 (new) | Not retried, because access stays paused; handled as `AUTH_ERROR` | Layer decision (proposed) |
 | Query set before first activation (new) | No revision activates until the set exists; retrieval records a gap | Layer decision (proposed) |
 | Sonnet 5.5 cache-read price (new) | $0.10 stands: Anthropic's public pricing page, read 2026-11-02, gives $0.10 per million tokens, 0.05× input. The bundled API reference's $0.20 was wrong, and 10.1 and `CLAUDE_PRICES` needed no change | Layer decision (proposed) |
@@ -778,7 +781,7 @@ Limits in code that section 9 does not list: per-call output ≤ 16,000 (`max_ou
 | Corpus storage | `IndexRevision.load` rebuilds from `documents` and `chunks` rows, tested on row dicts, and ranks identically. It reads the stored `index_revision_documents.stale` and `documents.doc_type`. Real queries and the ingestion write path remain |
 | `purge_document` | Sets the two evidence columns and cuts `attributes` to the document reference, as `protect_evidence` does. The SQL update remains. Body text stays in PostgreSQL (10.9) |
 | Prompt files | `PromptRegistry` reads `prompts/<skill>/v<N>.md`. That folder doesn't exist yet |
-| Gateway dependency | `gateway.py` imports `coordinator.Limits`, so Layer 9's folder must be on the path |
+| Gateway dependency | `gateway.py` imports `Limits` from `aisre.agent.coordinator`, inside the one package (ADR-67). The filed copy needed Layer 9's folder on the path; `src/` doesn't |
 
 ## Acceptance checks
 

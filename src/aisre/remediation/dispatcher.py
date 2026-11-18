@@ -6,6 +6,8 @@ intent in its ledger, and then calls one allowlisted operation on the release pr
 action ID as the execution key. It never retries a write whose outcome is unknown: it reconciles,
 and that outcome blocks the deployment until reconciliation or a person settles it. A `started`
 row may belong to a call still running, so it counts as dead only after the in-flight window.
+The block is its own record per deployment (ADR-69): a call that lands after reconciliation
+recorded `not_applied` puts it back, and then only a person's outcome resolution clears it.
 """
 
 from __future__ import annotations
@@ -17,8 +19,8 @@ from datetime import datetime, timedelta
 from enum import Enum
 from typing import Optional, Protocol
 
-from aisre.remediation.action import (ApprovalError, ApprovalPolicy, Decision, Directory, ImmutableAction, ImpactFacts, Perm, Standing,
-                    evaluate)
+from aisre.remediation.action import (TAMPERED, ApprovalError, ApprovalPolicy, Decision, Directory, ImmutableAction, ImpactFacts, Perm,
+                    Standing, evaluate)
 
 
 class Outcome(str, Enum):
@@ -51,6 +53,8 @@ class TrustedStore(Protocol):
     def verdict(self, action_id: str) -> Optional[str]: ...            # recorded verification verdict, if any
     def status(self, action_id: str) -> str: ...                       # the action's current status
     def impact(self, action_id: str) -> ImpactFacts: ...               # input to the high-impact rule (ADR-49)
+    def stop(self, action_id: str) -> Optional[str]: ...               # who raised a stop on its incident since the
+                                                                       # action was created, if anyone (ADR-69)
     def patch_content(self, patch_sha256: str) -> bytes: ...           # the bytes in the artifact store
 
 
@@ -102,13 +106,30 @@ class LedgerEntry:
     notes: list[str] = field(default_factory=list)
 
 
+LATE_APPLY = "late_apply"          # deployment_blocks.reason; the other is `unresolved`
+
+
+@dataclass
+class DeploymentBlock:
+    """One deployment_blocks row (ADR-69). An `unresolved` block opens with intent and clears when
+    its attempt settles. A `late_apply` block is cleared only by a person's outcome resolution."""
+
+    deployment: str
+    execution_key: str
+    reason: str = "unresolved"
+    resolution: Optional[OutcomeResolution] = None
+    cleared: bool = False
+
+
 class Ledger:
-    """Stand-in for execution_attempts (Artifact 7), plus the only other things the dispatcher writes
-    (ADR-51): an action's status and version, in the same transaction as the attempt row, and its own
-    timeline events. A row is final once it leaves `started`; at most one is 'applied' per key."""
+    """Stand-in for execution_attempts and deployment_blocks (Artifact 7), plus the only other things
+    the dispatcher writes (ADR-51): an action's status and version, in the same transaction as the
+    attempt row, and its own timeline events. A row is final once it leaves `started`; at most one is
+    'applied' per key."""
 
     def __init__(self):
         self.rows: dict[str, list[LedgerEntry]] = {}
+        self.blocks: list[DeploymentBlock] = []
         self.action_status: dict[str, str] = {}
         self.action_version: dict[str, int] = {}
         self.events: list[dict] = []
@@ -133,11 +154,25 @@ class Ledger:
         if self.action_status.get(e.execution_key) != status:
             self.action_status[e.execution_key] = status
             self.action_version[e.execution_key] = self.action_version.get(e.execution_key, 1) + 1
+        # The block follows the attempt, as track_deployment_block does in schema.sql.
+        open_ = [b for b in self.unresolved(e.deployment) if b.execution_key == e.execution_key and b.reason != LATE_APPLY]
+        if e.state in (LedgerState.STARTED, LedgerState.UNKNOWN):
+            if not open_:
+                self.blocks.append(DeploymentBlock(e.deployment, e.execution_key))
+        else:
+            for b in open_:
+                b.cleared, b.resolution = True, e.resolution
 
-    def unresolved(self, deployment: str) -> list[LedgerEntry]:
-        """ADR-47: every key on this deployment whose latest row is `started` or `unknown`."""
-        latest = [rows[-1] for rows in self.rows.values() if rows[-1].deployment == deployment]
-        return [e for e in latest if e.state in (LedgerState.STARTED, LedgerState.UNKNOWN)]
+    def unresolved(self, deployment: str) -> list[DeploymentBlock]:
+        """ADR-47, ADR-69: the open blocks on this deployment. Read from the block records, not
+        worked out from attempt rows, so a late apply can block after `not_applied`."""
+        return [b for b in self.blocks if b.deployment == deployment and not b.cleared]
+
+    def block_late_apply(self, e: LedgerEntry) -> None:
+        """A call answered after reconciliation settled its key as not_applied. No attempt row can
+        follow, so the block goes back on its own; once per key."""
+        if not any(b.execution_key == e.execution_key and b.reason == LATE_APPLY for b in self.blocks):
+            self.blocks.append(DeploymentBlock(e.deployment, e.execution_key, LATE_APPLY))
 
     def begin(self, e: LedgerEntry) -> Optional[str]:
         """Check 9 and the intent write, as one transaction: there is no await between them, and
@@ -157,6 +192,8 @@ class DispatchResult:
     reason: str
     execution_key: str
     intent_recorded: bool = True
+    void_approval: bool = False    # what was approved isn't what is stored, or the target moved on: the
+                                   # workflow closes the request as voided and tells security (ST-01, ST-02, ST-13)
 
 
 class ReleaseInProgress(Exception):
@@ -187,10 +224,10 @@ class Dispatcher:
             if prior.state == LedgerState.NOT_APPLIED:
                 return DispatchResult(Outcome.NOT_APPLIED, "previously confirmed not applied; needs a new action", key)
 
-        refusal, approval_id = await self._prechecks(action)
+        refusal, approval_id, void = await self._prechecks(action)
         refusal = refusal or self._fenced(action)                  # again: no await from here to the intent write
         if refusal:
-            return self._refused(action, refusal)
+            return self._refused(action, refusal, void)
 
         entry = LedgerEntry(key, action.digest, action.target.deployment, approval_id, 1, LedgerState.STARTED,
                             started_at=self.clock())
@@ -228,62 +265,72 @@ class Dispatcher:
             self.ledger.put(replace(entry, state=state, notes=[note] if note else []))
             return DispatchResult(Outcome(state.value), reason, key)
         if current.state == LedgerState.NOT_APPLIED and state != LedgerState.NOT_APPLIED:
+            self.ledger.block_late_apply(entry)                    # the late apply: the block goes back (ADR-69)
             return DispatchResult(Outcome.UNKNOWN, f"{reason}, but reconciliation recorded not_applied; "
-                                  "a person must check", key)
+                                  "a person must check, and the deployment is blocked until they do", key)
         return DispatchResult(Outcome(current.state.value), f"already settled: {current.state.value}", key)
 
-    def _refused(self, a: ImmutableAction, reason: str) -> DispatchResult:
-        """Nothing was sent, so no attempt row: only the event (Artifact 7)."""
+    def _refused(self, a: ImmutableAction, reason: str, void: bool = False) -> DispatchResult:
+        """Nothing was sent, so no attempt row: only the event (Artifact 7). `void` goes back to the
+        workflow, which may write approval events; the dispatcher's role may not (ADR-51)."""
         self.ledger.events.append({"type": "aisre.execution.refused.v1",
                                    "data": {"action_id": a.action_id, "execution_key": a.action_id, "reason": reason}})
-        return DispatchResult(Outcome.REFUSED, reason, a.action_id, intent_recorded=False)
+        return DispatchResult(Outcome.REFUSED, reason, a.action_id, intent_recorded=False, void_approval=void)
 
     def _fenced(self, a: ImmutableAction) -> Optional[str]:
         """Fence 12.5: the current epoch and every reason, global or for this deployment."""
         allowed, why = self.fence.writes_allowed(a.target.deployment, self.fence_token)
         return None if allowed else why
 
-    def _patch_mismatch(self, a: ImmutableAction) -> Optional[str]:
+    def _patch_mismatch(self, a: ImmutableAction) -> tuple[Optional[str], bool]:
         """ST-13: hash the stored bytes. The approved fingerprint proves nothing about them until
-        they are read. A store that can't answer is a refusal, as is a fix with no patch."""
+        they are read. A store that can't answer is a refusal, as is a fix with no patch. Returns
+        (refusal, void): only bytes that hash to something else void the approval."""
         if a.patch_sha256 is None:
-            return None if a.kind in ("release_rollback", "rollback") else f"a {a.kind} needs a patch"
+            return (None if a.kind in ("release_rollback", "rollback") else f"a {a.kind} needs a patch"), False
         try:
             content = self.store.patch_content(a.patch_sha256)
         except (KeyError, OSError) as e:
-            return f"patch content can't be read ({type(e).__name__})"
+            return f"patch content can't be read ({type(e).__name__})", False
         found = hashlib.sha256(content).hexdigest()
-        return None if found == a.patch_sha256 else f"patch content is {found}, approved as {a.patch_sha256}"
+        if found == a.patch_sha256:
+            return None, False
+        return f"patch content is {found}, approved as {a.patch_sha256}", True
 
-    async def _prechecks(self, a: ImmutableAction) -> tuple[Optional[str], Optional[str]]:
+    async def _prechecks(self, a: ImmutableAction) -> tuple[Optional[str], Optional[str], bool]:
         """Q11.69, Q11.73: re-validated immediately before the write. Returns (refusal, deciding
-        approval_id). The deployment block, check 9, is in Ledger.begin, with the intent write."""
+        approval_id, whether the refusal voids the approval). The deployment block, check 9, is in
+        Ledger.begin, with the intent write."""
         fenced = self._fenced(a)
         if fenced:
-            return fenced, None
+            return fenced, None, False
         status = self.store.status(a.action_id)
         if status != "approved":                                   # withdrawn, expired: refused here, not only by the table
-            return f"action is {status}, not approved", None
+            return f"action is {status}, not approved", None, False
+        stopped_by = None if a.parent_action_id else self.store.stop(a.action_id)   # a rollback is never stopped
+        if stopped_by:
+            return f"stop requested by {stopped_by}; no approval was withdrawn (ADR-69)", None, False
         decisions = self.store.decisions(a.action_id)
         verdict = self.store.verdict(a.parent_action_id) if a.parent_action_id else None
         standing, notes, approval_id = evaluate(a, decisions, now=self.clock(), keys=self.keys, directory=self.directory,
                                                 policy=self.policy, requested_at=self.store.requested_at(a.action_id),
                                                 impact=self.store.impact(a.action_id), parent_verdict=verdict)
+        tampered = any(TAMPERED in n for n in notes)               # ST-01, ST-02: a forged or edited row is stored
         if standing != Standing.APPROVED:
-            return f"approval {standing.value}: {'; '.join(notes)}", None
+            return f"approval {standing.value}: {'; '.join(notes)}", None, tampered
         if a.parent_action_id and verdict != "failed":             # ST-39: any approval, plain or conditional (ADR-48)
-            return f"a rollback needs a failed parent; its verdict is {verdict}", None
+            return f"a rollback needs a failed parent; its verdict is {verdict}", None, False
         if a.policy_version != self.policy.pair:                   # edit and approval policy both (C19)
-            return f"action created under {a.policy_version}; current policy {self.policy.pair}", None
-        mismatch = self._patch_mismatch(a)
+            return f"action created under {a.policy_version}; current policy {self.policy.pair}", None, False
+        mismatch, void = self._patch_mismatch(a)
         if mismatch:
-            return mismatch, None
+            return mismatch, None, void
         st = await self.release.current_state(a.target.deployment)
         if st.in_progress_key and st.in_progress_key != a.action_id:
-            return f"another deployment is in progress ({st.in_progress_key})", None
-        if st.revision != a.base_revision:
-            return f"target runs {st.revision}, action was approved for {a.base_revision}", None   # Q11.73
-        return None, approval_id
+            return f"another deployment is in progress ({st.in_progress_key})", None, False
+        if st.revision != a.base_revision:                         # Q11.73: the approval was for another state
+            return f"target runs {st.revision}, action was approved for {a.base_revision}", None, True
+        return None, approval_id, False
 
     async def _reconcile_once(self, action_id: str) -> DispatchResult:
         """Dispatch's own look: if it can't settle now, the answer is `unknown` and reconcile_execution
@@ -333,7 +380,8 @@ class Dispatcher:
     def resolve_outcome(self, action_id: str, *, subject: str, outcome: str, observed_revision: str, reason: str,
                         auth_time: datetime, mfa: bool) -> DispatchResult:
         """POST /v1/actions/{id}/outcome-resolutions (11.11): the incident lead records what the target
-        actually runs. That clears the deployment's block, and the action leaves outcome_unknown."""
+        actually runs. That clears the deployment's block, and the action leaves outcome_unknown.
+        It is also the only thing that clears a late apply's block (ADR-69)."""
         action = self.store.action(action_id)
         now = self.clock()
         if now - auth_time > self.policy.max_auth_age or not mfa:
@@ -345,6 +393,11 @@ class Dispatcher:
         if outcome not in ("applied", "not_applied") or not observed_revision:
             raise ApprovalError("invalid_request", "outcome is applied or not_applied, with the observed revision")
         entry = self.ledger.get(action.action_id)
+        late = [b for b in self.ledger.unresolved(action.target.deployment)
+                if b.execution_key == action.action_id and b.reason == LATE_APPLY]
+        if late:                           # attempts are final after not_applied: the resolution stays on the block
+            late[0].cleared, late[0].resolution = True, OutcomeResolution(subject, outcome, observed_revision, reason)
+            return DispatchResult(Outcome(outcome), f"late apply resolved by {subject}", action.action_id)
         if entry is None or entry.state != LedgerState.UNKNOWN:
             raise ApprovalError("action_not_open", "this action has no unknown outcome")
         return self._settle(entry, LedgerState(outcome), f"resolved by {subject}",

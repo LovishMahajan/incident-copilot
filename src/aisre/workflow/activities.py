@@ -46,6 +46,8 @@ RECONCILIATION_SCHEDULE = "aisre-reconciliation"
 RECONCILIATION_EVERY = timedelta(minutes=5)   # provisional (8.9)
 REFUSED_EXPIRED = "approval expired"   # start of the dispatcher's reason when the approval ran out
 DB_REFUSALS = {"23514", "23001"}       # check_violation, restrict_violation: the record said no
+MAX_PATCH_CANDIDATES = 3               # per diagnosis, one action each, drafted one at a time (ADR-69)
+VOIDED = "voided"                      # close reason for an approval the dispatcher found tampered or outdated
 
 
 # ---------------------------------------------------------------------------
@@ -61,7 +63,7 @@ class TransitionIn:
     transition_id: str            # idempotency key: deterministic per workflow step
     from_state: str
     to_state: str
-    expected_version: int
+    expected_version: int         # the last version the workflow saw; StaleVersion if a person moved it on
     reason: str
     action_id: Optional[str] = None
     action_from: Optional[str] = None
@@ -81,6 +83,11 @@ class TransitionOut:
 class IncidentIn:
     incident_id: str
     idempotency_key: str
+
+
+@dataclass
+class SlotIn(IncidentIn):
+    run_id: str = ""              # the workflow ID; stored on the investigation_queue row (ADR-69)
 
 
 @dataclass
@@ -122,6 +129,7 @@ class SkillIn(IncidentIn):
     diagnosis: Optional[DiagnosisDraft] = None
     diagnosis_id: Optional[str] = None
     critic: Optional[CriticVerdict] = None
+    candidate_no: int = 1         # draft_patch only: 1 to MAX_PATCH_CANDIDATES, PatchIn.candidate_no (ADR-69)
 
 
 @dataclass
@@ -159,6 +167,8 @@ class ApprovalRequestIn:
     action_id: str
     action_digest: str
     request_key: str              # idempotency key
+    close_reason: Optional[str] = None   # close_approval_request only: expired, withdrawn or voided
+    close_detail: Optional[str] = None   # with `voided`: the dispatcher's reason, for the event
 
 
 @dataclass
@@ -166,7 +176,8 @@ class ApprovalRequestOut:
     approval_request_id: str
     approvers_needed: int
     rollback_action_id: Optional[str] = None   # the fix's rollback, created here, status `proposed`
-    rollback_digest: Optional[str] = None
+    rollback_digest: Optional[str] = None      # set when the rollback is created, still `proposed`: it is never
+                                               # tested, the one exception to ADR-64's "when testing ends" (ADR-48)
     conditional_approval: bool = False         # on a rollback's request: one was signed with the fix
 
 
@@ -182,6 +193,7 @@ class DispatchOut:
     external_ref: Optional[str] = None
     refusal_reason: Optional[str] = None       # set with `refused`
     intent_recorded: bool = True               # false on a refusal, or a reconcile that found no intent
+    void_approval: bool = False                # a refusal that voids the approval: ST-01, ST-02, ST-13
 
 
 @dataclass
@@ -219,18 +231,26 @@ class NoSlot(Exception):
     """Retryable, and the normal answer while queued: SLOT_RETRY asks again."""
 
 
+class StaleVersion(Exception):
+    """record_transition's expected_version is behind the record: a person changed the incident
+    (a severity confirmation, say) while the workflow ran. Not retried as it stands; the workflow
+    reloads the incident and writes again (ADR-69)."""
+
+
 # ---------------------------------------------------------------------------
 # Rules the activity implementations apply. Pure, so they can be tested here.
 # ---------------------------------------------------------------------------
 @dataclass(frozen=True)
 class QueueRow:
     """One investigation_queue row, with its incident's service. `severity` is the confirmed one,
-    else the proposed one."""
+    else the proposed one, else None, which sorts last as NULL does in the table. `run_id` is the
+    workflow run that queued it (ADR-69)."""
     incident_id: str
     service: str
-    severity: str
+    severity: Optional[str]
     queued_at: datetime
     granted: bool = False
+    run_id: str = ""
 
 
 def may_grant(incident_id: str, rows: list[QueueRow]) -> bool:
@@ -241,17 +261,18 @@ def may_grant(incident_id: str, rows: list[QueueRow]) -> bool:
         return False
     held = Counter(r.service for r in rows if r.granted)
     waiting = sorted((r for r in rows if not r.granted and held[r.service] < MAX_SLOTS_PER_SERVICE),
-                     key=lambda r: (r.severity, r.queued_at))
+                     key=lambda r: (r.severity is None, r.severity or "", r.queued_at))
     return bool(waiting) and waiting[0].incident_id == incident_id
 
 
-def precheck_requests(gate: ToolGate, requests: list[dict]) -> tuple[list[dict], list[dict]]:
-    """Runs evidence requests through the ToolGate before collect_evidence builds CollectIn.
-    Returns (allowed, refused); a refused request becomes a gap, not a SkillFailure."""
+def precheck_requests(gate: ToolGate, requests: list[dict], skill: str) -> tuple[list[dict], list[dict]]:
+    """Runs evidence requests through the ToolGate under the skill that produced them, `hypothesise`
+    or `critique`, in that skill's own activity (9.4), so its fixed tool list applies. Returns
+    (allowed, refused); a refused request is recorded and dropped, not a SkillFailure."""
     allowed, refused = [], []
     for r in requests:
         try:
-            gate.check(r["tool"], r["params"], "collect_evidence")
+            gate.check(r["tool"], r["params"], skill)
             allowed.append(r)
         except ToolRefused as e:
             refused.append({**r, "refused": e.code})
@@ -276,7 +297,7 @@ def dispatch_out(result, attempt_id: str = "", external_ref: Optional[str] = Non
     outcome = result.outcome.value
     return DispatchOut(attempt_id, outcome, external_ref,
                        refusal_reason=result.reason if outcome == "refused" else None,
-                       intent_recorded=result.intent_recorded)
+                       intent_recorded=result.intent_recorded, void_approval=result.void_approval)
 
 
 def db_error(sqlstate: str, message: str) -> Exception:
@@ -285,12 +306,15 @@ def db_error(sqlstate: str, message: str) -> Exception:
     return InvalidTransition(message) if sqlstate in DB_REFUSALS else ConnectionError(message)
 
 
-def reconciliation_findings(incidents: dict[str, str], running: dict[str, str], queue: set[str],
-                            pending_outbox: set[str]) -> tuple[dict[str, int], list[str]]:
+def reconciliation_findings(incidents: dict[str, str], running: dict[str, str], queue: dict[str, str],
+                            pending_outbox: set[str], live_runs: set[str] = frozenset()
+                            ) -> tuple[dict[str, int], list[str]]:
     """The 8.9 table. `incidents` maps ID to the record's status, `running` maps ID to a live
-    workflow's current_state, `queue` holds investigation_queue IDs, `pending_outbox` the IDs with
-    an undelivered start. Returns (mismatches per state, for aisre_workflows_stalled; queue rows
-    to remove). Alerts only: the record wins."""
+    workflow's current_state, `queue` maps each investigation_queue row's incident ID to its run
+    ID, `pending_outbox` holds the IDs with an undelivered start, `live_runs` the IDs of workflow
+    runs still running. Returns (mismatches per state, for aisre_workflows_stalled; queue rows to
+    remove). A row goes only when its run has ended: a re-investigation queues while its incident
+    is still `handed_over` (ADR-69). Alerts only: the record wins."""
     settled = {"handed_over", "recovered", "closed", "cancelled"}
     stalled: dict[str, int] = {}
     for iid, status in incidents.items():
@@ -302,7 +326,8 @@ def reconciliation_findings(incidents: dict[str, str], running: dict[str, str], 
             mismatch = status in ("closed", "cancelled") or live != status
         if mismatch:
             stalled[status] = stalled.get(status, 0) + 1
-    orphans = [iid for iid in sorted(queue) if incidents.get(iid) not in ("open", "investigating")]
+    orphans = [iid for iid in sorted(queue)
+               if incidents.get(iid) not in ("open", "investigating") and queue[iid] not in live_runs]
     return stalled, orphans
 
 
@@ -327,10 +352,10 @@ async def load_incident(inp: IncidentIn) -> Optional[IncidentSnapshot]:
 
 
 @activity.defn(name="acquire_investigation_slot")
-async def acquire_investigation_slot(inp: IncidentIn) -> None:
-    """Queues the incident by severity and notifies on-call it is queued; beyond 50 queued the
-    incident lead is alerted. Grants by may_grant, else raises NoSlot. Heartbeat not needed:
-    each attempt is one short transaction, and cancellation lands between attempts."""
+async def acquire_investigation_slot(inp: SlotIn) -> None:
+    """Queues the incident by severity, under its run ID, and notifies on-call it is queued; beyond
+    50 queued the incident lead is alerted. Grants by may_grant, else raises NoSlot. Heartbeat not
+    needed: each attempt is one short transaction, and cancellation lands between attempts."""
     raise NotImplementedError
 
 
@@ -345,7 +370,8 @@ async def read_spend_state(inp: IncidentIn) -> SpendOut:
 async def record_transition(inp: TransitionIn) -> TransitionOut:
     """Incident Record: check the transition table and expected version, write the status
     changes, timeline event and queue-row removal in one transaction (see TransitionIn).
-    Idempotent on transition_id. Database refusals raise through db_error."""
+    Idempotent on transition_id. An expected_version behind the record raises StaleVersion;
+    other database refusals raise through db_error."""
     raise NotImplementedError
 
 
@@ -363,8 +389,10 @@ async def record_notification_failed(inp: NotifyIn) -> None:
 
 @activity.defn(name="collect_evidence")
 async def collect_evidence(inp: EvidenceIn) -> SkillResult[EvidenceOut]:
-    """Evidence Collector: fixed plan or requested tools, after precheck_requests. Parallel
-    read-only queries, redaction, gaps. Heartbeats, and stops on cancellation."""
+    """Evidence Collector: fixed plan, or the requested tools that passed their producer's
+    precheck_requests. Parallel read-only queries, redaction, gaps. Each record is stored with
+    flagged_injection set by validation.flags_injection, and a flagged one writes
+    aisre.evidence.injection_flagged.v1 (ST-33). Heartbeats, and stops on cancellation."""
     raise NotImplementedError
 
 
@@ -375,7 +403,8 @@ async def retrieve_knowledge(inp: SkillIn) -> SkillResult[KnowledgeOut]:
 
 @activity.defn(name="hypothesise")
 async def hypothesise(inp: SkillIn) -> SkillResult[HypothesesOut]:
-    """Model Gateway: 2-5 hypotheses and evidence requests. Model rules as for `diagnose`."""
+    """Model Gateway: 2-5 hypotheses and evidence requests, which it pre-checks under
+    `hypothesise` (precheck_requests). Model rules as for `diagnose`."""
     raise NotImplementedError
 
 
@@ -390,14 +419,18 @@ async def diagnose(inp: SkillIn) -> SkillResult[DiagnosisResult]:
 
 @activity.defn(name="review_diagnosis")
 async def review_diagnosis(inp: SkillIn) -> SkillResult[ReviewResult]:
-    """Code checks, then the independent critic. Invalid critic output is ReviewResult(),
+    """Code checks, then the independent critic, whose evidence requests it pre-checks under
+    `critique` (precheck_requests). Writes the diagnosis's final_outcome and final_confidence,
+    once, from ReviewResult.stored_fields (ADR-69). Invalid critic output is ReviewResult(),
     not a failure: the coordinator runs the critique again."""
     raise NotImplementedError
 
 
 @activity.defn(name="draft_patch")
 async def draft_patch(inp: SkillIn) -> SkillResult[PatchOut]:
-    """Patch Proposer. No allowed fix is a SkillFailure with code `no_allowed_fix`."""
+    """Patch Proposer: candidate `candidate_no` for the diagnosis, as its own action (ADR-69).
+    The action's hold_seconds is never below its service's (action.check_hold). No allowed fix is
+    a SkillFailure with code `no_allowed_fix`."""
     raise NotImplementedError
 
 
@@ -423,14 +456,18 @@ async def escalate_approval(inp: ApprovalRequestIn) -> None:
 
 @activity.defn(name="close_approval_request")
 async def close_approval_request(inp: ApprovalRequestIn) -> None:
-    """Close as expired, withdrawn or voided. Idempotent."""
+    """Close an open request with `close_reason`: expired, withdrawn or voided. Idempotent; a
+    request already closed keeps the reason it has, which is write-once. `voided` also writes
+    aisre.approval.voided.v1 with `close_detail`: the dispatcher's role can't write that event
+    (ADR-51), so it reports void_approval and the workflow asks here."""
     raise NotImplementedError
 
 
 @activity.defn(name="dispatch_change")
 async def dispatch_change(inp: DispatchIn) -> DispatchOut:
     """Trusted Dispatcher (dispatcher task queue): reload the action and signatures, verify
-    fingerprint, expiry and service state; record the `started` attempt and action `applying`
+    fingerprint, expiry, service state, the fence and that no stop stands against the incident
+    (ADR-69); record the `started` attempt and action `applying`
     in one transaction, then the outcome; apply once, with the action ID as execution key.
     A timeout with no answer is returned as outcome='unknown', never retried blindly."""
     raise NotImplementedError
@@ -461,7 +498,7 @@ async def hand_over(inp: HandOverIn) -> None:
 async def reconcile_workflows(inp: ReconciliationIn) -> ReconciliationOut:
     """The 8.9 job: reconciliation_findings over open incidents, running workflows and the
     queue. Sets aisre_workflows_stalled, which raises AisreWorkflowStalled (RB-04), and removes
-    orphaned queue rows, its one write."""
+    queue rows whose run has ended, its one write."""
     raise NotImplementedError
 
 

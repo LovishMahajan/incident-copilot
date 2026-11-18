@@ -1,8 +1,12 @@
 # Code Changes
 
-The reference code in each layer's `files/` folder now implements the [decision register](decisions.md). The team's original Room 7 versions are in git commit `013bcf4`.
+The code in `src/aisre/`, with `db/`, `ops/` and `tests/`, implements the [decision register](decisions.md) as it stood on 2026-11-02, and is what the team builds on (ADR-67). Each layer's `files/` folder keeps the filed copy its artifact was written against, which a change in `src/` doesn't update. The team's original Room 7 versions are in git commit `013bcf4`.
+
+The audit of 2026-11-17 added ADR-69 and a further round of changes. They are listed under [Audit round](#audit-round-2026-11-17), with their results.
 
 ## Test results
+
+The current results are those of 2026-11-18: 1,251 passed and 21 skipped in Python, and 223 schema checks passed. They are listed per suite under [Audit round results](#audit-round-results). The table below is the earlier run.
 
 Run together on 2026-11-02, with Python 3.12 and PostgreSQL 17.11.
 
@@ -19,6 +23,8 @@ Run together on 2026-11-02, with Python 3.12 and PostgreSQL 17.11.
 
 Python total: 1,183 passed, 21 skipped, 0 failed. Before these changes there were 121 tests.
 
+These are the results of 2026-11-02, before the audit round. The suites are `tests/unit/` and `tests/security/`, and the schema tests are `db/schema-tests.sql`.
+
 ## Status
 
 Of the roughly 300 changes tracked, about 260 are done, about 34 are partly done, and 2 are not done. Rows were grouped differently by each layer, so counts are approximate.
@@ -27,14 +33,14 @@ The eight first priorities are all done:
 
 | Why | File | Change | Status |
 | --- | --- | --- | --- |
-| Every model request failed | `layer-10/files/adapters.py` | `temperature` removed | Done |
-| A bad patch could read as tested | `layer-11/files/sandbox.py` | `classify` fails closed | Done |
-| The agent never ran | `layer-08/files/workflow.py` | Investigation driven by `coordinator.next_step` | Done |
-| Sandbox couldn't start | `layer-11/files/sandbox.py` | Refused flags removed, limits applied | Flags done; not proven under gVisor |
-| State model differed | `contracts.py`, `states.py`, `schema.sql` | One model, with tests that fail on drift | Done |
-| Duplicate-change risk | `workflow.py`, `activities.py`, `dispatcher.py` | Action ID is the execution key; `is_undo` removed | Done |
-| Limits missing | `layer-10/files/gateway.py` | Per-call cap enforced; daily and monthly limits added | Done in memory; persistence remains |
-| Weak release gates | `layer-12/files/eval_harness.py` | All ADR-65 gates | Done |
+| Every model request failed | `src/aisre/gateway/adapters.py` | `temperature` removed | Done |
+| A bad patch could read as tested | `src/aisre/remediation/sandbox.py` | `classify` fails closed | Done |
+| The agent never ran | `src/aisre/workflow/workflow.py` | Investigation driven by `coordinator.next_step` | Done |
+| Sandbox couldn't start | `src/aisre/remediation/sandbox.py` | Refused flags removed, limits applied | Flags done; not proven under gVisor |
+| State model differed | `src/aisre/contracts.py`, `src/aisre/workflow/states.py`, `db/schema.sql` | One model, with tests that fail on drift | Done |
+| Duplicate-change risk | `src/aisre/workflow/workflow.py`, `activities.py`, `src/aisre/remediation/dispatcher.py` | Action ID is the execution key; `is_undo` removed | Done |
+| Limits missing | `src/aisre/gateway/gateway.py` | Per-call cap enforced; daily and monthly limits added | Done in memory; persistence remains |
+| Weak release gates | `src/aisre/evaluation/eval_harness.py` | All ADR-65 gates | Done |
 
 The security tests also found 52 failures across 14 cases, all now fixed. The most serious were: patch bytes swapped after approval still deployed, the dispatcher ignored the write fence, a repeat dispatch could lift the deployment block during a live apply, and a `release_rollback` could run on one approval.
 
@@ -61,14 +67,78 @@ These modules are in-memory references. The logic is written and tested, but not
 
 ### Known risks
 
-- **Late apply:** if a first call stalls past its window, reconciliation records `not_applied`, and the change then lands, the call returns `unknown` and tells a person to check. The deployment block isn't put back, because the schema allows no further row after `not_applied`.
-- **Refused patch response:** a mismatched patch is refused and the event written, but nothing voids the approval or alerts the approver yet (ST-13).
+- **Late apply:** if a first call stalls past its window, reconciliation records `not_applied`, and the change then lands, the call returns `unknown` and tells a person to check. On 2026-11-02 the deployment block wasn't put back, because the schema allowed no further row after `not_applied`. ADR-69 decides it: the block is held per deployment in its own table, a late apply puts it back, and only an outcome resolution clears it. That is now in the schema (`deployment_blocks`) and in the in-memory dispatcher, and tested (ST-37, schema checks O22 to O40). The risk stays open until the real dispatcher's SQL writes the block.
+- **Refused patch response:** a mismatched patch is refused and the event written. On 2026-11-02 nothing voided the approval or alerted the approver (ST-13). The audit round built the void as far as the modules go: the dispatcher returns `void_approval`, and the workflow closes the request as `voided` and hands over to the approvers and security. The activity body that writes `aisre.approval.voided.v1`, the Notifier and an alert rule remain.
 - **Provisional patterns can reject real text:** a bare host with a path counts as a link, so a patch naming `registry.internal/app` fails, and a four-part version such as `10.2.1.3` is refused in `release`.
 - **Legal deletion:** `documents` and `chunks` have no delete path, so runbook text stays in PostgreSQL after a purge.
 
+## Audit round, 2026-11-17
+
+The audit of Layers 1–13 found these code items. ADR-69 decides those marked with it; the rest follow existing decisions. All are module-level changes in `src/`, `db/` and `tests/`. Done means the logic, interface, schema and tests exist. Partly means those exist and a real service or database caller is still missing. None is proven on a running system until its task in [Artifact 13](layers/layer-13-implementation-planning/artifact-13-complete-implementation-plan.md), 13.5.
+
+Of the 19 rows, 13 are done, 6 are partly done and none is not done.
+
+| Area | File | Change | Decision | Status |
+| --- | --- | --- | --- | --- |
+| Workflow | `src/aisre/workflow/workflow.py`, `activities.py` | The incident `version` is never trusted. The workflow sends the last version it saw. `record_transition` raises `StaleVersion`, which isn't retried by Temporal; the workflow reloads with `load_incident` and writes again with the same `transition_id`, at most `STALE_RETRIES = 5` reloads, then hands over | ADR-69 | Done. The activity body must raise `StaleVersion` when its `UPDATE ... WHERE version = expected` touches no row (T0.5) |
+| Workflow | `src/aisre/workflow/workflow.py` | A cancel never skips the rollback of a failed fix. Once a change is applied, verify and rollback complete, then the cancel takes effect. The rollback's approval wait runs to approved, rejected or expired on its original clock | ADR-69 | Done. `test_cancel_during_rollback_wait_never_skips_the_rollback` replaces the test of the old behaviour |
+| Workflow | `src/aisre/workflow/workflow.py`, `activities.py` | Up to `MAX_PATCH_CANDIDATES = 3` candidates per diagnosis, each its own action, the next drafted only when the previous test outcome is `failed`. Any other test outcome hands over at once. `SkillIn.candidate_no` carries the number | ADR-69 | Done |
+| Workflow | `src/aisre/workflow/activities.py`, `db/schema.sql` | `investigation_queue.run_id`. `SlotIn` carries the workflow ID to `acquire_investigation_slot`. `reconciliation_findings` removes a row only when the incident isn't open or investigating and its run isn't live | ADR-69 | Done. Schema checks O3 to O5 |
+| Workflow | `src/aisre/workflow/activities.py` | Queue order copes with an incident that has no severity yet: `QueueRow.severity` is optional and sorts last | NFR-16 | Done |
+| Workflow | `src/aisre/workflow/activities.py` | `precheck_requests(gate, requests, skill)` checks evidence requests under the skill that produced them, so `tool_not_allowed` applies to hypothesis and critic requests | Artifact 9, 9.4 | Done |
+| Workflow | `src/aisre/workflow/workflow.py`, `activities.py` | `ApprovalRequestIn` gains `close_reason` and `close_detail`, and every close names its reason: `expired`, `withdrawn` or `voided`. On `DispatchOut.void_approval` the workflow calls `close_approval_request` with `voided`, and the hand-over also goes to the approvers and security | Artifact 5, ST-01, ST-02, ST-13 | Partly. Remains: the activity body that writes `aisre.approval.voided.v1`, and the Notifier and an alert rule that read it. A request the API already closed as `decided` keeps that reason, and the event is the record (ADR-69) |
+| Dispatcher | `src/aisre/remediation/dispatcher.py`, `action.py`, `db/schema.sql` | `DispatchResult.void_approval` is true on a bad signature or digest, patch bytes that hash differently, or a target no longer on the approved revision. The dispatcher refuses an action whose incident has a stop: `stop_requests` table, `TrustedStore.stop`, and `action.request_stop` as the API's core | ADR-69 | Partly. Remains: the cancellation route that writes the `stop_requests` row. Schema checks O18 to O21, O35 |
+| Dispatcher | `src/aisre/remediation/dispatcher.py`, `db/schema.sql` | `deployment_blocks` table, kept by the trigger `track_deployment_block`. A late apply after `not_applied` puts the block back (`Ledger.block_late_apply`), and only the Incident lead's outcome resolution clears it. The action stays `not_applied` | ADR-69 | Partly. Remains: the real dispatcher's SQL for the two block writes. Schema checks O22 to O40 |
+| Approval | `src/aisre/remediation/action.py`, `ops/alerts.yml` | `unauthenticated` joins `SECURITY_ALERT_CODES`, and the `AisreApprovalRefused` rule's code list | Artifact 11, 11.6 | Done |
+| Sandbox | `src/aisre/remediation/sandbox.py` | `MAX_SANDBOXES = 3`, `SandboxLimiter` and `SandboxBusy`. `run_sandbox` takes a slot before it creates anything and always gives it back | ADR-56 | Partly. The limiter is per process, so it assumes one Test Runner. The default is no wait, because `run_sandbox_test`'s 900 s timeout has no allowance for a queue |
+| Agent | `src/aisre/agent/tool_registry.py`, `db/schema.sql` | `tool_calls` table. `ToolCallStore` protocol on `ToolGate.store`, with `MemoryToolCalls` as the default. Budgets and repeats are counted from the log, and `stored_result` answers a repeat | ADR-69 | Partly. Remains: the PostgreSQL-backed store, which must count and insert in one transaction per incident. Schema checks O15 to O17 |
+| Agent | `src/aisre/agent/validation.py` | `flags_injection(text)` and `flag_injection(evidence)` set `flagged_injection` on instruction-like text, with provisional patterns | ADR-59, ADR-69, Artifact 5, ST-33 | Partly. Remains: the Evidence Collector that calls it, the `aisre.evidence.injection_flagged.v1` event and the approver's view |
+| Gateway | `src/aisre/gateway/gateway_contracts.py` | `TASK_MODEL_ALIAS`: `diagnose` and `critique` use `default`, `hypothesise` and `draft_patch` use `standard`. `ModelRequest.model_alias` defaults from the task, and an explicit value wins | ADR-69 | Done |
+| Schema | `db/schema.sql`, `src/aisre/contracts.py`, `src/aisre/agent/agent_contracts.py` | `final_outcome` and `final_confidence` on `diagnoses`, written once at review. `contracts.Diagnosis` has both, and `ReviewResult.stored_fields(draft)` returns them | ADR-69 | Done. Schema checks O6 to O12 |
+| Schema | `db/schema.sql` | `aisre_dispatcher` has `SELECT` on `fence_state` and `fence_reasons` | ADR-69 | Done. Schema checks O1, O2 |
+| Schema | `db/schema.sql`, `src/aisre/remediation/action.py` | An action's `hold_seconds` can't be below its service's: `check_action_transition`, and `action.check_hold` | ADR-69 | Done. Schema check O13 |
+| Schema | `db/schema.sql` | The comment on action digests states the rollback exception: a rollback carries its digests from creation | ADR-48, ADR-64 | Done |
+| Comments | `src/aisre/agent/agent_contracts.py`, `src/aisre/workflow/states.py`, `db/schema.sql`, `tests/security/README.md` | Stale comments and notes corrected. An outcome resolution can also leave `outcome_unknown` | ADR-49 | Done |
+
+### Audit round results
+
+Run on 2026-11-17, with Python 3.12 and PostgreSQL 17.11.
+
+| Suite | Result |
+| --- | --- |
+| `tests/unit/test_contracts.py` | 101 passed |
+| `tests/unit/test_workflow.py` | 126 passed |
+| `tests/unit/test_agent.py` | 112 passed |
+| `tests/unit/test_layer10.py` | 92 passed |
+| `tests/unit/test_remediation.py` | 176 passed |
+| `tests/unit/test_layer12.py` | 113 passed |
+| `tests/security/test_approval.py` | 107 passed, 1 skipped |
+| `tests/security/test_audit.py` | 53 passed, 2 skipped |
+| `tests/security/test_authz.py` | 24 passed, 4 skipped |
+| `tests/security/test_credentials.py` | 28 passed, 3 skipped |
+| `tests/security/test_execution.py` | 29 passed, 2 skipped |
+| `tests/security/test_injection.py` | 37 passed, 1 skipped |
+| `tests/security/test_limits.py` | 16 passed |
+| `tests/security/test_links.py` | 46 passed, 2 skipped |
+| `tests/security/test_model_output.py` | 88 passed, 1 skipped |
+| `tests/security/test_patch_integrity.py` | 31 passed, 1 skipped |
+| `tests/security/test_rollback.py` | 18 passed, 1 skipped |
+| `tests/security/test_sandbox.py` | 54 passed, 3 skipped |
+| `tests/unit/` in all | 720 passed |
+| `tests/security/` in all | 531 passed, 21 skipped |
+| `db/schema-tests.sql` | 223 passed, 0 failed. The 41 new checks are O1 to O41 |
+
+Python total: 1,251 passed, 21 skipped, 0 failed.
+
+`db/schema.sql` now has 37 tables, up from 34. The new tables are `tool_calls`, `stop_requests` and `deployment_blocks`. The new columns are `diagnoses.final_outcome`, `diagnoses.final_confidence` and `investigation_queue.run_id`. No event type, enumerated value or activity was added: there are still 41 event types, 19 enumerated types and 21 activities.
+
+The skip count is still 21. The two skips for voiding and flagging not being implemented are gone, replaced by tests. Two narrower skips took their place: the Notifier's alert after a void (ST-01, ST-02, ST-13) and the Evidence Collector that calls the flagger (ST-33).
+
+The same audit corrected the documents: the 13 artifacts, [README.md](README.md) and the root `README.md`. Each artifact's "Decisions and conflicts" table has the rows.
+
 ## Original change list
 
-Kept as the record of what was asked for. Grouped by the layer that found the change. See Status above for what was completed.
+Kept as the record of what was asked for. Grouped by the layer that found the change. See Status above for what was completed. File paths are as they were when the list was written, `layer-NN/files/...`; the same files are now under `src/aisre/`, `db/`, `ops/` and `tests/` (ADR-67). Rows marked **Superseded** were replaced by a later row or decision and were not built as written.
 
 
 ### Cross-layer corrections (these win where rows overlap)
@@ -91,7 +161,7 @@ Kept as the record of what was asked for. Grouped by the layer that found the ch
 | layer-12-reliability-evaluation/files/fence.py | Manual fence: settable by Incident lead or Platform admin, records who and why. Lift by Platform admin with a lead's sign-off | ADR-50 |
 | layer-12-reliability-evaluation/files/eval_harness.py | `Gates.min_heldout_cases = 280`, plus 400 total and 12 categories | ADR-65 |
 | layer-08-workflows-state-machines/files/workflow.py | Reconciliation job: Release A onward; mismatches count in `aisre_workflows_stalled`, which raises `AisreWorkflowStalled` and routes to RB-04. Supersedes the layer-08 row adding a new alert routed to RB-07 | Artifact 8, 8.9; Artifact 12, 12.4 |
-| layer-07-data-apis-events/files/schema.sql | `investigation_queue` (Layer 8, 8.1) and the fence record (Layer 12, 12.5) have no table. ADR-64 fixes the count at 30. Needs a decision before either table is added | ADR-64 |
+| layer-07-data-apis-events/files/schema.sql | **Superseded** by ADR-64 as amended, which included `investigation_queue`, `fence_state` and `fence_reasons` at 34 tables, and now fixes the count at 37 with the audit round's three. Was: `investigation_queue` (Layer 8, 8.1) and the fence record (Layer 12, 12.5) have no table. ADR-64 fixes the count at 30. Needs a decision before either table is added | ADR-64 |
 
 ### Found in Layer 2
 
@@ -132,7 +202,7 @@ Kept as the record of what was asked for. Grouped by the layer that found the ch
 | `layer-11-safe-remediation/files/action.py` | Write `aisre.approval.refused.v1` and raise a security alert on every refused attempt | ADR-49 |
 | `layer-11-safe-remediation/files/action.py` | `MATRIX`: remove `MANAGE_SANDBOX` from Platform admin; align roles with the ADR-50 matrix, including note, re-investigation and audit-export permissions and Monitoring | ADR-50 |
 | `layer-11-safe-remediation/files/dispatcher.py` | `execute`: after `apply` returns, compare the live revision with `expected_after_revision`; disagreement is an unknown outcome (ST-40) | ADR-47, Layer 5 decision: release process compromise |
-| `layer-09-agent-architecture/files/validation.py` | Add output checks: secrets (fail, retry, mask stored copy), links, commands, and "a claim citing only flagged evidence is unsupported" | ADR-59 |
+| `layer-09-agent-architecture/files/validation.py` | **Superseded** by ADR-59: a secret, link or command fails at once, with no retry. Was: Add output checks: secrets (fail, retry, mask stored copy), links, commands, and "a claim citing only flagged evidence is unsupported" | ADR-59 |
 | Release reconciliation job (new) | Daily comparison of change history with `execution_attempts`; security alert on an unmatched change (provisional) | Layer 5 decision: release process compromise |
 | Runbook for signing key theft (new) | Retire the public key from the dispatcher's key set and apply the `manual` fence (provisional) | Layer 5 decision: stolen signing key |
 
@@ -180,8 +250,8 @@ Kept as the record of what was asked for. Grouped by the layer that found the ch
 | `layer-08-workflows-state-machines/files/states.py` | `check_action` must refuse `PROPOSED → AWAITING_APPROVAL` for a non-rollback action; takes the action kind | ADR-46 |
 | `layer-08-workflows-state-machines/files/workflow.py` | `__init__` sets `state = OPEN`; take the state from `IncidentSnapshot.status`, so a re-investigation run starts at `handed_over` | ADR-46 C8 |
 | `layer-08-workflows-state-machines/files/workflow.py` | Replace the fixed collect, retrieve, diagnose, review sequence with the `coordinator.next_step` loop; each step is one activity; feed results back | ADR-52, Layer 8 C4 |
-| `layer-08-workflows-state-machines/files/workflow.py` | Map stop verdicts: time, budget, security → `investigating → handed_over`; other stops → `inconclusive → handed_over`. The limit path no longer goes through `inconclusive` | ADR-46, ADR-52 |
-| `layer-08-workflows-state-machines/files/workflow.py` | Re-run a model step once when its attempt ended in a timeout, keeping `maximum_attempts = 1`; don't re-run typed failures | ADR-27, ADR-52 C4 |
+| `layer-08-workflows-state-machines/files/workflow.py` | **Superseded** by the first cross-layer row (ADR-46): only a security or data-risk stop goes direct. Was: Map stop verdicts: time, budget, security → `investigating → handed_over`; other stops → `inconclusive → handed_over`. The limit path no longer goes through `inconclusive` | ADR-46, ADR-52 |
+| `layer-08-workflows-state-machines/files/workflow.py` | **Superseded** by the cross-layer `MODEL_RETRY` row (ADR-27, ADR-52). Was: Re-run a model step once when its attempt ended in a timeout, keeping `maximum_attempts = 1`; don't re-run typed failures | ADR-27, ADR-52 C4 |
 | `layer-08-workflows-state-machines/files/workflow.py` | Release A path: read `remediation_enabled`; on `passed`, `testing → handed_over`, action `testing → withdrawn` with reason `release_a_recommendation`; on `sandbox_available = false`, `diagnosed → handed_over`, action `proposed → withdrawn` | ADR-44, ADR-46 |
 | `layer-08-workflows-state-machines/files/workflow.py` | `draft_patch` returning "no allowed fix", or failing: `diagnosed → handed_over` with no action | ADR-46 C3 |
 | `layer-08-workflows-state-machines/files/workflow.py` | `approval_decided` keeps a set of decisions keyed by person; wait for `approvers_needed` valid decisions (from `ApprovalRequestOut`); any valid rejection wins; a `revoked` decision removes an approval; drop approvals older than `APPROVAL_VALID_FOR` | ADR-49 C9, gap 8.6 |
@@ -227,7 +297,7 @@ Kept as the record of what was asked for. Grouped by the layer that found the ch
 | `layer-08-workflows-state-machines/files/test_workflow.py` | Add `test_temporal_cancel_during_transition_write_records_outcome`: cancel during `record_transition` in `executing` and `reconciling`; the outcome is recorded (required) | C20 |
 | `layer-08-workflows-state-machines/files/test_workflow.py` | Happy-path transition list: remove the second `executing`; closure no longer in `f.transitions`; fakes and `approve()` use new signal and activity fields | C18, ADR-49 |
 | `layer-08-workflows-state-machines/files/test_workflow.py` | Rename `test_failed_verification_undoes_and_hands_over`; assert a rollback action with its own key; `dispatch_undo` counter and `is_undo` removed | ADR-47, ADR-48 |
-| `layer-08-workflows-state-machines/files/test_workflow.py` | Add tests: second approver waits; first approval aged out; rejection after one approval; verification inconclusive hands over without rollback; time stop goes direct to `handed_over` | ADR-46, ADR-49, ADR-66 |
+| `layer-08-workflows-state-machines/files/test_workflow.py` | Add tests: second approver waits; first approval aged out; rejection after one approval; verification inconclusive hands over without rollback; time stop goes direct to `handed_over`. **Superseded** in part by the cross-layer test row: a time stop goes through `inconclusive` | ADR-46, ADR-49, ADR-66 |
 | `layer-08-workflows-state-machines/files/test_workflow.py` | Add tests: unknown rollback goes `not_recovered → reconciling → handed_over`; fresh rollback approval expires; `refused` maps to `expired` and `withdrawn`; dispatcher activity failure reconciles; no-intent reconcile | ADR-46, ADR-48, 8.10 gap |
 | `layer-08-workflows-state-machines/files/test_workflow.py` | Add tests: database outage longer than 40 s pauses and resumes; each 8.10 exhaustion row; 24-hour limit per state; `recovered` stays; closure after run end | C5, C12, 8.10 gap |
 | `layer-08-workflows-state-machines/files/test_workflow.py` | Add tests: Release A ends `handed_over` with action `withdrawn`; re-investigation run doesn't reuse `t1`; cancel stops a running sandbox within 30 s; 6 concurrent incidents give 5 running and severity order | ADR-44, ADR-46, C7, C13 |
@@ -237,7 +307,7 @@ Kept as the record of what was asked for. Grouped by the layer that found the ch
 | `layer-07-data-apis-events/files/contracts.py` | Add an `aisre.notification.failed.v1` event type | 8.10 gap |
 | `layer-07-data-apis-events/artifact-07-data-and-interface-specification.md` | Add `POST /v1/incidents/{id}/reinvestigation` (permission per ADR-50, `202`), and `reinvestigate` to outbox message kinds | ADR-46, ADR-50 C8 |
 | `layer-11-safe-remediation/files/dispatcher.py` | `execute` records action `applying` with intent; `reconcile` reports "no intent" and raises while in progress, rather than looping `max_checks` inside one attempt | C18, C6 |
-| `layer-12-reliability-evaluation/files/alerts.yml` | Add an alert for reconciliation job mismatches, routed to RB-07; add `queued-over-50` alert to the incident lead | Gap 8.9, C13 |
+| `layer-12-reliability-evaluation/files/alerts.yml` | **Superseded** by the cross-layer reconciliation row: mismatches count in `aisre_workflows_stalled` and route to RB-04. The `queued-over-50` alert stands. Was: Add an alert for reconciliation job mismatches, routed to RB-07; add `queued-over-50` alert to the incident lead | Gap 8.9, C13 |
 
 ### Found in Layer 9
 
@@ -271,9 +341,9 @@ Kept as the record of what was asked for. Grouped by the layer that found the ch
 | layer-09/files/test_agent.py | Add tests: `call_budget`; `revise` with nothing to fix; blocking `stale_evidence` through `code_checks`; the support-ratio stop | C18 |
 | layer-09/files/test_agent.py | Add tests for token, spend, security and skill-failure stops, the revision check before pending requests, the zero-yield round before a diagnosis, `tool_not_allowed`, `cap_output`, and accept with low confidence | ADR-52, ADR-53, C7, C8, C10, C15, C17 |
 | layer-08/files/workflow.py | Replace the fixed collect, retrieve, diagnose, review sequence with the 9.1 coordinator loop | ADR-52, C1 |
-| layer-08/files/workflow.py | Map stops to transitions: time, budget and security go `investigating` → `handed_over`; others through `inconclusive` | ADR-46 |
+| layer-08/files/workflow.py | **Superseded** by the first cross-layer row (ADR-46). Was: Map stops to transitions: time, budget and security go `investigating` → `handed_over`; others through `inconclusive` | ADR-46 |
 | layer-08/files/workflow.py | Model activities get a policy allowing one re-run for a lost worker. `review_diagnosis` leaves `TOOL_RETRY` | ADR-27, ADR-52 |
-| layer-08/files/workflow.py | Timeouts: `hypothesise` 200 s (new), `review_diagnosis` 60 s to 200 s, `draft_patch` 120 s to 200 s | Layer 9 row |
+| layer-08/files/workflow.py | **Superseded** by the cross-layer timeouts row: all three stay 300 s (Artifact 8, 8.5). Was: Timeouts: `hypothesise` 200 s (new), `review_diagnosis` 60 s to 200 s, `draft_patch` 120 s to 200 s | Layer 9 row |
 | layer-08/files/workflow.py | Move the `summary` notification to after the first `HYPOTHESISE` result, marked not yet reviewed | Layer 9 row |
 | layer-08/files/workflow.py | `INVESTIGATION_LIMIT` reads from `Limits` | ADR-52 |
 | layer-08/files/activities.py | Add `hypothesise`. `retrieve_knowledge` returns `KnowledgeOut`. `collect_evidence` takes `CollectIn`. Model and collection activities return `SkillResult`, with `DiagnosisOut` and `ReviewOut` replaced by `DiagnosisDraft` and `CriticVerdict` | ADR-52, C1, C11 |
@@ -428,7 +498,7 @@ Kept as the record of what was asked for. Grouped by the layer that found the ch
 | L12 eval_harness.py | Paired comparison: use each case's majority result across 3 runs | Layer decision: 12.10 |
 | L12 eval_harness.py | Add a canary comparison: pair by service and category, exact McNemar at α = 0.05, plus 24-hour cost and first-summary checks | ADR-65; Layer decision: canary pairing |
 | L12 eval_harness.py | `ExperimentConfig.prompt_versions` comment: use `v<N>` values instead of `@N` | ADR-63 |
-| L12 test_layer12.py | `test_alert_rules_parse_and_name_runbooks`: expect 31 rules | 12.3 |
+| L12 test_layer12.py | **Superseded** by Artifact 12.3, which has 32 alerts. Was: `test_alert_rules_parse_and_name_runbooks`: expect 31 rules | 12.3 |
 | L12 test_layer12.py | `test_redaction_and_allow_list`: `aisre.model.prompt_version`, both request IDs and an IPv6 address | Telemetry rows above |
 | L12 test_layer12.py | Add a test that a failing exporter and a full queue both increment `telemetry_dropped` | Layer decision: telemetry drops |
 | L12 test_layer12.py | `test_restore_bumps_epoch_and_needs_reconciliation_and_a_person`: role-checked signer; add cases for in-progress re-check and for ledger `not_applied` with a target that says applied | ADR-50; reconciliation rows above |

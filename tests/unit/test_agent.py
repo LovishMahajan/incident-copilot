@@ -21,7 +21,7 @@ from aisre.agent.agent_contracts import (Claim, CollectIn, Confidence, CriticIss
                              ReviewResult, SkillContext, SkillFailure, SkillResult, SkillUsage)
 from aisre.agent.coordinator import (AgentState, Limits, Step, StopKind, after_collect, after_critique, after_diagnosis,
                          after_failure, after_hypotheses, after_knowledge, apply_result, next_step)
-from aisre.agent.tool_registry import (REGISTRY, SKILL_TOOLS, PatchDraftParams, ToolGate, ToolRefused, agent_tools, search_knowledge,
+from aisre.agent.tool_registry import (REGISTRY, SKILL_TOOLS, MemoryToolCalls, PatchDraftParams, ToolGate, ToolRefused, agent_tools, search_knowledge,
                            tool_schema_for_model)
 from aisre.agent.validation import (ObservationFacts, UnsafeOutput, UnsupportedReference, assign_tier, check_citations,
                         check_output, code_checks, combine, fingerprint, mask_secrets,
@@ -374,6 +374,56 @@ def test_per_tool_budget():
     with pytest.raises(ToolRefused) as e:
         g.check("get_changes", {"service": "checkout"}, SKILL)
     assert e.value.code == "tool_budget"
+
+
+def test_budgets_and_repeats_are_counted_from_the_stored_log_not_the_gate():
+    """ADR-69: each activity builds its own gate, on another worker after a crash. The log is what they share."""
+    store = MemoryToolCalls()
+    params = {"service": "checkout", "metric": "http_5xx_rate", "start": (T0 - timedelta(hours=1)).isoformat(),
+              "end": T0.isoformat()}
+    for _ in range(2):
+        g = gate(store=store, max_total_calls=3)
+        _, p, h = g.check("get_metric", params, SKILL)
+        g.record("get_metric", h, 1, skill=SKILL, params=p.model_dump(mode="json"), evidence_ids=("e1",))
+    later = gate(store=store, max_total_calls=3)
+    with pytest.raises(ToolRefused) as e:
+        later.check("get_metric", params, SKILL)
+    assert e.value.code == "repeated_call" and later.is_repeat(h) and later.stored_result(h) == ["e1"]
+    _, _, h2 = later.check("get_logs", {"service": "checkout"}, SKILL)
+    later.record("get_logs", h2, 0)
+    with pytest.raises(ToolRefused) as e:
+        gate(store=store, max_total_calls=3).check("get_logs", {"service": "checkout", "level": "error"}, SKILL)
+    assert e.value.code == "call_budget"
+    row = store.rows(str(INC))[0]                               # the tool_calls columns
+    assert (row["tool"], row["skill"], row["hash"], row["new_evidence"], row["evidence_ids"]) == ("get_metric", SKILL, h, 1, ["e1"])
+    assert row["params"]["metric"] == "http_5xx_rate"
+
+
+def test_the_log_is_per_incident_and_a_fresh_gate_starts_empty():
+    store = MemoryToolCalls()
+    one = gate(store=store, max_total_calls=1)
+    _, _, h = one.check("get_logs", {"service": "checkout"}, SKILL)
+    one.record("get_logs", h, 1)
+    other = ToolGate("another-incident", "checkout", T0, T0 + timedelta(minutes=5), max_total_calls=1, store=store)
+    other.check("get_logs", {"service": "checkout"}, SKILL)
+    assert gate().log == [] and gate().stored_result(h) is None and len(one.log) == 1
+
+
+def test_the_review_stores_the_final_outcome_and_confidence_once():
+    """ADR-69: what diagnoses.final_outcome and final_confidence get, from the review's result."""
+    established = draft_saying("the config change")
+    unsure = established.model_copy(update={"outcome": "inconclusive", "leading_index": None, "proposed_action": None})
+
+    def stored(verdict, confidence, d=established):
+        return ReviewResult(verdict=CriticVerdict(verdict=verdict, confidence_cap=Confidence.high,
+                                                  issues=[] if verdict == "accept" else [CriticIssue(
+                                                      kind="overconfident", detail="too sure", blocking=True)]),
+                            confidence=confidence).stored_fields(d)
+    assert stored("accept", Confidence.medium) == {"reviewed": True, "final_outcome": "established", "final_confidence": "medium"}
+    assert stored("accept", Confidence.low) == {"reviewed": True, "final_outcome": "inconclusive", "final_confidence": "low"}
+    assert stored("revise", Confidence.high)["final_outcome"] == "inconclusive"
+    assert stored("accept", Confidence.high, unsure)["final_outcome"] == "inconclusive"
+    assert ReviewResult().stored_fields(established) == {}          # invalid critic output: nothing to store
 
 
 def test_total_call_budget_reads_limits():

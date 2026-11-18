@@ -15,7 +15,7 @@ import re
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 from enum import Enum
-from typing import Annotated, Callable, Optional
+from typing import Annotated, Callable, Optional, Protocol
 from urllib.parse import unquote
 
 from pydantic import AfterValidator, AwareDatetime, BaseModel, ConfigDict, Field, ValidationError, model_validator
@@ -199,6 +199,28 @@ def search_knowledge(tool: Tool, params: KnowledgeQuery, index, groups: set[str]
 # ---------------------------------------------------------------------------
 # The gate every agent tool call goes through
 # ---------------------------------------------------------------------------
+class ToolCallStore(Protocol):
+    """The `tool_calls` table (schema.sql, ADR-69). The platform's implementation reads and writes
+    it, so an incident's budgets, repeats and stored results outlast one activity and one worker.
+    It must count and insert in one transaction per incident: parallel calls share the budget."""
+
+    def rows(self, incident_id: str) -> list[dict]: ...
+    def add(self, incident_id: str, row: dict) -> None: ...
+
+
+class MemoryToolCalls:
+    """The default store: one process, nothing kept. For tests and the reference modules."""
+
+    def __init__(self):
+        self._rows: dict[str, list[dict]] = {}
+
+    def rows(self, incident_id: str) -> list[dict]:
+        return list(self._rows.get(incident_id, []))
+
+    def add(self, incident_id: str, row: dict) -> None:
+        self._rows.setdefault(incident_id, []).append(row)
+
+
 @dataclass
 class ToolGate:
     incident_id: str
@@ -206,10 +228,14 @@ class ToolGate:
     incident_start: datetime
     now: datetime
     max_total_calls: int = Limits().max_tool_calls
-    calls_by_tool: dict[str, int] = field(default_factory=dict)
-    seen: dict[str, int] = field(default_factory=dict)       # canonical call hash -> times
-    total_calls: int = 0
-    log: list[dict] = field(default_factory=list)
+    store: ToolCallStore = field(default_factory=MemoryToolCalls)   # the incident's tool call log
+
+    @property
+    def log(self) -> list[dict]:
+        return self.store.rows(self.incident_id)
+
+    def _times(self, **match) -> int:
+        return sum(all(r[k] == v for k, v in match.items()) for r in self.log)
 
     def check(self, name: str, raw_params: dict, skill: str) -> tuple[Tool, BaseModel, str]:
         """Validate one call requested by `skill`. Returns (tool, params, call_hash) or raises ToolRefused."""
@@ -239,24 +265,28 @@ class ToolGate:
             raise ToolRefused("window_in_future", "the time asked for is in the future")
         if earliest is not None and earliest < self.incident_start - timedelta(hours=24):
             raise ToolRefused("window_too_old", "more than 24 h before the incident started")
-        if self.total_calls >= self.max_total_calls:
+        if len(self.log) >= self.max_total_calls:
             raise ToolRefused("call_budget", f"{self.max_total_calls} tool calls per incident")
-        if self.calls_by_tool.get(name, 0) >= tool.max_calls_per_incident:
+        if self._times(tool=name) >= tool.max_calls_per_incident:
             raise ToolRefused("tool_budget", f"{tool.max_calls_per_incident} calls of {name} per incident")
         call_hash = hashlib.sha256(json.dumps(
             {"tool": name, "params": params.model_dump(mode="json")}, sort_keys=True).encode()).hexdigest()
-        if self.seen.get(call_hash, 0) >= 2:
+        if self._times(hash=call_hash) >= 2:
             raise ToolRefused("repeated_call", "same tool and parameters already called twice")
         return tool, params, call_hash
 
-    def record(self, name: str, call_hash: str, new_evidence: int) -> None:
-        self.total_calls += 1
-        self.calls_by_tool[name] = self.calls_by_tool.get(name, 0) + 1
-        self.seen[call_hash] = self.seen.get(call_hash, 0) + 1
-        self.log.append({"tool": name, "hash": call_hash, "new_evidence": new_evidence})
+    def record(self, name: str, call_hash: str, new_evidence: int, *, skill: str = "collect_evidence",
+               params: Optional[dict] = None, evidence_ids: tuple[str, ...] = ()) -> None:
+        """One tool_calls row, written after the call ran. `evidence_ids` is its stored result."""
+        self.store.add(self.incident_id, {"tool": name, "hash": call_hash, "new_evidence": new_evidence, "skill": skill,
+                                          "params": params or {}, "evidence_ids": list(evidence_ids)})
 
     def is_repeat(self, call_hash: str) -> bool:
-        return self.seen.get(call_hash, 0) >= 1
+        return self._times(hash=call_hash) >= 1
+
+    def stored_result(self, call_hash: str) -> Optional[list[str]]:
+        """The evidence an earlier, identical call stored: a repeat is answered from this, not run again."""
+        return next((r["evidence_ids"] for r in self.log if r["hash"] == call_hash), None)
 
     def cap_output(self, name: str, raw: bytes) -> tuple[bytes, bool]:
         """Run on every result before storage. Returns the bytes to keep, and is_partial."""

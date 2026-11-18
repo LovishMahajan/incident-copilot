@@ -2,7 +2,8 @@
 
 Every skill takes one Pydantic input and returns one Pydantic output. Model-backed skills
 return only these shapes; anything else is rejected whole. Field names follow the canonical
-schema.sql (ADR-64). The contracts marked proposed in 9.3 await the team's sign-off.
+db/schema.sql (ADR-64). 9.3 lists each skill's model output and its activity's output; like the
+rest of Artifact 9 they await the team's sign-off.
 """
 
 from __future__ import annotations
@@ -289,8 +290,8 @@ class PatchProposal(Strict):
 
 
 class DiagnosisResult(Strict):
-    """The `diagnose` activity's output: the draft, plus the code-computed facts the coordinator
-    reads. 9.3 lists `DiagnosisDraft` alone, which carries neither."""
+    """The `diagnose` activity's output (9.3): the draft, plus the code-computed facts the
+    coordinator reads, which `DiagnosisDraft` doesn't carry."""
 
     diagnosis_id: UUID
     draft: DiagnosisDraft
@@ -310,6 +311,18 @@ class ReviewResult(Strict):
         if (self.verdict is None) != (self.confidence is None):
             raise ValueError("a verdict comes with its final confidence")
         return self
+
+    def stored_fields(self, draft: DiagnosisDraft) -> dict:
+        """The review's part of the `diagnoses` row (schema.sql), written once (ADR-69). The final
+        outcome is the coordinator's rule: established only if the critic accepted an established
+        draft at medium or high, so a diagnosis capped to low reads as inconclusive. Invalid critic
+        output stores nothing."""
+        if self.verdict is None:
+            return {}
+        established = (self.verdict.verdict == "accept" and draft.outcome == "established"
+                       and self.confidence != Confidence.low)
+        return {"reviewed": True, "final_outcome": "established" if established else "inconclusive",
+                "final_confidence": self.confidence.value}
 
 
 class SkillFailure(Strict):
