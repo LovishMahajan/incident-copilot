@@ -14,7 +14,9 @@ not run again (9.4). Each result is:
 4. fingerprinted: SHA-256 of the snapshot bytes (Q9.22);
 5. summarised: a short extract, the only part the model sees (9.4);
 6. given its strength tier, from facts computed against the change history (ADR-53,
-   aisre.evidence.facts), with those facts kept as its reasons.
+   aisre.evidence.facts), with those facts kept as its reasons;
+7. flagged when any of its text reads as instructions to the reader (validation.flag_injection,
+   ST-33): the record stays readable, is shown flagged, and supports no claim (T1.12).
 
 A source that fails, times out, has no adapter, or doesn't hold the data becomes a gap record
 with its reason, never an empty or healthy one (FR-08, ADR-54). Nothing here touches the
@@ -27,7 +29,7 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import json
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Iterator, Sequence
 from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Any
@@ -37,6 +39,7 @@ from pydantic import BaseModel
 
 from aisre.agent.agent_contracts import Evidence, EvidenceKind
 from aisre.agent.tool_registry import REGISTRY, ToolGate, ToolRefused
+from aisre.agent.validation import flag_injection, flags_injection
 from aisre.evidence.facts import ChangeInfo, Observed, change_info, tier_and_reasons
 from aisre.evidence.sources import DEFAULT_TIMEOUT_S, Record, SourceSet, SourceUnavailable
 from aisre.record.incidents import uuid7
@@ -279,7 +282,7 @@ def _gap(
         gap_reason=reason,
     )
     attributes = {"collection_key": key, "params": params, "missing_kind": TOOL_KIND[tool].value}
-    return Collected(evidence, attributes, None)
+    return Collected(flag_injection(evidence), attributes, None)
 
 
 def _normalise(
@@ -336,7 +339,21 @@ def _normalise(
         "record_count": len(records),
         "terms": search_terms(kind, records),
     }
+    evidence = flag_injection(evidence)  # the extract
+    if not evidence.flagged_injection and any(flags_injection(t) for t in _texts(records)):
+        evidence = evidence.model_copy(update={"flagged_injection": True})  # the full records
     return Collected(evidence, attributes, snapshot, records)
+
+
+def _texts(value: Any) -> Iterator[str]:
+    if isinstance(value, str):
+        yield value
+    elif isinstance(value, dict):
+        for v in value.values():
+            yield from _texts(v)
+    elif isinstance(value, list):
+        for v in value:
+            yield from _texts(v)
 
 
 # ---------------------------------------------------------------------------

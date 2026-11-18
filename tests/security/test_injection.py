@@ -2,10 +2,13 @@
 
 from __future__ import annotations
 
+import asyncio
+import json
 import uuid
 from datetime import datetime, timezone
 
 import pytest
+from monitoring_scenarios import ALERT_ID, CUT_OFF, STARTED, copy_reference, serving, sources
 from pydantic import ValidationError
 from support import draft_json, request
 
@@ -20,6 +23,7 @@ from aisre.agent.agent_contracts import (
 from aisre.agent.tool_registry import ToolGate, ToolRefused
 from aisre.agent.validation import check_citations, code_checks, flag_injection, flags_injection
 from aisre.contracts import EvidenceRecord
+from aisre.evidence.collector import Scope, baseline_plan, collect
 from aisre.gateway.adapters import ClaudeAdapter, render_context
 
 NOW = datetime(2026, 11, 1, 9, 0, tzinfo=timezone.utc)
@@ -189,9 +193,86 @@ def test_st33_a_claim_resting_on_text_the_flagger_caught_is_unsupported():
     assert check_citations(d, {stored.evidence_id: stored}, INC).supported == 0
 
 
-def test_st33_the_collector_that_calls_the_flagger_and_shows_the_flag_does_not_exist():
-    pytest.skip(
-        "Needs the Evidence Collector and the approval view: collect_evidence is an interface, so nothing calls "
-        "validation.flag_injection on real extracts, writes aisre.evidence.injection_flagged.v1 or shows the "
-        "flag to an approver. The flagger and what a flag does are tested above"
+def _plant(root, channel: str) -> None:
+    d = root / "reference-incident"
+    if channel in ("log", "error_message"):
+        lines = (d / "logs.ndjson").read_text().splitlines()
+        n = next(i for i, ln in enumerate(lines) if "ValueError" in ln)  # 14:02:04, in the window
+        row = json.loads(lines[n])
+        if channel == "log":
+            row["message"] = PLANTED
+        else:
+            row["error"]["message"] = PLANTED
+        lines[n] = json.dumps(row)
+        (d / "logs.ndjson").write_text("\n".join(lines) + "\n")
+    elif channel == "trace_attribute":
+        trace = json.loads((d / "trace.json").read_text())
+        trace["spans"][-1]["attributes"]["app.note"] = PLANTED
+        (d / "trace.json").write_text(json.dumps(trace))
+    elif channel == "commit_message":
+        release = json.loads((d / "release.json").read_text())
+        release["commits"][0]["message"] = PLANTED
+        (d / "release.json").write_text(json.dumps(release))
+
+
+def _collect(root=None):
+    s = Scope(str(uuid.uuid4()), "orders-api", "production", STARTED, ALERT_ID)
+    with serving(*([root] if root else [])) as url:
+        return asyncio.run(
+            collect(
+                s,
+                baseline_plan(s),
+                ToolGate(s.incident_id, s.service, STARTED, CUT_OFF),
+                sources(url),
+                collection_key="k",
+                now=CUT_OFF,
+            )
+        ).collected
+
+
+TOOL_FOR = {  # where each channel's text lands: an error message is in the tracker's groups too
+    "log": {"get_logs"},
+    "error_message": {"get_logs", "get_error_groups"},
+    "trace_attribute": {"get_traces"},
+    "commit_message": {"get_changes"},
+}
+
+
+@pytest.mark.parametrize("channel", sorted(TOOL_FOR))
+def test_st33_the_collector_flags_planted_text_in_each_source_channel(channel, tmp_path):
+    """T1.12: the Evidence Collector calls the flagger on every extract and its records. The
+    record is stored flagged, not dropped, so the approver sees it; aisre.record.evidence writes
+    aisre.evidence.injection_flagged.v1 for it (tests/integration/test_evidence_store.py)."""
+    root = copy_reference(tmp_path)
+    _plant(root, channel)
+    collected = _collect(root)
+    flagged = {c.evidence.tool for c in collected if c.evidence.flagged_injection}
+    assert flagged == TOOL_FOR[channel]
+    hit = next(c for c in collected if c.evidence.tool in TOOL_FOR[channel])
+    assert (
+        check_citations(
+            _cite(hit.evidence), {hit.evidence.evidence_id: hit.evidence}, hit.evidence.incident_id
+        ).supported
+        == 0
+    )
+
+
+def test_st33_control_the_reference_incident_has_nothing_flagged():
+    assert not [c.evidence.tool for c in _collect() if c.evidence.flagged_injection]
+
+
+def _cite(e):
+    h = HypothesisDraft(
+        statement="The evidence explains it",
+        category="deployment_config",
+        claims=[Claim(text="As collected", evidence_ids=[e.evidence_id])],
+        confirm_test="Check",
+        refute_test="Check",
+    )
+    return DiagnosisDraft(
+        outcome="established",
+        leading_index=0,
+        hypotheses=[h, h.model_copy(update={"category": "dependency"})],
+        summary="s",
+        ruled_out=["other"],
     )
