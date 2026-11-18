@@ -30,6 +30,8 @@ uv run mypy src
 
 Markers: `integration` (PostgreSQL and Temporal), `system` (Compose stack, gVisor host), `paid` (a real provider). The default run selects everything; marked tests skip, with the reason, when what they need is missing. `uv run pytest -q -m integration` runs only the integration tier. `tests/conftest.py` stops any run whose environment looks like production; its docstring gives the rule.
 
+The live contract test for each pinned Claude model (`tests/integration/test_claude_contract.py`) costs money and runs only with both `AISRE_PAID_TESTS=1` and a test key: `AISRE_PAID_TESTS=1 AISRE_TEST_PROVIDER_KEY=... uv run pytest -q -m paid`. Every other model test uses the fake Messages API in `tests/fake_anthropic.py`. Prompts live in `prompts/<task>/v<N>.md` and are never edited once merged (ADR-63): `uv run python scripts/check_prompts.py --base origin/main` is CI's check.
+
 Settings come from `AISRE_*` environment variables (`src/aisre/config.py`). Copy `.env.example` to `.env` for local values; every value in it is fake.
 
 ## Build and test the schema
