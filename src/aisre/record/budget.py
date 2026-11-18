@@ -126,7 +126,7 @@ model_attempts = Table(
     Column("input_sha256", Text, nullable=False),
     Column("status", model_attempt_status, nullable=False),
     Column("stop_reason", model_stop_reason, nullable=False),
-    Column("validation_errors", JSONB),
+    Column("validation_errors", JSONB(none_as_null=True)),
     Column("provider_request_id", Text),
     Column("input_tokens", Integer, nullable=False),
     Column("output_tokens", Integer, nullable=False),
@@ -137,6 +137,9 @@ model_attempts = Table(
     Column("latency_ms", Integer),
     Column("started_at", Timestamp, nullable=False),
     Column("finished_at", Timestamp),
+    Column(
+        "result", JSONB(none_as_null=True)
+    ),  # migration 0004: the reusable result, `ok` rows only (ADR-61)
 )
 
 CHECK_VIOLATION = "23514"
@@ -205,6 +208,7 @@ class Attempt:
     latency_ms: int | None
     started_at: datetime
     finished_at: datetime
+    result: dict[str, Any] | None = None  # kept for reuse on `ok` rows only
 
 
 def _sqlstate(e: IntegrityError) -> str | None:
@@ -486,3 +490,23 @@ def fleet_spend(conn: Connection, now: datetime) -> tuple[int, int]:
 
 def record_attempt(conn: Connection, a: Attempt) -> None:
     conn.execute(insert(model_attempts).values(**a.__dict__))
+
+
+def reusable_result(
+    conn: Connection, incident_id: UUID, input_sha256: str
+) -> dict[str, Any] | None:
+    """The recorded result of the same step input within the incident, if one succeeded (ADR-61).
+    Uses ix_model_attempts_reuse."""
+    m = model_attempts.c
+    found: dict[str, Any] | None = conn.execute(
+        select(m.result)
+        .where(
+            m.incident_id == incident_id,
+            m.input_sha256 == input_sha256,
+            m.status == "ok",
+            m.result.is_not(None),
+        )
+        .order_by(m.started_at.desc())
+        .limit(1)
+    ).scalar()
+    return found
