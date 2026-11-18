@@ -528,6 +528,21 @@ The worksheet requires M0–M5. M1–M4 keep the meaning they have in Artifacts 
 - **Owner:** Platform owner; Security lead for the stop, block and fence rows. **Reversal:** Low, except the block table (Medium). **Revisit when:** team review.
 - **Resolves:** the code and design defects found in the 2026-11-17 audit, and the Layer 13 conflicts.
 
+### ADR-70: A read-only demo viewer, outside the product (2026-11-18)
+
+Artifacts 1, 2, 5, 6 and 13 keep a product dashboard out of the first version: the API and CLI are the interface until they are shown to be insufficient (Artifact 6). Showing the investigation to people who will not run a CLI is a different need, so a demo viewer is added as a showcase tool, not as that dashboard.
+
+| Topic | Decision |
+| --- | --- |
+| What it is | A static page in `demo/` with no build step, served by its own Compose service, that starts a synthetic incident and follows its timeline, evidence, hypotheses and diagnosis live |
+| What it may do | Read through `/v1`, and create an incident with `POST /v1/incidents`. Nothing else: its proxy refuses every other write, so it can never approve, cancel, close or execute |
+| Sign-in | The same bearer tokens and ADR-50 checks as any caller (Artifact 5: any later interface follows the same rules). It gets tokens from the stack's fake token issuer, so it works only against a local or test stack, never production |
+| Untrusted text | Evidence and model output are rendered as text, never as HTML, under a strict Content-Security-Policy |
+| Not in scope | It is not the product dashboard, gets no product requirements, and is not deployed. A real dashboard still needs Artifact 6's measured problem |
+
+- **Owner:** Platform owner. **Reversal:** Low: delete `demo/` and its Compose service. **Revisit when:** someone asks for it outside a demo, which is Artifact 6's trigger for a real dashboard.
+- **Resolves:** the request for a visual showcase of the investigation without breaking the first version's scope.
+
 ## Not conflicts
 
 | Claim | Finding |

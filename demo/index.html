@@ -1,0 +1,111 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="referrer" content="no-referrer">
+  <title>Incident Copilot demo</title>
+  <link rel="icon" href="favicon.svg" type="image/svg+xml">
+  <link rel="stylesheet" href="styles.css">
+  <script type="module" src="app.js"></script>
+</head>
+<body>
+  <!-- ADR-70: a read-only demo viewer, outside the product. Every value shown comes from the
+       API and is rendered as text (app.js); nothing here is product UI. -->
+  <header class="topbar">
+    <div class="brand">
+      <span class="brand-mark" aria-hidden="true"></span>
+      <div>
+        <h1>Incident Copilot</h1>
+        <p class="brand-sub">Live investigation viewer · synthetic data</p>
+      </div>
+    </div>
+    <div class="signin">
+      <label for="persona">Signed in as</label>
+      <select id="persona"></select>
+      <span id="token-state" class="token-state" role="status">Not signed in</span>
+    </div>
+  </header>
+
+  <div class="demo-note" role="note">
+    <strong>Demo only:</strong> signs in through the stack's fake token issuer. This page can
+    read incidents and start the synthetic reference incident; it cannot approve, cancel,
+    close or change anything.
+  </div>
+
+  <main class="page">
+    <section class="controls card" aria-label="Start or open an incident">
+      <div class="control-group">
+        <button id="start" type="button" class="primary">Start reference incident</button>
+        <span class="hint">Posts the synthetic <code>OrdersApiHighErrorRate</code> alert for orders-api/production.</span>
+      </div>
+      <form id="open-form" class="control-group">
+        <label for="open-id">Open incident by ID</label>
+        <input id="open-id" name="id" type="text" inputmode="text" autocomplete="off" spellcheck="false"
+               placeholder="01a1ee90-…">
+        <button type="submit">Open</button>
+      </form>
+      <p id="message" class="message" role="status" hidden></p>
+    </section>
+
+    <section id="incident" class="incident" hidden>
+      <div class="card incident-head">
+        <div class="incident-title">
+          <p class="eyebrow"><span id="inc-ref"></span> · <span id="inc-scope"></span></p>
+          <h2 id="inc-title"></h2>
+          <p class="meta"><span id="inc-started"></span> · <span id="inc-created"></span></p>
+        </div>
+        <div class="incident-state">
+          <span id="inc-status" class="pill"></span>
+          <span id="live" class="live" data-state="idle">Idle</span>
+        </div>
+        <ol id="stepper" class="stepper" aria-label="Incident status"></ol>
+      </div>
+
+      <div class="columns">
+        <div class="col-main">
+          <section class="card" aria-labelledby="diag-h">
+            <div class="card-head">
+              <h3 id="diag-h">Diagnosis</h3>
+              <span id="diag-badges" class="badges"></span>
+            </div>
+            <div id="diagnosis"><p class="empty">No diagnosis yet. It appears once the evidence is in.</p></div>
+          </section>
+
+          <section class="card" aria-labelledby="hyp-h">
+            <div class="card-head"><h3 id="hyp-h">Hypotheses</h3><span id="hyp-count" class="count"></span></div>
+            <ol id="hypotheses" class="hypotheses"><li class="empty">None yet.</li></ol>
+          </section>
+
+          <section class="card" aria-labelledby="ev-h">
+            <div class="card-head">
+              <h3 id="ev-h">Evidence</h3>
+              <span id="ev-count" class="count"></span>
+              <label class="filter">Kind
+                <select id="ev-filter"><option value="">All</option></select>
+              </label>
+            </div>
+            <p class="legend">Strength tiers are assigned by code (ADR-53): 1–3 mechanism, 4–7 supporting, 8 timing alone. Gaps are sources that could not be read.</p>
+            <ol id="evidence" class="evidence"><li class="empty">None yet.</li></ol>
+          </section>
+        </div>
+
+        <aside class="col-side">
+          <section class="card" aria-labelledby="spend-h">
+            <div class="card-head"><h3 id="spend-h">Model spend</h3></div>
+            <dl id="spend" class="spend"></dl>
+          </section>
+          <section class="card timeline-card" aria-labelledby="tl-h">
+            <div class="card-head"><h3 id="tl-h">Timeline</h3><span id="tl-count" class="count"></span></div>
+            <ol id="timeline" class="timeline" aria-live="polite"></ol>
+          </section>
+        </aside>
+      </div>
+    </section>
+  </main>
+
+  <footer class="foot">
+    ADR-70 demo viewer · not the product dashboard · all data synthetic
+  </footer>
+</body>
+</html>
