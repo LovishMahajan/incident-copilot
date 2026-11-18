@@ -510,30 +510,30 @@ A task with no dependency can start now. Tasks are tracked in GitHub Issues (pro
 
 | ID | Task | Depends on | Files or modules | Owner | Test | Closes |
 | --- | --- | --- | --- | --- | --- | --- |
-| T1.1 | Add MinIO, telemetry stack, fake token issuer, fake provider and monitoring | T0.6 | `compose.yaml` | Platform owner | Stack healthy with no key | — |
-| T1.2 | Full intake: idempotency, deduplication, grouping, dead letters | T1.3 | `src/aisre/api/`, `src/aisre/record/` | Platform owner | Q13.31 cases; FR-01, FR-03 to FR-06, FR-41 to FR-43, ST-21 | WR-10, WR-11 |
-| T1.3 | Token verification against the fake issuer | T1.1, T0.9 | `src/aisre/api/` | Security lead | ST-19 | WR-09 |
-| T1.4 | ADR-50 matrix at the routes, denial and read logging | T1.3 | `src/aisre/api/` | Security lead | ST-20, ST-22 | WR-11 |
-| T1.5 | Evidence, diagnosis and action reads, timeline stream, exports, CLI | T1.4 | `src/aisre/api/`, `src/aisre/cli.py` | Platform owner | FR-36, FR-38 | WR-11 |
-| T1.6 | Cancellation, notes, severity, closure, re-investigation routes | T1.4 | `src/aisre/api/` | Platform owner | FR-33, FR-51 | WR-11 |
-| T1.7 | Durable reservations, daily and monthly ledgers | T0.8 | `src/aisre/gateway/gateway.py`, `src/aisre/record/` | SRE lead | NFR-13, NFR-15, NFR-36, NFR-37, NFR-42, ST-35 | WR-01, WR-03 |
-| T1.8 | Real transport, result reuse on `model_attempts`, Artifact 10.1 re-checked | T1.7 | `src/aisre/gateway/` | SRE lead | NFR-32, NFR-33, ST-36 | — |
-| T1.9 | Live contract test for each pinned model | T1.8 | `tests/integration/` | SRE lead | `paid`: fails when a request rule is broken on purpose | — |
-| T1.10 | Evidence adapters, redaction, gaps, `collect_evidence` body; the PostgreSQL-backed `ToolCallStore` on `tool_calls`, counting and inserting in one transaction per incident | T1.1 | `src/aisre/evidence/`, `src/aisre/agent/skills/`, `src/aisre/agent/tool_registry.py`, `src/aisre/record/` | SRE lead | FR-07 to FR-09, FR-44, NFR-18, NFR-29, ST-17, ST-30 | WR-12, WR-16 |
-| T1.11 | Compute `ObservationFacts` for `assign_tier` | T1.10 | `src/aisre/evidence/`, `src/aisre/agent/validation.py` | SRE lead | FR-46, ST-34 | WR-17 |
-| T1.12 | The Evidence Collector calls `validation.flag_injection` on every extract, writes `aisre.evidence.injection_flagged.v1` and shows the flag to people | T1.10 | `src/aisre/evidence/`, `src/aisre/agent/validation.py` | Security lead | ST-33, FR-39 | — |
-| T1.13 | First prompt versions; CI refuses edits to merged prompts | T0.4 | `prompts/`, `.github/workflows/ci.yml` | SRE lead | A changed merged prompt fails CI | — |
-| T1.14 | `hypothesise`, `diagnose`, `review_diagnosis` bodies, heartbeats | T1.8, T1.13 | `src/aisre/agent/skills/` | SRE lead | FR-10, FR-11, FR-14 to FR-16, FR-45 | WR-12, WR-14 |
-| T1.15 | Store diagnoses through `stored_fields()` | T1.14 | `src/aisre/record/` | SRE lead | FR-12 | WR-05 |
-| T1.16 | Activities call `check_output`, `mask_secrets`; audit copy; leak procedure | T1.14 | `src/aisre/agent/`, `src/aisre/workflow/activities.py` | Security lead | ST-23, ST-24 | — |
-| T1.17 | Corpus tables, ingestion, index revisions, 50 labelled queries | T0.8 | `src/aisre/retrieval/`, `src/aisre/record/` | SRE lead | Artifact 10.13 targets, ST-22 | WR-04 |
-| T1.18 | Coordinator on real skills, real `retrieve_knowledge` body | T1.10, T1.14, T1.17 | `src/aisre/workflow/`, `src/aisre/agent/skills/` | SRE lead | FR-02, FR-11, NFR-10, NFR-11, ST-29 | WR-12 |
-| T1.19 | Traces, timing, metrics exposed; Notifier publishes first-notification metric | T0.10 | `src/aisre/reliability/telemetry.py`, `src/aisre/workflow/` | Platform owner | NFR-09, NFR-26 | WR-24 |
-| T1.20 | Write-once audit copy, weekly chain check | T1.1 | `src/aisre/record/`, `src/aisre/workflow/` | Platform owner | FR-37, ST-31, ST-32 | WR-30 |
-| T1.21 | Schedule reservation expiry and spend reconciliation | T1.7 | `src/aisre/gateway/`, `src/aisre/workflow/` | SRE lead | Time-skipped schedule test | WR-26, WR-27 |
-| T1.22 | Evaluation seed, case and key stores, nightly run stopping at $10 | T1.18 | `src/aisre/evaluation/`, case store, key store | SRE lead | FR-13, FR-14, FR-15, FR-16, FR-39 on the development split | — |
-| T1.23 | M1 demo, evidence record | T1.2–T1.22, T1.24 | `docs/layers/layer-13-implementation-planning/milestones/` | SRE lead | The M1 criteria in 13.8 | — |
-| T1.24 | Restricted-runbook display: a reader who may not read a cited runbook sees "restricted runbook (owner: …)", never its text | T1.5, T1.17 | `src/aisre/api/`, `src/aisre/retrieval/` | SRE lead | Artifact 10.9: a reader outside the document's groups gets the notice; ST-22 | — |
+| T1.1 | Done 2026-11-18. Add MinIO, telemetry stack, fake token issuer, fake provider and monitoring | T0.6 | `compose.yaml` | Platform owner | Stack healthy with no key | — |
+| T1.2 | Done 2026-11-18. Full intake: idempotency, deduplication, grouping, dead letters | T1.3 | `src/aisre/api/`, `src/aisre/record/` | Platform owner | Q13.31 cases; FR-01, FR-03 to FR-06, FR-41 to FR-43, ST-21 | WR-10, WR-11 |
+| T1.3 | Done 2026-11-18. Token verification against the fake issuer | T1.1, T0.9 | `src/aisre/api/` | Security lead | ST-19 | WR-09 |
+| T1.4 | Done 2026-11-18. ADR-50 matrix at the routes, denial and read logging | T1.3 | `src/aisre/api/` | Security lead | ST-20, ST-22 | WR-11 |
+| T1.5 | Done 2026-11-18. Evidence, diagnosis and action reads, timeline stream, exports, CLI | T1.4 | `src/aisre/api/`, `src/aisre/cli.py` | Platform owner | FR-36, FR-38 | WR-11 |
+| T1.6 | Done 2026-11-18. Cancellation, notes, severity, closure, re-investigation routes | T1.4 | `src/aisre/api/` | Platform owner | FR-33, FR-51 | WR-11 |
+| T1.7 | Done 2026-11-18. Durable reservations, daily and monthly ledgers | T0.8 | `src/aisre/gateway/gateway.py`, `src/aisre/record/` | SRE lead | NFR-13, NFR-15, NFR-36, NFR-37, NFR-42, ST-35 | WR-01, WR-03 |
+| T1.8 | Done 2026-11-18, against a fake Messages API that enforces Artifact 10.1's request rules; never against the live API (no key). Real transport, result reuse on `model_attempts`, Artifact 10.1 re-checked | T1.7 | `src/aisre/gateway/` | SRE lead | NFR-32, NFR-33, ST-36 | — |
+| T1.9 | Built 2026-11-18; never run live: there is no API key, so its `paid` cases skip (M1 evidence record). Live contract test for each pinned model | T1.8 | `tests/integration/` | SRE lead | `paid`: fails when a request rule is broken on purpose | — |
+| T1.10 | Done 2026-11-18. Evidence adapters, redaction, gaps, `collect_evidence` body; the PostgreSQL-backed `ToolCallStore` on `tool_calls`, counting and inserting in one transaction per incident | T1.1 | `src/aisre/evidence/`, `src/aisre/agent/skills/`, `src/aisre/agent/tool_registry.py`, `src/aisre/record/` | SRE lead | FR-07 to FR-09, FR-44, NFR-18, NFR-29, ST-17, ST-30 | WR-12, WR-16 |
+| T1.11 | Done 2026-11-18. Compute `ObservationFacts` for `assign_tier` | T1.10 | `src/aisre/evidence/`, `src/aisre/agent/validation.py` | SRE lead | FR-46, ST-34 | WR-17 |
+| T1.12 | Done 2026-11-18. The Evidence Collector calls `validation.flag_injection` on every extract, writes `aisre.evidence.injection_flagged.v1` and shows the flag to people | T1.10 | `src/aisre/evidence/`, `src/aisre/agent/validation.py` | Security lead | ST-33, FR-39 | — |
+| T1.13 | Done 2026-11-18. First prompt versions; CI refuses edits to merged prompts | T0.4 | `prompts/`, `.github/workflows/ci.yml` | SRE lead | A changed merged prompt fails CI | — |
+| T1.14 | Done 2026-11-18. `hypothesise`, `diagnose`, `review_diagnosis` bodies, heartbeats | T1.8, T1.13 | `src/aisre/agent/skills/` | SRE lead | FR-10, FR-11, FR-14 to FR-16, FR-45 | WR-12, WR-14 |
+| T1.15 | Done 2026-11-18. Store diagnoses through `stored_fields()` | T1.14 | `src/aisre/record/` | SRE lead | FR-12 | WR-05 |
+| T1.16 | Done 2026-11-18. Activities call `check_output`, `mask_secrets`; audit copy; leak procedure | T1.14 | `src/aisre/agent/`, `src/aisre/workflow/activities.py` | Security lead | ST-23, ST-24 | — |
+| T1.17 | Done 2026-11-18. Corpus tables, ingestion, index revisions, 50 labelled queries | T0.8 | `src/aisre/retrieval/`, `src/aisre/record/` | SRE lead | Artifact 10.13 targets, ST-22 | WR-04 |
+| T1.18 | Done 2026-11-18. Coordinator on real skills, real `retrieve_knowledge` body | T1.10, T1.14, T1.17 | `src/aisre/workflow/`, `src/aisre/agent/skills/` | SRE lead | FR-02, FR-11, NFR-10, NFR-11, ST-29 | WR-12 |
+| T1.19 | Done 2026-11-18. Traces, timing, metrics exposed; Notifier publishes first-notification metric | T0.10 | `src/aisre/reliability/telemetry.py`, `src/aisre/workflow/` | Platform owner | NFR-09, NFR-26 | WR-24 |
+| T1.20 | Done 2026-11-18. Write-once audit copy, weekly chain check | T1.1 | `src/aisre/record/`, `src/aisre/workflow/` | Platform owner | FR-37, ST-31, ST-32 | WR-30 |
+| T1.21 | Done 2026-11-18. Schedule reservation expiry and spend reconciliation | T1.7 | `src/aisre/gateway/`, `src/aisre/workflow/` | SRE lead | Time-skipped schedule test | WR-26, WR-27 |
+| T1.22 | Done 2026-11-18 as a development seed, not the frozen suite: four synthetic development cases, scored on the fake provider ([milestones/m1.md](milestones/m1.md)). Evaluation seed, case and key stores, nightly run stopping at $10 | T1.18 | `src/aisre/evaluation/`, case store, key store | SRE lead | FR-13, FR-14, FR-15, FR-16, FR-39 on the development split | — |
+| T1.23 | Done 2026-11-18, with the exceptions the record states: [milestones/m1.md](milestones/m1.md). M1 has not exited. M1 demo, evidence record | T1.2–T1.22, T1.24 | `docs/layers/layer-13-implementation-planning/milestones/` | SRE lead | The M1 criteria in 13.8 | — |
+| T1.24 | Done 2026-11-18. Restricted-runbook display: a reader who may not read a cited runbook sees "restricted runbook (owner: …)", never its text | T1.5, T1.17 | `src/aisre/api/`, `src/aisre/retrieval/` | SRE lead | Artifact 10.9: a reader outside the document's groups gets the notice; ST-22 | — |
 
 ### M2 tasks
 
