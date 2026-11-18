@@ -6,6 +6,7 @@ readme = "README.md"
 requires-python = ">=3.12"
 dependencies = [
     "alembic>=1.13",
+    "anthropic>=2.0.0",
     "cryptography>=43",
     "fastapi>=0.115",
     "opentelemetry-sdk>=1.27",
@@ -99,6 +100,10 @@ module = [
     "aisre.workflow.worker",
     "aisre.workflow.record_activities",
     "aisre.workflow.scripted",
+    "aisre.gateway.ledger",
+    "aisre.gateway.transport",
+    "aisre.gateway.jobs",
+    "aisre.workflow.budget_jobs",
 ]
 # `strict = true` here applies to every module, so name the flags --strict sets.
 disallow_any_generics = true

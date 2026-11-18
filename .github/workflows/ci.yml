@@ -132,6 +132,30 @@ jobs:
           AISRE_MIGRATION_DATABASE_URL: postgresql+psycopg://aisre_owner@127.0.0.1:5432/aisre
         run: uv run alembic downgrade base && uv run alembic upgrade head
 
+  prompts:
+    name: Merged prompt versions are unchanged
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0 # the base commit is compared with HEAD
+      - uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2 # v10.3.3
+        with:
+          version: ${{ env.UV_VERSION }}
+      - name: Install
+        run: uv sync --python "$PYTHON_VERSION" --locked
+      - name: No merged prompt version edited, deleted or renamed (ADR-63)
+        env:
+          # A pull request is compared with its target; a push with the commit before it.
+          BASE: ${{ github.event_name == 'pull_request' && format('origin/{0}', github.base_ref) || github.event.before }}
+        run: |
+          if [ -z "$BASE" ] || [ "$BASE" = "0000000000000000000000000000000000000000" ]; then
+            uv run python scripts/check_prompts.py
+          else
+            uv run python scripts/check_prompts.py --base "$BASE"
+          fi
+
   secrets:
     name: Secret scan
     runs-on: ubuntu-24.04

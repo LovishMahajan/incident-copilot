@@ -13,6 +13,10 @@ with aisre.workflow.scripted's fixed results, so an incident runs to `handed_ove
 the worker refuses that in production, as Settings does. Every other activity is the interface
 in activities.py, which raises if called. Without scripts, a workflow stops at the slot, retrying.
 
+Budget jobs (T1.21): the worker registers BudgetJobWorkflow with the ledger's expiry and
+reconciliation activities, over PostgreSQL, and starts both jobs if they aren't running
+(aisre.workflow.budget_jobs).
+
 Liveness: after every relay pass the worker touches ALIVE_FILE; `--check-alive` exits 0 if
 that happened within ALIVE_WITHIN, which is Compose's health check.
 
@@ -38,9 +42,12 @@ from temporalio.client import Client
 from temporalio.worker import Worker
 
 from aisre.config import Settings
+from aisre.gateway.jobs import BudgetJobActivities
+from aisre.gateway.ledger import PgBudgetLedger
 from aisre.record import make_engine
 from aisre.workflow import activities as act
 from aisre.workflow import scripted
+from aisre.workflow.budget_jobs import BudgetJobWorkflow, ensure_budget_jobs
 from aisre.workflow.record_activities import RecordActivities
 from aisre.workflow.relay import Relay
 from aisre.workflow.workflow import IncidentWorkflow, ReconciliationWorkflow
@@ -68,11 +75,16 @@ def investigation_activities(settings: Settings, engine: Engine) -> list[Callabl
     return chosen + [a for a in interfaces if activity_name(a) not in names]
 
 
+def budget_job_activities(engine: Engine) -> list[Callable[..., Any]]:
+    """T1.21: reservation expiry and spend reconciliation, over the durable ledger."""
+    return list(BudgetJobActivities(PgBudgetLedger(engine)).all())
+
+
 def build_worker(client: Client, activities: Sequence[Callable[..., Any]]) -> Worker:
     return Worker(
         client,
         task_queue=act.INVESTIGATION_QUEUE,
-        workflows=[IncidentWorkflow, ReconciliationWorkflow],
+        workflows=[IncidentWorkflow, ReconciliationWorkflow, BudgetJobWorkflow],
         activities=activities,
     )
 
@@ -86,7 +98,9 @@ async def run(settings: Settings, stop: asyncio.Event | None = None) -> None:
     )
     engine = make_engine(settings.database_url)
     try:
-        async with build_worker(client, investigation_activities(settings, engine)):
+        chosen = investigation_activities(settings, engine) + budget_job_activities(engine)
+        async with build_worker(client, chosen):
+            await ensure_budget_jobs(client, act.INVESTIGATION_QUEUE)
             log.info(
                 "worker on %s, relay running, scripted skills %s",
                 act.INVESTIGATION_QUEUE,

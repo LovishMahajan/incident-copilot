@@ -18,7 +18,7 @@ import uuid
 from collections import deque
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
-from typing import Any, Awaitable, Callable, Optional
+from typing import Any, Awaitable, Callable, Optional, Protocol
 
 from pydantic import BaseModel, ValidationError
 
@@ -157,10 +157,25 @@ class FleetBudget:
         )
 
 
+@dataclass(frozen=True)
+class AttemptRecord:
+    """One attempt, as the gateway hands it to the ledger to keep (model_attempts, ADR-64)."""
+
+    req: ModelRequest
+    result: ModelResult
+    reservation_id: Optional[str]
+    provider: str
+    model: str
+    adapter_version: str
+    started_at: float
+    finished_at: float
+
+
 class BudgetLedger:
-    """In-memory stand-in for incident_budgets / budget_reservations (Artifact 7). The production
-    implementation does the same arithmetic under a row lock in one transaction. `completed` stands
-    in for the lookup of model_attempts by input_sha256, so it outlives a worker (ADR-52)."""
+    """In-memory stand-in for incident_budgets / budget_reservations (Artifact 7), for tests and
+    the offline evaluation runs. The durable one is aisre.gateway.ledger.PgBudgetLedger, with the
+    same methods; the gateway uses only the async ones. `completed` stands in for the lookup of
+    model_attempts by input_sha256 (ADR-61)."""
 
     def __init__(
         self,
@@ -207,6 +222,24 @@ class BudgetLedger:
             r = Reservation(rid, incident_id, cost, in_tok, out_tok, expires_at)
             self.open[rid] = r
             return r
+
+    async def mark_sent(self, r: Reservation) -> bool:
+        """Write-once, just before the call leaves. False if expiry released it: don't send."""
+        async with self._lock:
+            if r.reservation_id not in self.open:
+                return False
+            r.sent_at = self.clock()
+            return True
+
+    async def evidence_only(self, now: float) -> bool:
+        return self.fleet.evidence_only(now)
+
+    async def reusable(self, incident_id: str, input_sha256: str) -> Optional[ModelResult]:
+        return self.completed.get((incident_id, input_sha256))
+
+    async def record(self, a: AttemptRecord) -> None:
+        if a.result.status == ResultStatus.OK and a.result.input_sha256:
+            self.completed[(a.req.incident_id, a.result.input_sha256)] = a.result
 
     async def settle(self, r: Reservation, usage: Usage, actual_cost: int) -> None:
         async with self._lock:
@@ -265,6 +298,9 @@ class BudgetLedger:
                     self._release(r)
                 done.append(r.reservation_id)
             return done
+
+    async def pending_reconciliation(self) -> list[str]:
+        return list(self.unreconciled)
 
     async def reconcile(self, records: dict[str, tuple[Usage, int]]) -> list[str]:
         """The daily job (Q10.35): `records` maps reservation ID to the usage and cost in the provider's
@@ -347,12 +383,27 @@ class GatewayConfig:
     reservation_grace_s: float = 60.0  # expires_at = deadline + this, after any call has ended
 
 
+class Ledger(Protocol):
+    """What the gateway needs from a budget ledger: BudgetLedger here, or the durable
+    aisre.gateway.ledger.PgBudgetLedger."""
+
+    async def reserve(
+        self, rid: str, incident_id: str, in_tok: int, out_tok: int, cost: int, expires_at: float
+    ) -> Reservation: ...
+    async def mark_sent(self, r: Reservation) -> bool: ...
+    async def settle(self, r: Reservation, usage: Usage, actual_cost: int) -> None: ...
+    async def release_unsent(self, r: Reservation) -> None: ...
+    async def evidence_only(self, now: float) -> bool: ...
+    async def reusable(self, incident_id: str, input_sha256: str) -> Optional[ModelResult]: ...
+    async def record(self, a: AttemptRecord) -> None: ...
+
+
 class ModelGateway:
     def __init__(
         self,
         adapter,
         transport: Transport,
-        ledger: BudgetLedger,
+        ledger: Ledger,
         prices: dict[str, Price],
         schemas: dict[str, type[BaseModel]],
         config: GatewayConfig = GatewayConfig(),
@@ -392,30 +443,38 @@ class ModelGateway:
     async def call(self, req: ModelRequest) -> ModelResult:
         refused = self._unavailable(req)
         if refused:  # Q10.22: refuse, don't degrade silently
-            return self._final(req, 0, ResultStatus.CAPABILITY_UNSUPPORTED, refused)
+            return await self._final(req, 0, ResultStatus.CAPABILITY_UNSUPPORTED, refused)
 
         input_sha256 = sha256(self.adapter.build(req))  # the step's input, as the skill asked
-        reuse_key = (req.incident_id, input_sha256)
-        recorded = self.ledger.completed.get(reuse_key)
+        recorded = await self.ledger.reusable(req.incident_id, input_sha256)
         if recorded is not None:  # ADR-61: no new reservation, no call
             return recorded.model_copy(update={"request_id": req.request_id})
-        if self.ledger.fleet.evidence_only(self.clock()):  # ADR-55: refused here, never mid-step
-            return self._final(req, 0, ResultStatus.BUDGET_REFUSED, "fleet spend limit reached")
+        if await self.ledger.evidence_only(self.clock()):  # ADR-55: refused here, never mid-step
+            return await self._final(
+                req, 0, ResultStatus.BUDGET_REFUSED, "fleet spend limit reached", sha=input_sha256
+            )
 
         attempt, current, last, truncation_retried = req.step_attempts_used, req, None, False
         while attempt < self.cfg.max_attempts:
             attempt += 1
             if self.clock() >= req.deadline_epoch_s:  # Q10.32
-                return self._final(
-                    req, attempt, ResultStatus.DEADLINE_PASSED, "investigation deadline passed"
+                return await self._final(
+                    req,
+                    attempt,
+                    ResultStatus.DEADLINE_PASSED,
+                    "investigation deadline passed",
+                    sha=input_sha256,
                 )
             if not self.breaker.allow():  # unsent and unreserved; no point retrying
-                return self._final(
-                    req, attempt, ResultStatus.PROVIDER_ERROR, "circuit breaker open"
+                return await self._final(
+                    req,
+                    attempt,
+                    ResultStatus.PROVIDER_ERROR,
+                    "circuit breaker open",
+                    sha=input_sha256,
                 )
             last = await self._attempt(current, attempt, input_sha256)
             if last.status == ResultStatus.OK:
-                self.ledger.completed[reuse_key] = last
                 return last
             if (
                 last.stop_reason == StopReason.CONTEXT_EXCEEDED
@@ -461,16 +520,21 @@ class ModelGateway:
         body = self.adapter.build(req)
         in_est = estimate_tokens(json.dumps(body))
         if in_est > MAX_INPUT_TOKENS_PER_CALL:  # ADR-61: refused before reservation
-            return self._final(
+            return await self._final(
                 req,
                 attempt,
                 ResultStatus.BUDGET_REFUSED,
                 f"estimated input {in_est} tokens exceeds {MAX_INPUT_TOKENS_PER_CALL}",
+                sha=input_sha256,
             )
         price = self.prices.get(body["model"])
         if price is None:  # never send a call we can't charge for
-            return self._final(
-                req, attempt, ResultStatus.BAD_REQUEST, f"no configured price for {body['model']}"
+            return await self._final(
+                req,
+                attempt,
+                ResultStatus.BAD_REQUEST,
+                f"no configured price for {body['model']}",
+                sha=input_sha256,
             )
         reserve_cost = cost_micros(
             Usage(input_tokens=in_est, output_tokens=req.max_output_tokens), price
@@ -485,7 +549,9 @@ class ModelGateway:
                 req.deadline_epoch_s + self.cfg.reservation_grace_s,
             )
         except BudgetExceeded as e:
-            return self._final(req, attempt, ResultStatus.BUDGET_REFUSED, str(e))
+            return await self._final(
+                req, attempt, ResultStatus.BUDGET_REFUSED, str(e), sha=input_sha256
+            )
 
         slots = self.incident_slots.setdefault(
             req.incident_id, asyncio.Semaphore(self.cfg.per_incident_concurrency)
@@ -495,15 +561,28 @@ class ModelGateway:
             await asyncio.wait_for(self._acquire(slots), timeout=max(0.0, remaining))
         except asyncio.TimeoutError:
             await self.ledger.release_unsent(res)  # never sent: safe to release
-            return self._final(
-                req, attempt, ResultStatus.DEADLINE_PASSED, "no capacity before deadline"
+            return await self._final(
+                req,
+                attempt,
+                ResultStatus.DEADLINE_PASSED,
+                "no capacity before deadline",
+                sha=input_sha256,
+                reservation_id=res.reservation_id,
             )
         started = self.clock()
         try:
             timeout = min(
                 req.call_timeout_s, max(0.1, req.deadline_epoch_s - self.clock())
             )  # Q10.33
-            res.sent_at = self.clock()
+            if not await self.ledger.mark_sent(res):  # expiry released it: never send
+                return await self._final(
+                    req,
+                    attempt,
+                    ResultStatus.DEADLINE_PASSED,
+                    "reservation expired before sending",
+                    sha=input_sha256,
+                    reservation_id=res.reservation_id,
+                )
             try:
                 resp, completed = await asyncio.wait_for(
                     self.transport(self.adapter.provider, body, timeout), timeout=timeout
@@ -513,7 +592,7 @@ class ModelGateway:
                 await self.ledger.settle(
                     res, Usage(reported=False), res.cost
                 )  # may have consumed tokens
-                return self._final(
+                return await self._final(
                     req,
                     attempt,
                     ResultStatus.TIMEOUT,
@@ -522,6 +601,8 @@ class ModelGateway:
                     cost=res.cost,
                     input_sha256=input_sha256,
                     latency_ms=int((self.clock() - started) * 1000),
+                    reservation_id=res.reservation_id,
+                    started=started,
                 )
         finally:
             slots.release()
@@ -541,8 +622,36 @@ class ModelGateway:
             result.status == ResultStatus.OK and req.output_schema_name and not proposals
         ):  # proposals go to the gate
             result = self._validate(req, result)
-        self.attempt_log.append(result)  # every attempt is recorded (model_attempts, Artifact 7)
+        await self._record(req, result, res.reservation_id, started)
         return result
+
+    async def _record(
+        self,
+        req: ModelRequest,
+        result: ModelResult,
+        reservation_id: Optional[str],
+        started: Optional[float] = None,
+        sha: Optional[str] = None,
+    ) -> None:
+        """Every attempt is recorded (model_attempts, Artifact 7, ADR-64), refused ones too."""
+        self.attempt_log.append(result)
+        if result.input_sha256 is None and sha is not None:
+            result = result.model_copy(update={"input_sha256": sha})
+        now = self.clock()
+        ident = result.identity
+        model_ids = getattr(self.adapter, "model_ids", {})
+        await self.ledger.record(
+            AttemptRecord(
+                req=req,
+                result=result,
+                reservation_id=reservation_id,
+                provider=self.adapter.provider,
+                model=ident.model if ident else model_ids.get(req.model_alias, req.model_alias),
+                adapter_version=self.adapter.version,
+                started_at=now if started is None else started,
+                finished_at=now,
+            )
+        )
 
     async def _acquire(self, slots: asyncio.Semaphore) -> None:
         await slots.acquire()
@@ -578,7 +687,7 @@ class ModelGateway:
             )
         return result.model_copy(update={"parsed": parsed.model_dump(mode="json")})
 
-    def _final(
+    async def _final(
         self,
         req: ModelRequest,
         attempt: int,
@@ -588,7 +697,12 @@ class ModelGateway:
         cost: int = 0,
         input_sha256: Optional[str] = None,
         latency_ms: int = 0,
+        sha: Optional[str] = None,
+        reservation_id: Optional[str] = None,
+        started: Optional[float] = None,
     ) -> ModelResult:
+        """A result the gateway makes itself, recorded like any attempt. `sha` is the step's
+        input fingerprint for the record when the result doesn't carry one."""
         r = ModelResult(
             request_id=req.request_id,
             attempt=attempt,
@@ -600,5 +714,5 @@ class ModelGateway:
             input_sha256=input_sha256,
             latency_ms=latency_ms,
         )
-        self.attempt_log.append(r)
+        await self._record(req, r, reservation_id, started, sha or input_sha256)
         return r
