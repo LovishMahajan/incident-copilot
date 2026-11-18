@@ -310,7 +310,7 @@ def _strings(value) -> Iterable[str]:
     if isinstance(value, str):
         yield value
     elif isinstance(value, dict):
-        for k, v in value.items():  # keys too: EvidenceRequest.params is free-form
+        for k, v in value.items():  # keys too: a secret can sit in a key
             yield str(k)
             if isinstance(v, str):
                 yield f"{k}: {v}"  # a secret split across a key and its value

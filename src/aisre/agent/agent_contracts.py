@@ -10,10 +10,20 @@ from __future__ import annotations
 
 from datetime import datetime
 from enum import Enum
-from typing import Annotated, Generic, Literal, Optional, TypeVar
+from typing import Annotated, Generic, Literal, Optional, TypeVar, Union
 from uuid import UUID
 
-from pydantic import BaseModel, ConfigDict, Field, StringConstraints, model_validator
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    StringConstraints,
+    TypeAdapter,
+    WithJsonSchema,
+    model_serializer,
+    model_validator,
+)
+from pydantic.json_schema import SkipJsonSchema
 
 from aisre.agent.tool_registry import PatchDraftParams
 
@@ -83,13 +93,140 @@ class Evidence(Strict):
 # ---------------------------------------------------------------------------
 # 9.6 Hypothesis schema (model output, then validated)
 # ---------------------------------------------------------------------------
-class EvidenceRequest(Strict):
+# A request is one of the per-tool shapes below, told apart by `tool`. Under strict structured
+# output a free-form `dict` reaches the model as an object with no properties, so it could only
+# send `{}`; each READ tool therefore has its own params shape, written for the model. Fields that
+# the gate defaults (the window) or that refine a query are optional, and an optional field is
+# left out rather than sent as null: no union types, and few optional parameters, against the
+# provider's limits on strict schemas (24 optional, 16 union, per request). Times stay text; the
+# ToolGate parses and bounds everything (tool_registry), so the shape guides the model and the
+# gate still decides.
+Stamp = Annotated[str, WithJsonSchema({"type": "string", "format": "date-time"})]
+
+
+def _no_defaults(schema: dict) -> None:
+    for prop in schema.get("properties", {}).values():
+        prop.pop("default", None)  # an optional field is omitted, never sent as null
+
+
+class RequestParams(Strict):
+    model_config = ConfigDict(json_schema_extra=_no_defaults)
+
+    service: str
+
+    @model_serializer(mode="wrap")
+    def _omit_unset(self, handler):  # an absent field stays absent: the gate fills the window
+        return {k: v for k, v in handler(self).items() if v is not None}
+
+
+class WindowRequest(RequestParams):
+    start: Stamp | SkipJsonSchema[None] = Field(
+        default=None, description="Omit for an hour before the incident started"
+    )
+    end: Stamp | SkipJsonSchema[None] = Field(default=None, description="Omit for now")
+
+
+class AlertRequestParams(RequestParams):
+    pass
+
+
+class LogRequestParams(WindowRequest):
+    level: Literal["error", "warning", "info"] | SkipJsonSchema[None] = None
+    contains: Annotated[str, StringConstraints(max_length=200)] | SkipJsonSchema[None] = None
+
+
+class MetricRequestParams(WindowRequest):
+    metric: Literal[
+        "http_5xx_rate", "http_latency_p95", "http_request_rate", "error_rate_by_version"
+    ]
+
+
+class ChangeRequestParams(WindowRequest):
+    pass
+
+
+class TraceRequestParams(WindowRequest):
+    path: Annotated[str, StringConstraints(max_length=300)] | SkipJsonSchema[None] = None
+
+
+class ErrorGroupRequestParams(WindowRequest):
+    release: Annotated[str, StringConstraints(max_length=100)] | SkipJsonSchema[None] = None
+
+
+class DependencyRequestParams(RequestParams):
+    at: Stamp
+
+
+class KnowledgeRequestParams(RequestParams):
+    query: Annotated[str, StringConstraints(min_length=1, max_length=200)]
+
+
+class _Request(Strict):
     """A bounded, typed request from the hypothesis skill or the critic. READ tools only;
     the coordinator decides whether to run it."""
 
-    tool: str
     reason: Short
-    params: dict[str, str | int]
+
+
+class AlertRequest(_Request):
+    tool: Literal["get_alert"]
+    params: AlertRequestParams
+
+
+class LogRequest(_Request):
+    tool: Literal["get_logs"]
+    params: LogRequestParams
+
+
+class MetricRequest(_Request):
+    tool: Literal["get_metric"]
+    params: MetricRequestParams
+
+
+class ChangeRequest(_Request):
+    tool: Literal["get_changes"]
+    params: ChangeRequestParams
+
+
+class TraceRequest(_Request):
+    tool: Literal["get_traces"]
+    params: TraceRequestParams
+
+
+class ErrorGroupRequest(_Request):
+    tool: Literal["get_error_groups"]
+    params: ErrorGroupRequestParams
+
+
+class DependencyRequest(_Request):
+    tool: Literal["get_dependency_health"]
+    params: DependencyRequestParams
+
+
+class KnowledgeRequest(_Request):
+    tool: Literal["search_runbooks", "search_past_incidents"]
+    params: KnowledgeRequestParams
+
+
+EvidenceRequest = Annotated[
+    Union[
+        AlertRequest,
+        LogRequest,
+        MetricRequest,
+        ChangeRequest,
+        TraceRequest,
+        ErrorGroupRequest,
+        DependencyRequest,
+        KnowledgeRequest,
+    ],
+    Field(discriminator="tool"),
+]
+EVIDENCE_REQUEST: TypeAdapter[EvidenceRequest] = TypeAdapter(EvidenceRequest)
+
+
+def evidence_request(**fields) -> EvidenceRequest:
+    """One request from its fields, as the model would send them: `tool`, `reason`, `params`."""
+    return EVIDENCE_REQUEST.validate_python(fields)
 
 
 class Claim(Strict):

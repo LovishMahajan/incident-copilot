@@ -25,7 +25,6 @@ from aisre.agent.agent_contracts import (
     DiagnosisResult,
     Evidence,
     EvidenceKind,
-    EvidenceRequest,
     HypothesesOut,
     HypothesisDraft,
     IssueKind,
@@ -39,6 +38,7 @@ from aisre.agent.agent_contracts import (
     SkillFailure,
     SkillResult,
     SkillUsage,
+    evidence_request,
 )
 from aisre.agent.coordinator import (
     AgentState,
@@ -418,8 +418,10 @@ class Out:  # stands in for activities.EvidenceOut (Layer 8)
 
 def test_apply_result_drives_a_whole_loop():
     e1 = uuid.uuid4()
-    request = EvidenceRequest(
-        tool="get_metric", reason="version split", params={"metric": "error_rate_by_version"}
+    request = evidence_request(
+        tool="get_metric",
+        reason="version split",
+        params={"service": "checkout", "metric": "error_rate_by_version"},
     )
     lead = HypothesisDraft(
         statement="config",
@@ -1258,7 +1260,7 @@ CONTEXT = SkillContext(incident_id=INC, service="checkout", environment="prod", 
 
 
 def test_collect_in_requests_follow_the_mode():
-    request = EvidenceRequest(tool="get_logs", reason="r", params={})
+    request = evidence_request(tool="get_logs", reason="r", params={"service": "checkout"})
     assert CollectIn(context=CONTEXT, mode="baseline").requests == []
     assert len(CollectIn(context=CONTEXT, mode="targeted", requests=[request] * 3).requests) == 3
     with pytest.raises(ValidationError):
