@@ -19,6 +19,7 @@ on the host; in production on the test host (ADR-51).
 4. Takes one of three slots across every Test Runner process (PgSandboxSlots), then runs the
    sandbox: the harness reproduces first and tests the patch only if the failure appears. The
    queued wait and the run share BUDGET_S, inside the activity's 900 s.
+   Before the run it records `aisre.action.test_started.v1` with the isolation label.
 5. Classifies the bundle (sandbox.classify: passed, failed, not_reproduced, inconclusive,
    timeout, crashed) and stores the test run with its isolation label and
    `aisre.action.tested.v1`, in one transaction, keyed by TestIn.test_key.
@@ -57,7 +58,7 @@ from temporalio.exceptions import ApplicationError
 from temporalio.worker import Worker
 
 from aisre.config import Settings
-from aisre.contracts import ActionTestedData
+from aisre.contracts import ActionTestedData, ActionTestStartedData
 from aisre.evidence.snapshots import S3Snapshots, SnapshotFailed
 from aisre.record import make_engine, uuid7
 from aisre.record.incidents import append_event
@@ -282,6 +283,7 @@ class TestRunner:
             return earlier
         patch = await asyncio.to_thread(self.patches.load, inp.action_id, inp.patch_sha256)
         prepared = await asyncio.to_thread(self.prepare, patch)
+        await asyncio.to_thread(self.record_start, patch)
         started, cancel = datetime.now(UTC), threading.Event()
         task = asyncio.ensure_future(asyncio.to_thread(self.launch, patch, prepared, cancel))
         try:
@@ -301,6 +303,27 @@ class TestRunner:
         return await asyncio.to_thread(
             self.store, inp, patch, prepared, bundle, outcome, started, datetime.now(UTC)
         )
+
+    def record_start(self, patch: StoredPatch) -> None:
+        """`aisre.action.test_started.v1`, with the isolation the run will have (ADR-71)."""
+        with self.engine.begin() as conn:
+            conn.execute(
+                text("SELECT 1 FROM incidents WHERE incident_id = :i FOR UPDATE"),
+                {"i": patch.incident_id},
+            )
+            append_event(
+                conn,
+                patch.incident_id,
+                "aisre.action.test_started.v1",
+                ACTOR,
+                ActionTestStartedData(
+                    action_id=patch.action_id,
+                    patch_sha256=patch.patch_sha256,
+                    isolation=sb.isolation(self.spec),
+                ),
+                occurred_at=datetime.now(UTC),
+                source=SOURCE,
+            )
 
     def stored_result(self, test_key: str, conn: Connection | None = None) -> act.TestOut | None:
         if conn is None:

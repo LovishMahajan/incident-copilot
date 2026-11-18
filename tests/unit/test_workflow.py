@@ -335,7 +335,12 @@ class Fakes:
             o = f.script["test"]
             if isinstance(o, list):
                 o = o[min(f.calls["run_sandbox_test"], len(o)) - 1]
-            return act.TestOut("t1", o != "not_reproduced", o, FIX_DIGEST)
+            return act.TestOut("t1", o != "not_reproduced", o, FIX_DIGEST, "development-runc")
+
+        @activity.defn(name="open_draft_pull_request")
+        async def open_draft_pull_request(inp: act.ReviewIn) -> act.ReviewOut:
+            await f.enter("open_draft_pull_request", inp)
+            return act.ReviewOut(f"orders-api#{f.calls['open_draft_pull_request']}", "u")
 
         @activity.defn(name="request_approval")
         async def request_approval(inp: act.ApprovalRequestIn) -> act.ApprovalRequestOut:
@@ -404,6 +409,7 @@ class Fakes:
             review_diagnosis,
             draft_patch,
             run_sandbox_test,
+            open_draft_pull_request,
             request_approval,
             escalate_approval,
             close_approval_request,
@@ -782,8 +788,63 @@ async def test_release_a_hands_over_the_tested_recommendation():
     f = Fakes(remediation=False)
     await run_case(f, hand_over_then_close)
     assert ("testing", "handed_over", "withdrawn") in f.transitions
-    assert f.records[-1].reason == "release_a_recommendation"
+    assert f.records[-1].reason == (
+        "release_a_recommendation: fix passed its sandbox test (development-runc);"
+        " draft pull request orders-api#1"
+    )
     assert f.calls["request_approval"] == 0 and f.calls["dispatch_change"] == 0
+    (review,) = f.inputs["open_draft_pull_request"]
+    assert (review.action_id, review.test_run_id, review.review_key) == ("a1", "t1", "a1:review:1")
+    # The pull request comes after the test, and before the hand-over.
+    order = [
+        s for s in f.steps if s in ("run_sandbox_test", "open_draft_pull_request", "hand_over")
+    ]
+    assert order == ["run_sandbox_test", "open_draft_pull_request", "hand_over"]
+
+
+@pytest.mark.asyncio
+async def test_release_a_hands_over_even_when_the_pull_request_cannot_be_opened():
+    f = Fakes(remediation=False, raises={"open_draft_pull_request"})
+    await run_case(f, hand_over_then_close)
+    assert ("testing", "handed_over", "withdrawn") in f.transitions
+    assert f.records[-1].reason.endswith(
+        "draft pull request could not be opened; the patch is on the action"
+    )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "outcome", ["failed", "not_reproduced", "inconclusive", "timeout", "crashed"]
+)
+async def test_release_a_opens_no_pull_request_unless_the_fix_passed(outcome):
+    f = Fakes(remediation=False, test=outcome)
+    await run_case(f, hand_over_then_close)
+    assert f.calls["open_draft_pull_request"] == 0
+    assert ("testing", "handed_over", "test_failed") in f.transitions
+
+
+@pytest.mark.asyncio
+async def test_release_a_up_to_three_candidates_one_at_a_time_then_the_pull_request():
+    f = Fakes(remediation=False, test=["failed", "failed", "passed"])
+    await run_case(f, hand_over_then_close)
+    assert f.calls["draft_patch"] == 3 and f.calls["run_sandbox_test"] == 3
+    assert [i.candidate_no for i in f.inputs["draft_patch"]] == [1, 2, 3]
+    assert [(i.action_id) for i in f.inputs["run_sandbox_test"]] == ["a1", "a2", "a3"]
+    assert [s for s in f.steps if s in ("draft_patch", "run_sandbox_test")] == [
+        "draft_patch", "run_sandbox_test"] * 3  # fmt: skip
+    assert f.inputs["open_draft_pull_request"][0].action_id == "a3"
+    assert ("testing", "handed_over", "withdrawn") in f.transitions
+
+
+@pytest.mark.asyncio
+async def test_not_reproduced_hands_over_saying_the_failure_did_not_reproduce():
+    f = Fakes(remediation=False, test="not_reproduced")
+    await run_case(f, hand_over_then_close)
+    assert f.calls["draft_patch"] == 1  # not a failed fix: no second candidate
+    assert f.records[-1].reason.startswith(
+        "fix not tested: the failure did not reproduce at the patch's base revision"
+        " (development-runc)"
+    )
 
 
 @pytest.mark.asyncio
@@ -1383,7 +1444,7 @@ async def test_three_failed_candidates_end_the_attempt():
         f.transitions[-1] == ("testing", "handed_over", "test_failed")
         and f.records[-1].action_id == "a3"
     )
-    assert f.handovers == ["fix not proven: failed"]
+    assert f.handovers == ["fix not proven: failed (development-runc)"]
 
 
 @pytest.mark.parametrize("outcome", ["not_reproduced", "inconclusive", "crashed", "timeout"])
@@ -1391,7 +1452,13 @@ async def test_three_failed_candidates_end_the_attempt():
 async def test_only_a_fix_that_ran_and_failed_earns_another_candidate(outcome):
     f = Fakes(test=outcome)
     await run_case(f, hand_over_then_close)
-    assert f.calls["draft_patch"] == 1 and f.handovers == [f"fix not proven: {outcome}"]
+    expected = (
+        "fix not tested: the failure did not reproduce at the patch's base revision"
+        " (development-runc); a person checks the diagnosis"
+        if outcome == "not_reproduced"
+        else f"fix not proven: {outcome} (development-runc)"
+    )
+    assert f.calls["draft_patch"] == 1 and f.handovers == [expected]
 
 
 @pytest.mark.asyncio

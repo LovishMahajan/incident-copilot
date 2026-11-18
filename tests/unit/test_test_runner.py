@@ -60,6 +60,9 @@ class Runner(tr.TestRunner):
     def stored_result(self, test_key, conn=None):
         return None
 
+    def record_start(self, patch):
+        self.started = True
+
     def store(self, inp, patch, prepared, bundle, outcome, started, finished):
         self.stored.append((outcome, bundle))
         return act.TestOut("t1", bool(bundle and bundle.reproduction_before), outcome.value)
