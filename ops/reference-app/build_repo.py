@@ -8,6 +8,10 @@ reference-incident: release.json, config-diff.txt):
 - `cfg-41` (also `v2.14.0`): the source in orders-api/, with ORDER_TAX_RATE_BPS=825. Tests pass.
 - `cfg-42` (also `v2.14.1`), on `main`: "Update tax rate config to match finance sheet (8.25%)",
   changing only deploy/production.env to ORDER_TAX_RATE_BPS=8.25. Tests fail with the ValueError.
+- Branch `tolerant` (M2's `not_reproduced` case, T2.12): from `cfg-41`, a commit that parses the
+  rate as a decimal (`tolerant-41`), then the same configuration change (`tolerant-42`). At its
+  head the reference request does not fail, so the failure doesn't reproduce there. `main` and its
+  commit IDs are unchanged by it.
 
 Author, committer and dates are fixed, so the same source gives the same commit IDs on every
 machine. They are not the fixture's `7d3e91a`: a commit ID is a hash of its content and can't be
@@ -31,6 +35,17 @@ IDENTITY = {
     "GIT_COMMITTER_NAME": "synthetic-engineer-a",
     "GIT_COMMITTER_EMAIL": "synthetic-engineer-a@example.invalid",
 }
+PRICING = "orders/pricing.py"
+STRICT_PARSE = "tax_rate_bps = int(settings.order_tax_rate_bps)"
+TOLERANT_PARSE = "tax_rate_bps = Decimal(settings.order_tax_rate_bps)"
+TOLERANT = [  # (date, message, tags), on branch `tolerant` from cfg-41
+    ("2026-10-02T09:00:00+00:00", "Parse the tax rate as a decimal", ["tolerant-41"]),
+    (
+        "2026-10-20T13:38:40+00:00",
+        "Update tax rate config to match finance sheet (8.25%)",
+        ["tolerant-42"],
+    ),
+]
 HISTORY = [  # (date, message, tags)
     ("2026-10-01T09:00:00+00:00", "orders-api 2.14.0", ["v2.14.0", "cfg-41"]),
     (
@@ -74,6 +89,21 @@ def build(dest: Path) -> dict[str, str]:
         for name in names:
             git(dest, "tag", name)
             tags[name] = git(dest, "rev-parse", "HEAD")
+    git(dest, "checkout", "--quiet", "-b", "tolerant", "cfg-41")
+    pricing = dest / PRICING
+    for n, (date, message, names) in enumerate(TOLERANT):
+        if n == 0:
+            if STRICT_PARSE not in pricing.read_text():
+                raise SystemExit(f"{PRICING} must hold {STRICT_PARSE}")
+            pricing.write_text(pricing.read_text().replace(STRICT_PARSE, TOLERANT_PARSE))
+        else:
+            config.write_text(config.read_text().replace(GOOD, BAD))
+        git(dest, "add", "--all")
+        git(dest, "commit", "--quiet", "--no-gpg-sign", "-m", message, date=date)
+        for name in names:
+            git(dest, "tag", name)
+            tags[name] = git(dest, "rev-parse", "HEAD")
+    git(dest, "checkout", "--quiet", "main")
     return tags
 
 

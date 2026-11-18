@@ -10,13 +10,15 @@ or `runc` only when the environment is development or test, with every other fla
 every result labelled with its isolation (`isolation`). The checkout reaches the sandbox on
 standard input (`build_payload`): `git archive` of the exact base commit, the patch's canonical
 bytes and the run description, never a mounted path. A patch touching a protected path is
-refused before anything starts (`refuse_protected`). The image is the one built from
-`ops/sandbox/`, named by digest.
+refused before anything starts (`refuse_protected`), by the same rule the draft is checked with
+(patch.check_paths, ADR-72): a deployment file is allowed only as an exact restoration by a
+config revert, with the facts read here from the Test Runner's own mirror (`revert_facts`), and
+the harness gets the restored files' hashes and checks them again. The image is the one built
+from `ops/sandbox/`, named by digest.
 """
 
 from __future__ import annotations
 
-import fnmatch
 import hashlib
 import io
 import json
@@ -33,7 +35,13 @@ from pathlib import Path
 from typing import Any, Optional
 
 from aisre.agent.validation import mask_secrets
-from aisre.remediation.patch import PROTECTED, PatchRejected
+from aisre.remediation.patch import (
+    PROTECTED,
+    FileChangeFacts,
+    PatchRejected,
+    RevertFacts,
+    check_paths,
+)
 
 log = logging.getLogger(__name__)
 
@@ -360,10 +368,8 @@ def read_bundle(stdout: str, exit_code: int) -> Optional[ResultBundle]:
 # ---------------------------------------------------------------------------
 # What the sandbox receives (ADR-71): protected paths, the checkout, the harness plan
 # ---------------------------------------------------------------------------
-# The launcher refuses these before anything starts, and the harness refuses them again: the
-# tests, their configuration, CI, policies, the harness and the sandbox, secrets. `deploy/**` is
-# a draft-time boundary only (check_boundaries), pending T2.10 (ADR-71).
-LAUNCH_PROTECTED = [p for p in PROTECTED if p != "deploy/**"]
+# patch.PROTECTED, the one list: the launcher refuses these before anything starts, and the
+# harness refuses them again, except the restorations check_paths allowed (ADR-72).
 MAX_PATCH_BYTES = 1024 * 1024
 REVISION = re.compile(r"[\w][\w./-]{0,199}")
 
@@ -392,24 +398,65 @@ HARNESS_PLANS: dict[str, dict[str, Any]] = {
 }
 
 
-def refuse_protected(canonical: dict[str, Any]) -> None:
-    """T2.4: a patch touching a protected path is refused before any volume or container
-    exists. `canonical` is Patch.canonical(), as the Test Runner reads it from storage."""
-    for f in canonical.get("files") or []:
-        path = str(f.get("path", ""))
-        rooted = "/" + path
-        if (
-            not path
-            or path.startswith("/")
-            or ".." in path.split("/")
-            or any(
-                fnmatch.fnmatchcase(path, p)
-                or fnmatch.fnmatchcase(rooted, p)
-                or fnmatch.fnmatchcase(rooted, "*/" + p)
-                for p in LAUNCH_PROTECTED
-            )
-        ):
-            raise PatchRejected("protected_path", f"{path} is protected; nothing was started")
+def refuse_protected(
+    canonical: dict[str, Any], revert: RevertFacts | None = None
+) -> dict[str, str]:
+    """T2.4, T2.10: a patch touching a protected path is refused before any volume or container
+    exists. `canonical` is Patch.canonical(), as the Test Runner reads it from storage; `revert`
+    is what its `reverted_commit` changed, from the mirror (revert_facts). Returns the restored
+    protected files, path -> new_sha256, for the harness."""
+    files = [
+        (str(f.get("path", "")), str(f.get("old_sha256", "")), str(f.get("new_sha256", "")))
+        for f in canonical.get("files") or []
+    ]
+    try:
+        return check_paths(
+            str(canonical.get("action_kind", "")), files, canonical.get("reverted_commit"), revert
+        )
+    except PatchRejected as e:
+        raise PatchRejected(e.code, f"{e.detail}; nothing was started") from None
+
+
+def _blob_sha256(repo: Path, rev: str, path: str, *, run=subprocess.run) -> str | None:
+    git = ["git", "-C", str(repo), "-c", "core.hooksPath=/dev/null"]
+    found = run([*git, "cat-file", "-e", f"{rev}:{path}"], capture_output=True)
+    if found.returncode != 0:
+        return None
+    body = run([*git, "cat-file", "blob", f"{rev}:{path}"], check=True, capture_output=True)
+    return hashlib.sha256(body.stdout).hexdigest()
+
+
+def revert_facts(repo: Path, commit: str, *, run=subprocess.run) -> RevertFacts:
+    """What `commit` changed, from the Test Runner's own mirror: each path with its content hash
+    at the commit's first parent and at the commit (patch.RevertFacts). A root commit has no
+    parent, so nothing it added can be restored."""
+    if not REVISION.fullmatch(commit):
+        raise SpecRejected("not a revision name")
+    git = ["git", "-C", str(repo), "-c", "core.hooksPath=/dev/null"]
+    full = run(
+        [*git, "rev-parse", "--verify", "--quiet", "--end-of-options", f"{commit}^{{commit}}"],
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout.strip()
+    parents = run(
+        [*git, "rev-list", "--parents", "-n", "1", full], check=True, capture_output=True, text=True
+    ).stdout.split()[1:]
+    names = run(
+        [*git, "diff-tree", "-r", "--root", "--no-commit-id", "--name-only", "-z", full],
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout.split("\0")
+    files = {
+        name: FileChangeFacts(
+            _blob_sha256(repo, parents[0], name, run=run) if parents else None,
+            _blob_sha256(repo, full, name, run=run),
+        )
+        for name in names
+        if name
+    }
+    return RevertFacts(full, files)
 
 
 def checkout(repo: Path, base_revision: str, *, run=subprocess.run) -> tuple[str, bytes]:
@@ -442,16 +489,20 @@ def build_payload(
     checkout_tar: bytes,
     canonical_patch: bytes,
     plan: dict[str, Any],
+    restored: dict[str, str] | None = None,
 ) -> bytes:
     """The tar piped to the harness: run.json, patch.json (the patch's canonical bytes, which the
-    harness hashes itself) and checkout.tar. Refused if it can't fit the workspace."""
+    harness hashes itself) and checkout.tar. `restored` is refuse_protected's answer: the protected
+    files the patch may restore, with the hash each must have afterwards. Refused if it can't fit
+    the workspace."""
     run_json = {
         "run_id": run_id,
         "base_revision": commit,
         "image_digest": spec.image,
         "spec_version": spec.spec_version,
         "per_test_s": spec.per_test_s,
-        "protected": LAUNCH_PROTECTED,
+        "protected": PROTECTED,
+        "restored": restored or {},
         "plan": plan,
     }
     if len(canonical_patch) > MAX_PATCH_BYTES:

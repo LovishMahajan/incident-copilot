@@ -69,6 +69,26 @@ def _no_address(value: str) -> str:
 
 QueryText = Annotated[str, AfterValidator(_no_address)]
 
+# T2.10 (ADR-72): a release name is a version, and a four-part version (`10.2.1.3`) reads as an
+# IPv4 address. Exactly that shape passes, with an optional `v` and a build suffix; anything else
+# still goes through the address check, so a port, a path, a scheme or a host name is refused.
+_VERSION = re.compile(r"v?\d{1,9}(?:\.\d{1,9}){1,3}(?=$|[-+])")
+
+
+def _release(value: str) -> str:
+    """The numeric core is exempt from the IPv4 rule; whatever follows it is checked as before."""
+    core = _VERSION.match(unquote(value))
+    if core is None:
+        return _no_address(value)
+    rest = unquote(value)[core.end() :]
+    if rest and not re.fullmatch(r"[-+][0-9A-Za-z][0-9A-Za-z.-]{0,40}", rest):
+        raise ValueError("an address is not a query term")
+    _no_address(rest)
+    return value
+
+
+ReleaseText = Annotated[str, AfterValidator(_release)]
+
 
 class WindowParams(_P):
     service: str
@@ -103,7 +123,7 @@ class TraceQuery(WindowParams):
 
 
 class ErrorGroupQuery(WindowParams):
-    release: Optional[QueryText] = Field(default=None, max_length=100)
+    release: Optional[ReleaseText] = Field(default=None, max_length=100)
 
 
 class DependencyQuery(_P):

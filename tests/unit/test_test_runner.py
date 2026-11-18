@@ -112,10 +112,21 @@ async def test_a_patch_touching_tests_is_refused_before_anything_starts():
 
 
 @pytest.mark.asyncio
+async def test_a_deploy_edit_that_is_not_a_restoration_is_refused_before_anything_starts():
+    """ADR-72: the launcher's rule is the draft's. No reverted commit, so nothing to restore."""
+    docker = Docker()
+    runner = Runner(canonical("deploy/production.env"), run=docker.run, popen=docker.popen)
+    with pytest.raises(ApplicationError) as e:
+        await ActivityEnvironment().run(runner.run_sandbox_test, IN)
+    assert e.value.type == "PatchRejected" and "protected" in str(e.value)
+    assert not [c for c in docker.calls if c[:1] == ["docker"]] and runner.stored == []
+
+
+@pytest.mark.asyncio
 async def test_cancel_kills_the_sandbox_and_cleans_up_before_the_activity_ends():
     docker = Docker()
     runner = Runner(
-        canonical("deploy/production.env"),
+        canonical("orders/settings.py"),
         run=docker.run,
         popen=docker.popen,
         limiter=sb.SandboxLimiter(),
@@ -146,7 +157,7 @@ async def test_no_slot_in_the_budget_is_inconclusive_and_starts_nothing():
     full = sb.SandboxLimiter(1)
     assert full.acquire(0)
     runner = Runner(
-        canonical("deploy/production.env"),
+        canonical("orders/settings.py"),
         run=docker.run,
         popen=docker.popen,
         limiter=full,
@@ -159,7 +170,7 @@ async def test_no_slot_in_the_budget_is_inconclusive_and_starts_nothing():
 
 @pytest.mark.asyncio
 async def test_the_bundle_becomes_the_outcome():
-    body = canonical("deploy/production.env")
+    body = canonical("orders/settings.py")
     sha = hashlib.sha256(body).hexdigest()
     suites = [dataclasses.asdict(sb.SuiteResult(n, True, True, 1, 0)) for n in sb.REQUIRED_SUITES]
     line = json.dumps(

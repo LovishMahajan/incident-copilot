@@ -270,7 +270,11 @@ def code_checks(
 
 
 # ADR-59. All three lists are provisional: each wider form can reject ordinary text, and the first
-# evaluation run decides how far they go. The secret patterns are telemetry.SECRET_PATTERNS'
+# evaluation run decides how far they go. T2.10 (ADR-72) decided the two cases known to reject real
+# text: a bare host with a path (`registry.internal/app`) stays a link in anything the model
+# writes, and is allowed only in file content a patch restores from an earlier revision
+# (CONTENT_FIELDS); a four-part version (`10.2.1.3`) is a release, not an address, in the error
+# tracker's `release` parameter (tool_registry.ReleaseText). The secret patterns are telemetry.SECRET_PATTERNS'
 # credential rows (Layer 12, tested equal); its e-mail, card and address rows would match ordinary IDs.
 _SECRET_PATTERNS = [
     re.compile(
@@ -306,28 +310,53 @@ _COMMAND = re.compile(
 )
 
 
-def _strings(value) -> Iterable[str]:
+# File content a patch proposes (agent_contracts.PatchFileEdit.new_content). Most of it is the
+# repository's own text, which may name hosts and URLs (`PAYMENTS_URL=http://payments.internal`),
+# so the gateway scans it for secrets only; once code has diffed it against the base, the lines it
+# adds are scanned for links and commands too (check_added_lines), except the lines of a file
+# check_paths verified as an exact restoration of an earlier revision (T2.10, ADR-72).
+CONTENT_FIELDS = frozenset({"new_content"})
+
+
+def _strings(value, content: bool = False) -> Iterable[tuple[str, bool]]:
+    """Every string, and whether it is file content (CONTENT_FIELDS)."""
     if isinstance(value, str):
-        yield value
+        yield value, content
     elif isinstance(value, dict):
         for k, v in value.items():  # keys too: a secret can sit in a key
-            yield str(k)
+            inner = content or k in CONTENT_FIELDS
+            yield str(k), content
             if isinstance(v, str):
-                yield f"{k}: {v}"  # a secret split across a key and its value
-            yield from _strings(v)
+                yield f"{k}: {v}", inner  # a secret split across a key and its value
+            yield from _strings(v, inner)
     elif isinstance(value, list):
         for v in value:
-            yield from _strings(v)
+            yield from _strings(v, content)
 
 
 def check_output(output: BaseModel) -> None:
-    """Scan every string in one model output. Raises UnsafeOutput on a secret, link or command."""
-    for text in _strings(output.model_dump(mode="json")):
+    """Scan every string in one model output. Raises UnsafeOutput on a secret, link or command.
+    File content is scanned for secrets here and line by line later (check_added_lines)."""
+    for text, content in _strings(output.model_dump(mode="json")):
         if any(p.search(text) for p in _SECRET_PATTERNS):
             raise UnsafeOutput("secret")
+        if content:
+            continue
         if _LINK.search(text):
             raise UnsafeOutput("link")
         if _COMMAND.search(text):
+            raise UnsafeOutput("command")
+
+
+def check_added_lines(lines: Iterable[str]) -> None:
+    """The lines a patch adds that no earlier revision had: secrets, links and commands, as in
+    any model text. Raises UnsafeOutput."""
+    for line in lines:
+        if any(p.search(line) for p in _SECRET_PATTERNS):
+            raise UnsafeOutput("secret")
+        if _LINK.search(line):
+            raise UnsafeOutput("link")
+        if _COMMAND.search(line):
             raise UnsafeOutput("command")
 
 
