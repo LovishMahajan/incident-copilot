@@ -18,6 +18,9 @@ served: it is what an investigation must find, not something monitoring knows.
     GET /v1/scenarios/<name>/dependencies     dependency-health.json
     GET /healthz
 
+Each case of an evaluation case store under `eval/` (Artifact 12.8) is a scenario too, named by
+its case ID and served from its `fixture/` folder.
+
 A scenario name may withhold files, for runs like the reference incident's honesty variant:
 `reference-incident:without=release.json,config-diff.txt` serves that folder as if those files
 were missing, so `changes` is 404 and its adapter reports the source unavailable.
@@ -65,16 +68,24 @@ NEEDS = {  # the file each kind can't be served without
 }
 
 
+def scenarios(root: Path) -> dict[str, Path]:
+    """Scenario name -> folder: each folder holding an alert.json, and each case of an evaluation
+    case store (Artifact 12.8, `eval/<suite>/cases/<case_id>/fixture/`), by its case ID."""
+    found = {p.parent.name: p.parent for p in root.glob("*/alert.json")}
+    return found | {
+        p.parents[1].name: p.parent for p in root.glob("eval/*/cases/*/fixture/alert.json")
+    }
+
+
 def read(root: Path, scenario: str, kind: str, query: dict[str, str]) -> Any:
     """The answer for one scenario and kind. Raises FileNotFoundError or KeyError."""
     scenario, _, option = scenario.partition(":")
     withheld = set(option.removeprefix("without=").split(",")) if option else set()
     if option and not option.startswith("without="):
         raise KeyError(option)
-    names = {p.parent.name for p in root.glob("*/alert.json")}
-    if scenario not in names or NEEDS[kind] in withheld:
+    d = scenarios(root).get(scenario)
+    if d is None or NEEDS[kind] in withheld:
         raise FileNotFoundError(scenario)
-    d = root / scenario
     start, end = query.get("start"), query.get("end")
     if kind == "metrics":
         rows = csv.DictReader(_comment_free(d / "metrics.csv"))
@@ -153,7 +164,7 @@ def handler_for(root: Path) -> type[BaseHTTPRequestHandler]:
             if parts == ["healthz"]:
                 return self.reply(200, {"status": "ok"})
             if parts == ["v1", "scenarios"]:
-                return self.reply(200, sorted(p.parent.name for p in root.glob("*/alert.json")))
+                return self.reply(200, sorted(scenarios(root)))
             if len(parts) == 4 and parts[:2] == ["v1", "scenarios"]:
                 try:
                     return self.reply(200, read(root, parts[2], parts[3], query))

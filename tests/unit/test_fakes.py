@@ -224,7 +224,13 @@ def test_monitoring_withholds_files_for_the_honesty_variant(monitoring_url):
 
 def test_monitoring_serves_the_reference_incident(monitoring_url):
     base = monitoring_url + "/v1/scenarios"
-    assert call(base)[1] == ["reference-incident"]
+    assert call(base)[1] == [  # with the evaluation seed's cases, by case ID (T1.22)
+        "dev-3f9c2a71",
+        "dev-8b14e6d0",
+        "reference-incident",
+        "seed-0001",
+        "seed-0002",
+    ]
     ref = base + "/reference-incident"
     assert call(ref + "/alert")[1]["incident_create"]["service"] == "orders-api"
     assert call(ref + "/traces")[1]["trace_id"]
@@ -246,7 +252,14 @@ def test_monitoring_filters_by_time(monitoring_url):
 
 
 @pytest.mark.parametrize(
-    "path", ["reference-incident/answer-key", "..%2F..%2Fsrc/alert", "nope/alert"]
+    "path",
+    [
+        "reference-incident/answer-key",
+        "..%2F..%2Fsrc/alert",
+        "nope/alert",
+        "keys-dev-seed-1/alert",
+        "dev-seed-1/alert",
+    ],
 )
 def test_monitoring_never_serves_the_answer_key_or_other_files(monitoring_url, path):
     assert call(f"{monitoring_url}/v1/scenarios/{path}")[0] == 404

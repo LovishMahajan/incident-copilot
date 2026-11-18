@@ -115,6 +115,8 @@ module = [
     "aisre.retrieval.corpus",
     "aisre.agent.skills",
     "aisre.agent.skills.*",
+    "aisre.evaluation.seed",
+    "aisre.evaluation.runner",
 ]
 # `strict = true` here applies to every module, so name the flags --strict sets.
 disallow_any_generics = true

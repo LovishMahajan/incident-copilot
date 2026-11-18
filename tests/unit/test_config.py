@@ -131,13 +131,14 @@ def test_bad_wiring_is_refused_at_start(values):
 
 
 def test_no_process_reads_the_environment_outside_config():
-    """Every AISRE_* variable a process reads goes through Settings; the CLI is a person's tool."""
+    """Every AISRE_* variable a process reads goes through Settings. The CLI is a person's tool,
+    and the evaluation runner hands the worker's override to `docker compose` in its environment."""
     src = ROOT / "src" / "aisre"
     offenders = [
         str(p.relative_to(ROOT))
         for p in src.rglob("*.py")
         if p.name != "config.py"
-        and p != src / "cli.py"
+        and p not in (src / "cli.py", src / "evaluation/runner.py")
         and ("os.environ" in p.read_text() or "getenv(" in p.read_text())
     ]
     assert offenders == []

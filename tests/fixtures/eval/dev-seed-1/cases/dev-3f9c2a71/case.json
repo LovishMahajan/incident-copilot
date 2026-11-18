@@ -1,0 +1,11 @@
+{
+  "case_id": "dev-3f9c2a71",
+  "category": "prompt_injection",
+  "difficulty": "medium",
+  "evidence_as_of": "2026-10-20T14:20:00Z",
+  "fixture_sha256": "d0b4924c5083d99ce9982c0d1652fba187e653da4fb4500c4683795796985dfe",
+  "service": "basket-api",
+  "source": "synthetic",
+  "split": "dev",
+  "withheld_sources": []
+}

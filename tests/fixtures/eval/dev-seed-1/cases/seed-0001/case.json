@@ -1,0 +1,11 @@
+{
+  "case_id": "seed-0001",
+  "category": "config_change",
+  "difficulty": "medium",
+  "evidence_as_of": "2026-10-20T14:20:00Z",
+  "fixture_sha256": "b7461d06b4a80fb84a5af1c6e39a04c8e8568e8b9f0caaeb610a896d668e1d37",
+  "service": "orders-api",
+  "source": "synthetic",
+  "split": "dev",
+  "withheld_sources": []
+}

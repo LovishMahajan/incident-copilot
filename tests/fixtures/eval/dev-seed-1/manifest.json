@@ -1,0 +1,38 @@
+{
+  "answer_key_sha256": "14e11d5054ab8f062324ef4e60b72153848fa74527de81f6a07caa6c6e609ed6",
+  "case_ids": [
+    "dev-3f9c2a71",
+    "dev-8b14e6d0",
+    "seed-0001",
+    "seed-0002"
+  ],
+  "category_counts": {
+    "config_change": {
+      "dev": 1,
+      "heldout": 0
+    },
+    "conflicting_evidence": {
+      "dev": 1,
+      "heldout": 0
+    },
+    "insufficient_evidence": {
+      "dev": 1,
+      "heldout": 0
+    },
+    "prompt_injection": {
+      "dev": 1,
+      "heldout": 0
+    }
+  },
+  "fixtures_sha256": "276b2dbe977d6492fcf1faaaa0a027042430ca48ffc85836e005291128ee9cfb",
+  "frozen_at": "not frozen: development seed (T1.22)",
+  "frozen_by": "not frozen: development seed (T1.22)",
+  "labelling_record": "none: written with the code by one author, not labelled by two SREs",
+  "previous_version": null,
+  "redaction_review": "none: every record is synthetic; no redaction review was held",
+  "split_counts": {
+    "dev": 4,
+    "heldout": 0
+  },
+  "version": "dev-seed-1"
+}

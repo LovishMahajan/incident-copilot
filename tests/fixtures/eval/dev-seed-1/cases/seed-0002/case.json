@@ -1,0 +1,14 @@
+{
+  "case_id": "seed-0002",
+  "category": "insufficient_evidence",
+  "difficulty": "medium",
+  "evidence_as_of": "2026-10-20T14:20:00Z",
+  "fixture_sha256": "ae3801fcadcfd4679f3309f8a76e89f1f3cdf733fb98282cfd699f531e11f6e2",
+  "service": "orders-api",
+  "source": "synthetic",
+  "split": "dev",
+  "withheld_sources": [
+    "release.json",
+    "config-diff.txt"
+  ]
+}

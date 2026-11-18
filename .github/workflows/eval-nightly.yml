@@ -1,0 +1,67 @@
+# Artifact 12.9, 13.5 T1.22: the nightly evaluation run on the development split (ADR-65).
+# Brings the Compose stack up, runs every case of the development seed through it with
+# aisre.evaluation.runner, scores the run with the keys afterwards, and keeps the scorecard.
+#
+# Spend (ADR-56): a nightly run stops at $10. The runner starts a case only while the run's
+# settled model spend plus one incident's $2 cap stays within --max-spend-usd, so it can't pass
+# the limit; cases left unrun are listed and count as wrong.
+#
+# Today the stack's worker calls Compose's fake model provider (.env.example), so the run spends
+# nothing: the scorecard's spend is list price applied to the fake's token counts, not a bill.
+# A run against the real model needs the provider key from the secrets manager, and is a
+# separate change (ADR-65: nightly accuracy uses the real model).
+name: Nightly evaluation
+
+on:
+  schedule:
+    - cron: "17 3 * * *" # 03:17 UTC
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: eval-nightly
+  cancel-in-progress: false
+
+defaults:
+  run:
+    shell: bash
+
+env:
+  UV_VERSION: "0.12.6"
+  PYTHON_VERSION: "3.12"
+  MAX_SPEND_USD: "10"
+
+jobs:
+  dev-split:
+    name: Development split through the stack
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2 # v10.3.3
+        with:
+          version: ${{ env.UV_VERSION }}
+      - name: Install
+        run: uv sync --python "$PYTHON_VERSION" --locked
+      - name: Stack up (fake values only)
+        run: |
+          cp .env.example .env
+          docker compose up -d --build --wait
+          docker compose exec -T api python -m aisre.api.dev_seed
+      - name: Run and score the development seed, stopping at the spend limit
+        run: |
+          uv run python -m aisre.evaluation.runner tests/fixtures/eval/dev-seed-1 \
+            tests/fixtures/eval/keys-dev-seed-1 --out eval-run --max-spend-usd "$MAX_SPEND_USD"
+          { echo "### Development split"; echo; echo '```'; cat eval-run/scorecard.json; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
+      - name: Keep the run
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: eval-run
+          path: eval-run/
+          if-no-files-found: warn
+      - name: Stack down
+        if: always()
+        run: docker compose down -v
