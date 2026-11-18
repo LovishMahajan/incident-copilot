@@ -36,7 +36,7 @@ Settings come from `AISRE_*` environment variables (`src/aisre/config.py`). Copy
 
 ## Build and test the schema
 
-`db/schema.sql` is frozen: Alembic's `0001_baseline` (in `db/migrations/`, configured by `alembic.ini` at the root) applies it unchanged, and every later change is a new migration. Migrations run as the owning role, from `AISRE_MIGRATION_DATABASE_URL`, and record their version in the `aisre_migrations` schema. `schema-tests.sql` runs as a superuser straight after. 223 of 223 checks pass on PostgreSQL 16.16 and 17.12 (2026-11-18).
+`db/schema.sql` is frozen: Alembic's `0001_baseline` (in `db/migrations/`, configured by `alembic.ini` at the root) applies it unchanged, and every later change is a new migration. Migrations run as the owning role, from `AISRE_MIGRATION_DATABASE_URL`, and record their version in the `aisre_migrations` schema. `schema-tests.sql` runs as a superuser straight after. 226 of 226 checks pass on PostgreSQL 17.12 after migration `0008_m2_review_ref` (2026-11-18; 223 of 223 on 16.16 and 17.12 before it; 16.16 not rerun since).
 
 ```
 psql -U postgres -c "CREATE ROLE aisre_owner LOGIN CREATEROLE"
@@ -69,6 +69,7 @@ docker compose down -v           # stop and delete the data
 | Fake token issuer | http://127.0.0.1:59100 (`/jwks`, `POST /token`) |
 | Fake model provider | http://127.0.0.1:59200 (`POST /v1/messages`, any `x-api-key`) |
 | Fake monitoring source | http://127.0.0.1:59300 (`/v1/scenarios`) |
+| Fake review system (M2) | http://127.0.0.1:59400 (`/v1/repos/orders-api`, any bearer token; `/_fake/pulls`) |
 | Demo viewer (ADR-70) | http://127.0.0.1:58080 (read-only page; see Demo viewer below) |
 
 **Sign-in** (`src/aisre/api/auth.py`, T1.3). Every `/v1` call sends `Authorization: Bearer <token>`. The API verifies the token against the issuer's keys (`AISRE_OIDC_ISSUER`, `AISRE_OIDC_AUDIENCE`, `AISRE_OIDC_JWKS_URL`); in the stack that is the fake issuer, which mints any identity for local use. Roles come from the token's `groups`: `aisre:<role>` on every service, or `aisre:<role>:<service>` on one, with ADR-50's roles (`viewer`, `responder`, `approver`, `incident_lead`, `monitoring`, `platform_admin`). Writes also need an `Idempotency-Key` of 8 to 128 characters:
@@ -135,7 +136,7 @@ AISRE_TEMPORAL_ADDRESS=127.0.0.1:7233 \
 uv run pytest -q -m integration
 ```
 
-The `integration` tests expect the Compose worker as `.env.example` configures it: scripted skills for what isn't built, real evidence from the fake monitoring source, and the real model skills against the fake provider. Tests that drive an incident themselves open it with no undelivered start row, so the Compose relay never starts it (the `quiet` fixture in `tests/integration/conftest.py`). On 2026-11-18: 134 passed, 2 skipped (`paid`).
+The `integration` tests expect the Compose worker as `.env.example` configures it: scripted skills for what isn't built, real evidence from the fake monitoring source, and the real model skills against the fake provider. Tests that drive an incident themselves open it with no undelivered start row, so the Compose relay never starts it (the `quiet` fixture in `tests/integration/conftest.py`). With the Test Runner running on the host (M2), the reference incident goes on to be drafted, tested and proposed as a draft pull request. On 2026-11-18: 152 passed, 3 skipped (`paid`, and the gVisor `system` run).
 
 **The honesty variant** (Run 2 of the reference incident: `release.json` and `config-diff.txt` withheld). The fake monitoring source serves a scenario with files withheld when its name says so, `reference-incident:without=release.json,config-diff.txt`, and the change history then answers 404, a gap. Restart the worker pointed at it, post the alert, and the incident goes `open` → `investigating` → `inconclusive` → `handed_over`, its diagnosis starting "Root cause not established"; restart without the override to go back:
 
@@ -156,21 +157,47 @@ A run stops before it could pass `--max-spend-usd` (default $10, ADR-56): a case
 
 ## Test Runner and sandbox (M2)
 
-The Test Runner runs `run_sandbox_test` and the 5-minute sandbox reaper on its own task queue, `aisre-test-runner` (ADR-71). It is the only process with the Docker socket, which is root on its host, so it is not in Compose: locally it runs on the host, in production on the separate test host. Each test is a fresh container from `ops/sandbox/` (the trusted harness, standard library only, user 65534, no network), with the exact base commit piped in by `git archive`, never mounted. The harness reproduces the failure first, and tests the patch only if it appears; a patch touching tests, test configuration, CI, policies, the harness or the sandbox is refused before anything starts. At most three run at once across Test Runner processes (PostgreSQL advisory locks), and a queued run's wait counts inside the activity's 900 s.
+The Test Runner runs `run_sandbox_test` and the 5-minute sandbox reaper on its own task queue, `aisre-test-runner` (ADR-71). It is the only process with the Docker socket, which is root on its host, so it is not in Compose: locally it runs on the host, in production on the separate test host. Each test is a fresh container from `ops/sandbox/` (the trusted harness, standard library only, user 65534, no network), with the exact base commit piped in by `git archive`, never mounted. The harness reproduces the failure first, and tests the patch only if it appears. A patch touching a protected path (tests, test configuration, CI, policies, the harness, the sandbox, deployment files, secrets) is refused before anything starts, by the same rule as the draft (`patch.check_paths`, ADR-72): the one exception is a config revert that puts a deployment file back exactly as it was before the commit it reverts, read from the Test Runner's own mirror. At most three run at once across Test Runner processes (PostgreSQL advisory locks), and a queued run's wait counts inside the activity's 900 s. Before each run it records `aisre.action.test_started.v1`, after it `aisre.action.tested.v1`, both with the isolation label.
 
-**Under `runc` this proves the flow, not isolation.** Production requires `runsc` (gVisor); `AISRE_SANDBOX_RUNTIME=runc` is refused unless `AISRE_ENV` is `development` or `test`, and every result carries `isolation: development-runc` in `test_runs` and in `aisre.action.tested.v1`. M2's security gate (ST-16, ST-25 to ST-28) stays not met until the same tests pass on a gVisor host.
+**Under `runc` this proves the flow, not isolation.** Production requires `runsc` (gVisor); `AISRE_SANDBOX_RUNTIME=runc` is refused unless `AISRE_ENV` is `development` or `test`, and every result carries `isolation: development-runc` in `test_runs`, in the events, in the draft pull request and in the demo viewer. M2's security gate (ST-16, ST-25 to ST-28) stays not met until the same tests pass on a gVisor host.
+
+Start it on the host, with the stack up. It needs its own mirror of each repository (the reference one is built with fixed commit IDs, so they match the fake review system's) and the sandbox image. The settings are given one by one rather than by sourcing `.env.example`, whose JSON values a shell would strip of their quotes:
 
 ```
-python ops/reference-app/build_repo.py ~/aisre-mirrors/orders-api     # cfg-41 good, cfg-42 bad
+python ops/reference-app/build_repo.py ~/aisre-mirrors/orders-api     # cfg-41 good, cfg-42 bad, branch tolerant
 image=$(ops/sandbox/build.sh)                                         # sha256:...
-set -a; . ./.env.example; set +a
-AISRE_DATABASE_URL=postgresql+psycopg://aisre_app:fake-app-password@127.0.0.1:55432/aisre \
-AISRE_TEMPORAL_ADDRESS=127.0.0.1:7233 AISRE_OBJECT_STORE_URL=http://127.0.0.1:59000 \
-AISRE_SANDBOX_IMAGE=$image AISRE_SANDBOX_REPOS="{\"orders-api\": \"$HOME/aisre-mirrors/orders-api\"}" \
-AISRE_METRICS_PORT= OTEL_EXPORTER_OTLP_ENDPOINT= uv run python -m aisre.remediation.test_runner
+env AISRE_ENV=development \
+  AISRE_DATABASE_URL=postgresql+psycopg://aisre_app:fake-app-password@127.0.0.1:55432/aisre \
+  AISRE_TEMPORAL_ADDRESS=127.0.0.1:7233 AISRE_TEMPORAL_NAMESPACE=default \
+  AISRE_OBJECT_STORE_URL=http://127.0.0.1:59000 AISRE_OBJECT_STORE_BUCKET=aisre-artifacts \
+  AISRE_OBJECT_STORE_ACCESS_KEY=fake-minio-admin AISRE_OBJECT_STORE_SECRET_KEY=fake-minio-password \
+  AISRE_SANDBOX_RUNTIME=runc AISRE_SANDBOX_IMAGE=$image \
+  AISRE_SANDBOX_REPOS="{\"orders-api\": \"$HOME/aisre-mirrors/orders-api\"}" \
+  uv run python -m aisre.remediation.test_runner
 ```
 
-`tests/integration/test_sandbox_docker.py` and `test_sandbox_test_activity.py` run the real launcher against Docker (they skip without it): the reference failure reproduces at `cfg-42` and the revert to `825` passes, a base that doesn't fail is `not_reproduced`, a long test hits the wall clock, a cancel kills the container, the reaper removes a leftover, and nothing labelled `aisre.sandbox=1` is left.
+Stop it with Ctrl-C. Without it, an incident that reaches `testing` waits for the test until the activity's 900 s pass, then is handed over ("fix not proven: sandbox test failed").
+
+`tests/integration/test_sandbox_docker.py` and `test_sandbox_test_activity.py` run the real launcher against Docker (they skip without it): the reference failure reproduces at `cfg-42` and the revert to `825` passes, a base that doesn't fail (the `tolerant` branch) is `not_reproduced`, any other deployment edit is refused before anything starts, a long test hits the wall clock, a cancel kills the container, the reaper removes a leftover, and nothing labelled `aisre.sandbox=1` is left.
+
+## Patch, test and draft pull request (M2, Release A)
+
+After a reviewed, established diagnosis the workflow drafts a fix, has it tested, and hands it to people (ADR-44). Nothing is applied anywhere, and nothing is merged.
+
+1. **Draft** (`src/aisre/agent/skills/patching.py`, prompt `prompts/draft_patch/v2.md`, the `standard` model alias). The repository is the service's own, read through the review system at the head of its default branch: the recent changes and the content of the files they changed. The model proposes the edit; code builds the diff and checks it (FR-17 to FR-20, FR-40, FR-47, FR-48, ADR-72). The fix is stored as its own action (`proposed`), with the patch's canonical bytes and its reviewable form in the object store, and `aisre.action.proposed.v1`.
+2. **Test.** The incident and the action go to `testing`, and the Test Runner (above) runs the sandbox: the failure must reproduce first.
+3. **Hand over.** `passed`: the worker opens a draft pull request in the review system with the patch, the hypothesis, evidence, expected effect, risk, undo plan and the test result with its isolation label (`aisre.action.review_opened.v1`, `patches.review_ref`), the action ends `withdrawn` and the incident `handed_over` ("release_a_recommendation: ..."). `failed`: the next candidate, up to three, one at a time (ADR-69), then hand over. `not_reproduced`: no test of the patch; hand over saying the failure didn't reproduce. `inconclusive`, `timeout`, `crashed`: hand over with the outcome.
+
+The review system is Compose's **fake** `fake-review` (`ops/fakes/review.py`, http://127.0.0.1:59400, `GET /_fake/pulls` lists what was opened): it builds the reference repository at start-up, takes draft pull requests only, refuses a patch that doesn't apply at its base, marks a deployment-file change as needing the security lead's review, and refuses to merge. Its pull requests live in memory, so a restart forgets them (the record keeps `review_ref`). `AISRE_REVIEW_ADAPTER=fake_review` is refused in production. Without a provider key or the review settings, `draft_patch` stays scripted (`no_allowed_fix`), as in M0 and M1.
+
+**M2 demo.** Fresh stack, the dev seed, the Test Runner on the host as above, then the reference alert (the M0 demo's commands below). In a few seconds the timeline goes `diagnosed` → `testing` (`aisre.action.test_started.v1`, `aisre.action.tested.v1` passed, reproduced, `development-runc`) → `aisre.action.review_opened.v1` → `handed_over`; `GET /v1/incidents/$ID/actions` shows the action `withdrawn` with `review_ref`, and the demo viewer shows the diff in red and green. **The `not_reproduced` case**: close that incident, put the fake review system on the reference repository's `tolerant` branch, whose code parses `8.25` (a constructed case, ADR-72), post the alert again, and the incident is handed over with "fix not tested: the failure did not reproduce at the patch's base revision"; then go back:
+
+```
+FAKE_REVIEW_DEFAULT_BRANCH=tolerant docker compose up -d --wait fake-review
+docker compose up -d --wait fake-review      # back to main
+```
+
+The run recorded for M2 is [milestones/m2.md](docs/layers/layer-13-implementation-planning/milestones/m2.md).
 
 ## Demo viewer
 
