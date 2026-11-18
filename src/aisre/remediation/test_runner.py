@@ -12,7 +12,9 @@ on the host; in production on the test host (ADR-51).
 1. Reads the action's patch: the `patches` row's `patch_diff` artifact holds
    `Patch.canonical_bytes()`, in the object store under the artifact's storage key; its SHA-256
    must equal `patches.patch_sha256` and TestIn.patch_sha256, and the action must be `testing`.
-2. Refuses a patch touching a protected path before anything starts (sandbox.refuse_protected).
+2. Refuses a patch touching a protected path before anything starts (sandbox.refuse_protected),
+   by the same rule as the draft (patch.check_paths, ADR-72), with what the reverted commit
+   changed read from its own mirror.
 3. Checks out the exact base commit from its mirror (`AISRE_SANDBOX_REPOS`), with `git archive`.
 4. Takes one of three slots across every Test Runner process (PgSandboxSlots), then runs the
    sandbox: the harness reproduces first and tests the patch only if the failure appears. The
@@ -232,18 +234,27 @@ class TestRunner:
     def prepare(self, patch: StoredPatch) -> Prepared:
         """Everything before a slot: refusal, checkout, payload. Nothing is started yet."""
         content = patch.content
-        try:
-            sb.refuse_protected(content)
-        except PatchRejected as e:
-            raise refused("PatchRejected", str(e)) from None
         repository = str(content.get("repository", ""))
         plan, repo = sb.HARNESS_PLANS.get(repository), self.repos.get(repository)
+        reverted = content.get("reverted_commit")
+        revert = None
+        if repo is not None and reverted:
+            try:  # what the reverted commit changed, from this process's own mirror (ADR-72)
+                revert = sb.revert_facts(repo, str(reverted), run=self.run)
+            except (sb.SpecRejected, subprocess.CalledProcessError):
+                revert = None  # unreadable: a protected path is then refused below
+        try:
+            restored = sb.refuse_protected(content, revert)
+        except PatchRejected as e:
+            raise refused("PatchRejected", str(e)) from None
         if plan is None or repo is None:
             raise refused("NoRepository", f"no mirror or harness plan for {repository!r}")
         run_id = uuid7().hex
         try:
             commit, tar = sb.checkout(repo, str(content.get("base_revision", "")), run=self.run)
-            payload = sb.build_payload(self.spec, run_id, commit, tar, patch.canonical, plan)
+            payload = sb.build_payload(
+                self.spec, run_id, commit, tar, patch.canonical, plan, restored
+            )
         except (sb.SpecRejected, subprocess.CalledProcessError) as e:
             raise refused("CheckoutFailed", f"{type(e).__name__}: no checkout") from None
         return Prepared(run_id, commit, payload)

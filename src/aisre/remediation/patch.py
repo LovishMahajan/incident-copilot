@@ -4,6 +4,15 @@ A patch is a structured diff against an exact source revision, with a rationale 
 Its identity is a SHA-256 digest over a canonical form: same content against a different
 revision is a different patch. Protected paths (tests, policies, the sandbox launcher, CI)
 can never be edited by a generated patch, and a commit revert touches only what the commit changed.
+
+`check_paths` is the one protected-path rule (ADR-72), used by `check_boundaries` when a patch is
+drafted and by the Test Runner's launcher (sandbox.refuse_protected) before anything starts.
+Deployment files (`deploy/**`) are protected with one exception: a `config_revert` that names
+the commit it reverts may put a file that commit changed back exactly as it was before the commit,
+provided nothing changed it since. That is "a commit revert touches only what the commit changed"
+(ADR-48) at file level; any other edit under `deploy/`, a key or a file the commit didn't change,
+or a value it didn't have, is refused. What the commit changed is read by code from the
+repository (`RevertFacts`), never from the patch or the model.
 """
 
 from __future__ import annotations
@@ -12,6 +21,8 @@ import difflib
 import fnmatch
 import hashlib
 import json
+from collections.abc import Iterable, Mapping
+from dataclasses import dataclass
 from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
@@ -55,6 +66,9 @@ PROTECTED = [  # never editable by a generated patch, whatever the policy says
     "**/*.pem",
     "**/*.key",
 ]
+# Protected, except that a config_revert may restore a file here to its content before the commit
+# it reverts (check_paths). A path that also matches any other protected pattern stays refused.
+RESTORABLE = ["deploy/**"]
 
 
 class EditPolicy(Strict):
@@ -67,9 +81,15 @@ class EditPolicy(Strict):
 
 
 DEFAULT_POLICY = EditPolicy(
-    policy_version="edit-policy@1",
+    policy_version="edit-policy@2",  # @2 (ADR-72): deploy/*.env, as restorations only
     allowed={
-        "config_revert": ["config/*.yaml", "config/*.yml", "config/*.toml", "config/*.json"],
+        "config_revert": [
+            "config/*.yaml",
+            "config/*.yml",
+            "config/*.toml",
+            "config/*.json",
+            "deploy/*.env",
+        ],
         "commit_revert": ["src/*.py", "app/*.py", "config/*"],
         "release_rollback": [],  # a rollback changes no files: it selects a previous release
     },
@@ -81,15 +101,82 @@ def _editable(path: str, patterns: list[str]) -> bool:
     return any(fnmatch.fnmatchcase(path, p) for p in patterns)
 
 
-def _protected(path: str) -> bool:
+def _protected(path: str, patterns: Iterable[str] = PROTECTED) -> bool:
     """Unanchored, at any depth; the leading "/" lets `**/x` reach a file at the root too."""
     rooted = "/" + path
     return any(
         fnmatch.fnmatchcase(path, p)
         or fnmatch.fnmatchcase(rooted, p)
         or fnmatch.fnmatchcase(rooted, "*/" + p)
-        for p in PROTECTED
+        for p in patterns
     )
+
+
+_ALWAYS = [p for p in PROTECTED if p not in RESTORABLE]
+
+
+class PatchRejected(Exception):
+    def __init__(self, code: str, detail: str):
+        super().__init__(f"{code}: {detail}")
+        self.code, self.detail = code, detail
+
+
+@dataclass(frozen=True)
+class FileChangeFacts:
+    """One file a commit changed: its SHA-256 before the commit (at the parent) and after it.
+    None means it didn't exist there."""
+
+    before_sha256: str | None
+    after_sha256: str | None
+
+
+@dataclass(frozen=True)
+class RevertFacts:
+    """What `commit` changed, read by code from the repository (git, or the review system's
+    repository API), never from the patch or the model."""
+
+    commit: str
+    files: Mapping[str, FileChangeFacts]
+
+
+def check_paths(
+    action_kind: str,
+    files: Iterable[tuple[str, str, str]],
+    reverted_commit: str | None,
+    revert: RevertFacts | None,
+) -> dict[str, str]:
+    """The one protected-path rule (ADR-72), for the draft (check_boundaries) and the launcher
+    (sandbox.refuse_protected). `files` is (path, old_sha256, new_sha256) per file. Returns the
+    protected files the patch restores, path -> new_sha256, which the harness allows and checks
+    again. Raises PatchRejected for anything else on a protected path."""
+    restored: dict[str, str] = {}
+    for path, old, new in files:
+        if not path or path.startswith("/") or ".." in path.split("/"):
+            raise PatchRejected("bad_path", path or "(empty)")
+        if not _protected(path):
+            continue
+        if _protected(path, _ALWAYS) or action_kind != "config_revert":
+            raise PatchRejected(
+                "protected_path",
+                f"{path} is protected (tests, policies, sandbox, CI, deployment, secrets)",
+            )
+        if reverted_commit is None or revert is None or revert.commit != reverted_commit:
+            raise PatchRejected(
+                "protected_path",
+                f"{path} is protected: only a revert of a named commit restores it",
+            )
+        facts = revert.files.get(path)
+        if facts is None:
+            raise PatchRejected("outside_commit", f"{reverted_commit} didn't change {path}")
+        if old != facts.after_sha256:
+            raise PatchRejected("changed_since", f"{path} changed after {reverted_commit}")
+        if facts.before_sha256 is None or new != facts.before_sha256:
+            raise PatchRejected(
+                "not_a_restoration",
+                f"{path} must return exactly to its content before {reverted_commit}",
+            )
+        restored[path] = new
+    return restored
 
 
 # ---------------------------------------------------------------------------
@@ -126,7 +213,8 @@ class Patch(Strict):
     target_environment: str
     files: list[FileChange] = Field(default_factory=list)
     target_release: str | None = None  # release_rollback only
-    reverted_commit: str | None = None  # commit_revert only: the commit it undoes
+    reverted_commit: str | None = None  # the commit it undoes: commit_revert, and a config_revert
+    # that restores a protected deployment file (ADR-72)
     summary: str = Field(min_length=10, max_length=1000)
 
     @model_validator(mode="after")
@@ -136,8 +224,10 @@ class Patch(Strict):
                 raise ValueError("a release rollback names a target release and changes no files")
         elif not self.files:
             raise ValueError("a patch must change at least one file")
-        if (self.action_kind == "commit_revert") != (self.reverted_commit is not None):
-            raise ValueError("a commit revert, and only a commit revert, names the reverted commit")
+        if self.action_kind == "commit_revert" and self.reverted_commit is None:
+            raise ValueError("a commit revert names the reverted commit")
+        if self.action_kind == "release_rollback" and self.reverted_commit is not None:
+            raise ValueError("a release rollback reverts no commit")
         return self
 
     # -- identity (Q11.8) --------------------------------------------------------
@@ -196,17 +286,17 @@ class Patch(Strict):
 # ---------------------------------------------------------------------------
 # Validation against boundaries (Q11.4, Q11.6, Q11.34)
 # ---------------------------------------------------------------------------
-class PatchRejected(Exception):
-    def __init__(self, code: str, detail: str):
-        super().__init__(f"{code}: {detail}")
-        self.code, self.detail = code, detail
-
-
 def check_boundaries(
-    p: Patch, policy: EditPolicy = DEFAULT_POLICY, commit_paths: list[str] | None = None
-) -> None:
-    """`commit_paths` is what `reverted_commit` changed, read by code from the repository at the
-    base revision, never from the patch or the model. None means it couldn't be read."""
+    p: Patch,
+    policy: EditPolicy = DEFAULT_POLICY,
+    commit_paths: list[str] | None = None,
+    revert: RevertFacts | None = None,
+) -> dict[str, str]:
+    """`commit_paths` is what `reverted_commit` changed, and `revert` the same with each file's
+    content hashes, both read by code from the repository at the base revision, never from the
+    patch or the model. None means it couldn't be read. Returns check_paths' restorations."""
+    if commit_paths is None and revert is not None:
+        commit_paths = list(revert.files)
     allowed = policy.allowed.get(p.action_kind, [])
     changed = 0
     if len(p.files) > policy.max_files:
@@ -215,16 +305,16 @@ def check_boundaries(
         raise PatchRejected(
             "commit_unreadable", f"can't read the files {p.reverted_commit} changed"
         )
+    restored = check_paths(
+        p.action_kind,
+        [(f.path, f.old_sha256, f.new_sha256) for f in p.files],
+        p.reverted_commit,
+        revert,
+    )
     for f in p.files:
-        if f.path.startswith("/") or ".." in f.path.split("/"):
-            raise PatchRejected("bad_path", f.path)
-        if _protected(f.path):
-            raise PatchRejected(
-                "protected_path", f"{f.path} is protected (tests, policies, sandbox, CI, secrets)"
-            )
         if not _editable(f.path, allowed):
             raise PatchRejected("outside_policy", f"{f.path} not editable for {p.action_kind}")
-        if p.action_kind == "commit_revert" and f.path not in commit_paths:
+        if p.reverted_commit is not None and f.path not in (commit_paths or []):
             raise PatchRejected("outside_commit", f"{p.reverted_commit} didn't change {f.path}")
         for h in f.hunks:
             changed += sum(1 for l in h.lines if l[:1] in "+-")
@@ -232,6 +322,7 @@ def check_boundaries(
                 raise PatchRejected("malformed_hunk", f.path)
     if changed > policy.max_changed_lines:
         raise PatchRejected("too_large", f"{changed} changed lines > {policy.max_changed_lines}")
+    return restored
 
 
 def build_patch_from_contents(

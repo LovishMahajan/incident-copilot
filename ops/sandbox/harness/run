@@ -8,7 +8,8 @@ leaves: one JSON line, the last on standard output. Tests never write to that st
 
 Order: reproduce first on the base revision. If the original failure doesn't appear, stop:
 the patch is never tested (`not_reproduced`). Otherwise apply the patch to a copy, refuse a
-protected path, check every hash, run the required suites and the reproduction again, and
+protected path (except the restorations the launcher allowed, `run.json`'s `restored`, each of
+which must end with exactly the hash given there; ADR-72), check every hash, run the required suites and the reproduction again, and
 compare error signatures. Exit 0 whenever a bundle was written, whatever the tests did.
 """
 
@@ -109,12 +110,12 @@ def apply_file(text, hunks):
     return "\n".join(out) + ("\n" if text.endswith("\n") or not text else "")
 
 
-def apply_patch(patch, tree, patterns):
+def apply_patch(patch, tree, patterns, restored):
     for f in patch["files"]:
         path = f["path"]
         if path.startswith("/") or ".." in path.split("/"):
             raise PatchError(f"bad path {path}")
-        if protected(path, patterns):
+        if protected(path, patterns) and restored.get(path) != f["new_sha256"]:
             raise PatchError(f"{path} is protected")
         target = os.path.join(tree, path)
         with open(target, "rb") as fh:
@@ -241,7 +242,9 @@ def main():
 
     shutil.copytree(before_tree, after_tree)
     try:
-        apply_patch(json.loads(patch_bytes), after_tree, run["protected"])
+        apply_patch(
+            json.loads(patch_bytes), after_tree, run["protected"], run.get("restored") or {}
+        )
     except (PatchError, OSError, KeyError, TypeError, ValueError) as e:
         failed = {"name": "patch", "required": False, "ran": False, "errors": [f"not applied: {e}"]}
         return bundle(run, patch_sha256, reproduction_before=True, suites=[failed])

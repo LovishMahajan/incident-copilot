@@ -41,7 +41,10 @@ def labelled() -> list[str]:
     return out
 
 
-def patch_at(repo, rev: str, path: str, old_line: str, new_line: str) -> Patch:
+def patch_at(repo, rev: str, path: str, old_line: str, new_line: str, reverts=None) -> Patch:
+    """An edit at `rev`; a deployment file is restored by reverting `reverts` (ADR-72)."""
+    if reverts is None and path.startswith("deploy/"):
+        reverts = rev
     old = subprocess.run(
         ["git", "-C", str(repo), "show", f"{rev}:{path}"],
         check=True,
@@ -62,6 +65,7 @@ def patch_at(repo, rev: str, path: str, old_line: str, new_line: str) -> Patch:
         target_service="orders-api",
         target_environment="production",
         summary="Revert ORDER_TAX_RATE_BPS to 825",
+        reverted_commit=sb.checkout(repo, reverts)[0] if reverts else None,
     )
 
 
@@ -103,7 +107,7 @@ def testing_action(app_engine, catalogue, quiet):
                SELECT :act, :inc, :dia, 'config_revert', i.service_id, i.environment_id,
                  'orders-prod', :base, :base, 'Revert', 'Errors stop', 'Low', 'Revert back',
                  '[{"metric": "http_5xx_rate", "comparison": "<=", "threshold": 0.01}]', :sha,
-                 600, false, 'edit-policy@1'
+                 600, false, 'edit-policy@2'
                FROM incidents i WHERE i.incident_id = :inc""",
             """INSERT INTO artifacts (artifact_id, org_id, incident_id, kind, storage_key,
                  content_sha256, size_bytes, media_type, redacted, retain_until)
@@ -186,7 +190,7 @@ def test_a_base_that_does_not_fail_is_not_reproduced_and_the_patch_never_tested(
 ):
     make, blobs = testing_action
     repo, _ = reference_repo
-    p = patch_at(repo, "cfg-41", "deploy/production.env", "LOG_LEVEL=INFO", "LOG_LEVEL=DEBUG")
+    p = patch_at(repo, "tolerant-42", "deploy/production.env", "=8.25", "=825")
     _, action_id = make(p)
     r = runner(app_engine, blobs, sandbox_image, {"orders-api": repo})
     out = asyncio.run(
@@ -256,7 +260,7 @@ def test_cancel_kills_the_container_and_stores_nothing(
     }
     for args in (["add", "--all"], ["commit", "-q", "--no-gpg-sign", "-m", "slow"]):
         subprocess.run(["git", "-C", str(repo), *args], check=True, capture_output=True, env=env)
-    p = patch_at(repo, "main", "deploy/production.env", "=8.25", "=825")
+    p = patch_at(repo, "main", "deploy/production.env", "=8.25", "=825", reverts="cfg-42")
     _, action_id = make(p)
     r = runner(app_engine, blobs, sandbox_image, {"orders-api": repo})
     activity_env = ActivityEnvironment()

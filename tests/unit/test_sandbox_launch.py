@@ -1,6 +1,6 @@
 """Artifact 13.5 T2.2, T2.4, T2.5 (ADR-71): the runtime from settings, the isolation label, the
-checkout on standard input, and a patch touching a protected path refused before anything starts.
-The real launcher against Docker is tests/integration/test_sandbox_docker.py."""
+checkout on standard input, and a patch touching a protected path refused before anything starts,
+by the same rule as the draft (patch.check_paths, ADR-72). The real launcher against Docker is tests/integration/test_sandbox_docker.py."""
 
 from __future__ import annotations
 
@@ -17,7 +17,6 @@ from aisre.config import Settings
 from aisre.remediation.patch import PROTECTED, PatchRejected
 from aisre.remediation.sandbox import (
     HARNESS_PLANS,
-    LAUNCH_PROTECTED,
     SandboxCancelled,
     SandboxLimiter,
     SandboxSpec,
@@ -27,6 +26,7 @@ from aisre.remediation.sandbox import (
     isolation,
     launch_args,
     refuse_protected,
+    revert_facts,
     run_sandbox,
     sandbox_spec,
     validate_args,
@@ -109,12 +109,15 @@ def test_settings_refuse_runc_in_production_and_an_unpinned_image():
 def test_a_patch_touching_the_path_is_refused(path):
     with pytest.raises(PatchRejected) as e:
         refuse_protected({"files": [{"path": "config/app.yaml"}, {"path": path}]})
-    assert e.value.code == "protected_path"
+    assert e.value.code == ("bad_path" if path.endswith("etc/passwd") else "protected_path")
 
 
-def test_the_launch_list_is_patch_protected_less_deploy_only():
-    assert set(PROTECTED) - set(LAUNCH_PROTECTED) == {"deploy/**"}
-    refuse_protected({"files": [{"path": "deploy/production.env"}]})  # T2.10 decides
+def test_a_deploy_edit_is_refused_by_the_launcher_without_a_reverted_commit():
+    with pytest.raises(PatchRejected) as e:
+        refuse_protected(
+            {"action_kind": "config_revert", "files": [{"path": "deploy/production.env"}]}
+        )
+    assert e.value.code == "protected_path" and "nothing was started" in e.value.detail
 
 
 # ---------------------------------------------------------------- checkout (T2.2)
@@ -173,7 +176,8 @@ def test_the_payload_carries_run_patch_and_checkout(repo):
     assert set(files) == {"run.json", "patch.json", "checkout.tar"}
     assert files["patch.json"] == b'{"files":[]}' and files["checkout.tar"] == tar
     assert run["base_revision"] == commit and run["image_digest"] == IMAGE
-    assert run["protected"] == LAUNCH_PROTECTED and run["per_test_s"] == spec.per_test_s
+    assert run["protected"] == PROTECTED and run["per_test_s"] == spec.per_test_s
+    assert run["restored"] == {}
     with pytest.raises(SpecRejected, match="fit"):
         build_payload(SandboxSpec(workspace_mb=0, image=IMAGE), "r1", commit, tar, b"{}", {})
 
@@ -234,3 +238,79 @@ def test_a_queued_run_gets_only_what_is_left_of_its_budget():
         payload=b"tar",
     )
     assert 99.9 > seen["timeout"] > 90 and seen["input"] == b"tar"
+
+
+# ---------------------------------------------------------------- the one protected rule (T2.10)
+@pytest.fixture
+def deploy_repo(tmp_path):
+    """deploy/app.env with two keys; commit `change` sets A=2. Then `later` edits B only."""
+    r = tmp_path / "deploy-repo"
+    r.mkdir()
+    git(r, "init", "-q", "-b", "main")
+    (r / "deploy").mkdir()
+    (r / "deploy/app.env").write_text("A=1\nB=1\n")
+    (r / "deploy/other.env").write_text("C=1\n")
+    git(r, "add", ".")
+    git(r, "commit", "-q", "--no-gpg-sign", "-m", "root")
+    (r / "deploy/app.env").write_text("A=2\nB=1\n")
+    git(r, "commit", "-q", "--no-gpg-sign", "-am", "change")
+    git(r, "tag", "change")
+    return r
+
+
+def sha(text: str) -> str:
+    import hashlib
+
+    return hashlib.sha256(text.encode()).hexdigest()
+
+
+def revert_of(commit: str, path: str, old: str, new: str) -> dict:
+    return {
+        "action_kind": "config_revert",
+        "reverted_commit": commit,
+        "files": [{"path": path, "old_sha256": sha(old), "new_sha256": sha(new)}],
+    }
+
+
+def test_revert_facts_read_what_the_commit_changed_from_the_mirror(deploy_repo):
+    facts = revert_facts(deploy_repo, "change")
+    assert facts.commit == git(deploy_repo, "rev-parse", "change")
+    assert dict(facts.files) == {
+        "deploy/app.env": type(facts.files["deploy/app.env"])(sha("A=1\nB=1\n"), sha("A=2\nB=1\n"))
+    }
+    root = revert_facts(deploy_repo, git(deploy_repo, "rev-parse", "change~1"))
+    assert all(f.before_sha256 is None for f in root.files.values())  # nothing to restore to
+
+
+def test_the_launcher_allows_the_exact_restoration_and_passes_it_to_the_harness(deploy_repo):
+    facts = revert_facts(deploy_repo, "change")
+    patch = revert_of(facts.commit, "deploy/app.env", "A=2\nB=1\n", "A=1\nB=1\n")
+    assert refuse_protected(patch, facts) == {"deploy/app.env": sha("A=1\nB=1\n")}
+
+
+@pytest.mark.parametrize(
+    ("path", "old", "new", "code"),
+    [
+        ("deploy/app.env", "A=2\nB=1\n", "A=1\nB=2\n", "not_a_restoration"),  # another key
+        ("deploy/app.env", "A=2\nB=1\n", "A=3\nB=1\n", "not_a_restoration"),  # another value
+        ("deploy/other.env", "C=1\n", "C=2\n", "outside_commit"),  # a file it didn't change
+        ("deploy/app.env", "A=2\nB=9\n", "A=1\nB=9\n", "changed_since"),  # edited after it
+    ],
+)
+def test_the_launcher_refuses_any_other_deploy_edit(deploy_repo, path, old, new, code):
+    facts = revert_facts(deploy_repo, "change")
+    with pytest.raises(PatchRejected) as e:
+        refuse_protected(revert_of(facts.commit, path, old, new), facts)
+    assert e.value.code == code
+
+
+def test_a_restoration_is_refused_for_another_kind_or_without_the_commit_facts(deploy_repo):
+    facts = revert_facts(deploy_repo, "change")
+    patch = revert_of(facts.commit, "deploy/app.env", "A=2\nB=1\n", "A=1\nB=1\n")
+    for kind in ("commit_revert", "release_rollback"):
+        with pytest.raises(PatchRejected, match="protected"):
+            refuse_protected({**patch, "action_kind": kind}, facts)
+    with pytest.raises(PatchRejected, match="protected"):
+        refuse_protected(patch, None)  # the mirror couldn't say what the commit changed
+    with pytest.raises(PatchRejected, match="protected"):
+        refuse_protected({**patch, "reverted_commit": "0" * 40}, facts)  # facts of another commit

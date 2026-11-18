@@ -4,8 +4,9 @@ Each run has every launch flag (no network, read-only root, user 65534, no capab
 no-new-privileges, cgroup limits, bounded tmpfs, size-limited workspace, wall clock). Under
 `runc` these prove the flow, never isolation: `system: launch flags work under gVisor` stays for
 the test host (T2.1). Shown here: the reference failure reproduces at the bad revision and the
-revert passes; a base that doesn't fail is `not_reproduced` and a fix that doesn't fix is
-`failed`; a long test hits the wall clock; a cancel kills the container; the reaper removes a
+revert passes (a deployment file restored exactly, by the one protected-path rule, ADR-72); a
+base that doesn't fail (the reference repository's `tolerant` branch) is `not_reproduced` and a
+fix that doesn't fix is `failed`; a long test hits the wall clock; a cancel kills the container; the reaper removes a
 leftover; nothing labelled aisre.sandbox=1 is left afterwards.
 """
 
@@ -58,7 +59,15 @@ def show(repo: Path, rev: str, path: str) -> str:
     ).stdout
 
 
-def revert_patch(repo: Path, rev: str, old_line: str, new_line: str, path: str = CONFIG) -> Patch:
+def revert_patch(
+    repo: Path,
+    rev: str,
+    old_line: str,
+    new_line: str,
+    path: str = CONFIG,
+    reverts: str | None = "cfg-42",
+) -> Patch:
+    """An edit at `rev`. A deployment file may only be restored: `reverts` names the commit."""
     old = show(repo, rev, path)
     commit = sb.checkout(repo, rev)[0]
     return build_patch_from_contents(
@@ -75,17 +84,23 @@ def revert_patch(repo: Path, rev: str, old_line: str, new_line: str, path: str =
         target_service="orders-api",
         target_environment="production",
         summary="Revert ORDER_TAX_RATE_BPS to 825",
+        reverted_commit=sb.checkout(repo, reverts)[0] if reverts else None,
     )
+
+
+def payload_for(spec: sb.SandboxSpec, repo: Path, p: Patch, run_id: str) -> tuple[str, bytes]:
+    """What the Test Runner does before a slot: the one protected rule, then the checkout."""
+    facts = sb.revert_facts(repo, p.reverted_commit) if p.reverted_commit else None
+    restored = sb.refuse_protected(p.canonical(), facts)
+    commit, tar = sb.checkout(repo, p.base_revision)
+    plan = sb.HARNESS_PLANS["orders-api"]
+    return commit, sb.build_payload(spec, run_id, commit, tar, p.canonical_bytes(), plan, restored)
 
 
 def launch(image: str, repo: Path, p: Patch, spec: sb.SandboxSpec | None = None, **kw):
     spec = spec or sb.sandbox_spec("test", "runc", image)
     run_id = uuid.uuid4().hex[:12]
-    sb.refuse_protected(p.canonical())
-    commit, tar = sb.checkout(repo, p.base_revision)
-    payload = sb.build_payload(
-        spec, run_id, commit, tar, p.canonical_bytes(), sb.HARNESS_PLANS["orders-api"]
-    )
+    commit, payload = payload_for(spec, repo, p, run_id)
     bundle = sb.run_sandbox(spec, run_id, p.digest, commit, payload=payload, **kw)
     return run_id, bundle
 
@@ -101,24 +116,35 @@ def test_the_reference_failure_reproduces_and_the_revert_passes(sandbox_image, r
 
 
 def test_a_base_that_does_not_fail_is_not_reproduced(sandbox_image, reference_repo):
-    """The same harmless edit: against the good revision nothing fails, so the patch is never
-    tested; against the bad revision the failure reproduces and remains, so it is `failed`."""
+    """The same revert on the `tolerant` branch, whose code parses 8.25: nothing fails at its head,
+    so the patch is never tested. On `main` a harmless edit leaves the failure: `failed`."""
     repo, _ = reference_repo
-    edit = ("LOG_LEVEL=INFO", "LOG_LEVEL=DEBUG")
-    _, good = launch(sandbox_image, repo, revert_patch(repo, "cfg-41", *edit))
+    p = revert_patch(repo, "tolerant-42", "=8.25", "=825", reverts="tolerant-42")
+    _, good = launch(sandbox_image, repo, p)
     assert good is not None and good.reproduction_before is False and good.suites == ()
-    p = revert_patch(repo, "cfg-41", *edit)
     assert sb.classify(good, p.digest) == sb.TestOutcome.NOT_REPRODUCED
-    q = revert_patch(repo, "cfg-42", *edit)
+    q = revert_patch(
+        repo, "cfg-42", '"""Settings', '"""The settings', path="orders/settings.py", reverts=None
+    )
     _, bad = launch(sandbox_image, repo, q)
     assert bad is not None and bad.reproduction_before is True and bad.reproduction_after is True
     assert sb.classify(bad, q.digest) == sb.TestOutcome.FAILED
 
 
+def test_a_deploy_edit_that_is_not_a_restoration_is_refused_before_anything_starts(
+    sandbox_image, reference_repo
+):
+    repo, _ = reference_repo
+    p = revert_patch(repo, "cfg-42", "LOG_LEVEL=INFO", "LOG_LEVEL=DEBUG")
+    with pytest.raises(sb.PatchRejected) as e:
+        launch(sandbox_image, repo, p)
+    assert e.value.code == "not_a_restoration" and labelled() == []
+
+
 def test_a_patch_touching_tests_is_refused_before_anything_starts(sandbox_image, reference_repo):
     repo, _ = reference_repo
     path = "tests/smoke/test_smoke.py"
-    p = revert_patch(repo, "cfg-42", '"32.48"', '"32.47"', path=path)
+    p = revert_patch(repo, "cfg-42", '"32.48"', '"32.47"', path=path, reverts=None)
     with pytest.raises(sb.PatchRejected, match="protected"):
         launch(sandbox_image, repo, p)
     assert labelled() == []
@@ -162,10 +188,7 @@ def test_cancel_kills_the_container(sandbox_image, slow_repo):
     p = revert_patch(slow_repo, "main", "ORDER_TAX_RATE_BPS=8.25", "ORDER_TAX_RATE_BPS=825")
     spec = sb.SandboxSpec(image=sandbox_image, runtime="runc", environment="test", wall_clock_s=300)
     run_id = uuid.uuid4().hex[:12]
-    commit, tar = sb.checkout(slow_repo, p.base_revision)
-    payload = sb.build_payload(
-        spec, run_id, commit, tar, p.canonical_bytes(), sb.HARNESS_PLANS["orders-api"]
-    )
+    commit, payload = payload_for(spec, slow_repo, p, run_id)
     cancel, result = threading.Event(), {}
 
     def go():

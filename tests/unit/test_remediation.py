@@ -48,7 +48,9 @@ from aisre.remediation.dispatcher import (
 from aisre.remediation.patch import (
     DEFAULT_POLICY,
     EditPolicy,
+    FileChangeFacts,
     PatchRejected,
+    RevertFacts,
     build_patch_from_contents,
     check_boundaries,
 )
@@ -212,7 +214,7 @@ def test_commit_revert_stays_inside_the_commit():
     assert e.value.code == "commit_unreadable"
 
 
-def test_reverted_commit_is_part_of_identity_and_only_for_commit_reverts():
+def test_reverted_commit_is_part_of_identity_and_never_on_a_release_rollback():
     assert (
         edit("src/app.py", **COMMIT).digest
         != edit("src/app.py", **{**COMMIT, "reverted_commit": "deadbeef"}).digest
@@ -220,7 +222,76 @@ def test_reverted_commit_is_part_of_identity_and_only_for_commit_reverts():
     with pytest.raises(Exception):
         edit("src/app.py", action_kind="commit_revert")
     with pytest.raises(Exception):
-        edit("config/app.yaml", reverted_commit="c0ffee12")
+        patch(old={}, new={}, action_kind="release_rollback", target_release="r1",
+              reverted_commit="c0ffee12")  # fmt: skip
+    assert edit("config/app.yaml", reverted_commit="c0ffee12").reverted_commit  # ADR-72
+
+
+# ---------------------------------------------------------------- T2.10: deploy/ restorations
+ENV = "deploy/production.env"
+BEFORE = "LOG_LEVEL=INFO\nORDER_TAX_RATE_BPS=825\n"
+AFTER = "LOG_LEVEL=INFO\nORDER_TAX_RATE_BPS=8.25\n"
+C42 = "04c1348646f267743fea9a0b83eaa063905a270b"
+
+
+def sha(text: str) -> str:
+    return hashlib.sha256(text.encode()).hexdigest()
+
+
+FACTS = RevertFacts(C42, {ENV: FileChangeFacts(sha(BEFORE), sha(AFTER))})
+
+
+def deploy_edit(new: str, path: str = ENV, old: str = AFTER, **kw):
+    return patch(old={path: old}, new={path: new}, **{"reverted_commit": C42, **kw})
+
+
+def test_the_reference_revert_passes_the_boundary_and_is_reported_as_a_restoration():
+    assert check_boundaries(deploy_edit(BEFORE), revert=FACTS) == {ENV: sha(BEFORE)}
+
+
+@pytest.mark.parametrize(
+    ("p", "facts", "code"),
+    [
+        (lambda: deploy_edit("LOG_LEVEL=DEBUG\nORDER_TAX_RATE_BPS=825\n"), FACTS, "not_a_restoration"),
+        (lambda: deploy_edit("LOG_LEVEL=INFO\nORDER_TAX_RATE_BPS=900\n"), FACTS, "not_a_restoration"),
+        (lambda: deploy_edit("X=2\n", path="deploy/staging.env", old="X=1\n"), FACTS, "outside_commit"),
+        (lambda: deploy_edit(BEFORE, old="LOG_LEVEL=WARN\nORDER_TAX_RATE_BPS=8.25\n"), FACTS,
+         "changed_since"),
+        (lambda: deploy_edit(BEFORE), None, "protected_path"),  # what C42 changed is unknown
+        (lambda: deploy_edit(BEFORE, reverted_commit=None), FACTS, "protected_path"),
+        (lambda: deploy_edit(BEFORE, action_kind="commit_revert"), FACTS, "protected_path"),
+        (lambda: deploy_edit("a: 2\n", path="deploy/values.yaml", old="a: 1\n"), FACTS,
+         "outside_commit"),
+        (lambda: deploy_edit("b\n", path="deploy/secrets.env", old="a\n"), FACTS, "protected_path"),
+    ],
+)  # fmt: skip
+def test_every_other_deploy_edit_is_refused(p, facts, code):
+    with pytest.raises(PatchRejected) as e:
+        check_boundaries(p(), revert=facts)
+    assert e.value.code == code
+
+
+def test_a_restorable_path_that_matches_another_protected_pattern_stays_refused():
+    secrets = RevertFacts(C42, {"deploy/secrets.env": FileChangeFacts(sha("a\n"), sha("b\n"))})
+    with pytest.raises(PatchRejected) as e:
+        check_boundaries(deploy_edit("a\n", path="deploy/secrets.env", old="b\n"), revert=secrets)
+    assert e.value.code == "protected_path"
+
+
+def test_the_draft_and_the_launcher_use_the_same_rule():
+    from aisre.remediation import sandbox
+
+    p = deploy_edit("LOG_LEVEL=DEBUG\nORDER_TAX_RATE_BPS=825\n")
+    for check in (
+        lambda: check_boundaries(p, revert=FACTS),
+        lambda: sandbox.refuse_protected(p.canonical(), FACTS),
+    ):
+        with pytest.raises(PatchRejected) as e:
+            check()
+        assert e.value.code == "not_a_restoration"
+    ok = deploy_edit(BEFORE)
+    assert check_boundaries(ok, revert=FACTS) == sandbox.refuse_protected(ok.canonical(), FACTS)
+    assert not hasattr(sandbox, "LAUNCH_PROTECTED")
 
 
 # ---------------------------------------------------------------- sandbox
@@ -1059,7 +1130,7 @@ def test_decisions_record_both_policies_and_a_change_to_either_voids_them():
     assert (
         d.policy_version == f"{DEFAULT_POLICY.policy_version}|{POLICY.version}" == a.policy_version
     )
-    other = ApprovalPolicy(edit_version="edit-policy@2")
+    other = ApprovalPolicy(edit_version="edit-policy@3")
     assert (
         evaluate(
             a,
@@ -1485,7 +1556,7 @@ def test_a_refusal_voids_the_approval_only_when_what_was_approved_no_longer_hold
     assert asyncio.run(disp(a, [tampered], FakeRelease()).execute(a.action_id)).void_approval
     assert not asyncio.run(disp(a, [], FakeRelease()).execute(a.action_id)).void_approval
     d = disp(a, [decide(a, "priya")], FakeRelease())
-    d.policy = ApprovalPolicy(edit_version="edit-policy@2")
+    d.policy = ApprovalPolicy(edit_version="edit-policy@3")
     assert not asyncio.run(d.execute(a.action_id)).void_approval
 
 
@@ -1765,9 +1836,9 @@ def test_reconcile_with_no_intent_says_so():
 def test_edit_policy_change_refuses_the_dispatch():
     a = action()
     d = disp(a, [decide(a, "priya")], FakeRelease())
-    d.policy = ApprovalPolicy(edit_version="edit-policy@2")
+    d.policy = ApprovalPolicy(edit_version="edit-policy@3")
     r = asyncio.run(d.execute(a.action_id))
-    assert r.outcome == Outcome.REFUSED and "edit-policy@2" in r.reason
+    assert r.outcome == Outcome.REFUSED and "edit-policy@3" in r.reason
     old = action(
         policy_version=f"edit-policy@0|{POLICY.version}"
     )  # the decision is current, the action isn't
