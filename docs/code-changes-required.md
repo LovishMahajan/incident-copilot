@@ -498,7 +498,7 @@ Kept as the record of what was asked for. Grouped by the layer that found the ch
 | L12 eval_harness.py | Paired comparison: use each case's majority result across 3 runs | Layer decision: 12.10 |
 | L12 eval_harness.py | Add a canary comparison: pair by service and category, exact McNemar at α = 0.05, plus 24-hour cost and first-summary checks | ADR-65; Layer decision: canary pairing |
 | L12 eval_harness.py | `ExperimentConfig.prompt_versions` comment: use `v<N>` values instead of `@N` | ADR-63 |
-| L12 test_layer12.py | **Superseded** by Artifact 12.3, which has 32 alerts. Was: `test_alert_rules_parse_and_name_runbooks`: expect 31 rules | 12.3 |
+| L12 test_layer12.py | **Superseded** by Artifact 12.3, which has 33 alerts. Was: `test_alert_rules_parse_and_name_runbooks`: expect 31 rules | 12.3 |
 | L12 test_layer12.py | `test_redaction_and_allow_list`: `aisre.model.prompt_version`, both request IDs and an IPv6 address | Telemetry rows above |
 | L12 test_layer12.py | Add a test that a failing exporter and a full queue both increment `telemetry_dropped` | Layer decision: telemetry drops |
 | L12 test_layer12.py | `test_restore_bumps_epoch_and_needs_reconciliation_and_a_person`: role-checked signer; add cases for in-progress re-check and for ledger `not_applied` with a target that says applied | ADR-50; reconciliation rows above |

@@ -178,6 +178,15 @@ groups:
         annotations:
           summary: "Many model calls charged without reported usage"
           runbook: "RB-06 spend"
+      - alert: AisreModelOutputSecret
+        # T1.16's leak procedure: a model answer held a secret. The gateway stopped it with no retry
+        # and the incident was handed over; the masked copy is on the aisre.model_output.unsafe
+        # audit line. Links and commands also count on this metric but don't page.
+        expr: sum(increase(aisre_model_output_unsafe_total{kind="secret"}[5m])) > 0
+        labels: {severity: page, route: security_lead}
+        annotations:
+          summary: "A model answer held a secret: the leak procedure starts (ST-24, ADR-59)"
+          runbook: "RB-05 dependency failing"
 
   - name: aisre-remediation
     rules:
