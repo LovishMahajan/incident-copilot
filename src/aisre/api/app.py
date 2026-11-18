@@ -308,9 +308,10 @@ def create_app(
                 after=cursor,
                 limit=limit,
             )
+            shown = reads.restrict_documents(conn, caller.org_id, items, caller.groups)
         content_read(request, caller, incident_id, "evidence")
         last = str(items[-1].evidence_id) if len(items) == limit else None
-        return Page[EvidenceRecord](items=items, next_cursor=last)
+        return Page[EvidenceRecord](items=shown, next_cursor=last)
 
     @app.get(
         "/v1/incidents/{incident_id}/diagnoses/current",

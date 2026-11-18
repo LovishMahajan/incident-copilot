@@ -304,3 +304,61 @@ def test_the_export_is_signed_and_carries_the_chain(api, app_engine, catalogue, 
     assert verify(doc, key)
     doc["events"][0]["data"]["title"] = "edited"
     assert not verify(doc, key)
+
+
+# ---------------------------------------------------------------- T1.24, Artifact 10.9
+def test_a_cited_runbook_shows_its_text_only_to_its_groups(api, app_engine, catalogue, quiet):
+    """A reader outside a runbook's permitted groups sees "restricted runbook (owner: ...)" in
+    place of the passage, never its text; a reader in one of them sees it."""
+    org, service, _ = catalogue
+    incident_id = opened(api, org, service, quiet)
+    passage = "Revert ORDER_TAX_RATE_BPS to the last good value through the config pipeline."
+    p = {"org": str(org), "inc": incident_id, "h": sha(passage), "d": str(uuid7())}
+    p |= {"ev": str(uuid7()), "ev2": str(uuid7()), "gone": str(uuid7()), "text": passage}
+    attrs = {"doc_id": "rb-test", "doc_version": "v3", "heading_path": ["Orders", "Revert"]}
+    with app_engine.begin() as conn:
+        conn.execute(
+            text(
+                """INSERT INTO documents (document_id, org_id, doc_ref, doc_version, doc_type,
+                     title, body, services, allowed_groups, reviewed_at, owner, deprecated)
+                   VALUES (:d, :org, 'rb-test', 'v3', 'runbook', 'Orders', :text, '{*}',
+                     '{orders-team,sre}', now(), 'orders-team (synthetic)', false)"""
+            ),
+            p,
+        )
+        for ev, doc in (("ev", attrs), ("gone", attrs | {"doc_id": "rb-deleted"})):
+            conn.execute(
+                text(
+                    """INSERT INTO evidence (evidence_id, incident_id, kind, source_system, tool,
+                         collected_by, source_link, summary, content_sha256, attributes)
+                       VALUES (CAST(:id AS uuid), :inc, 'runbook', 'runbook-corpus',
+                         'search_runbooks', 'evidence-collector', 'corpus:rb-test@v3#1', :text,
+                         :h, CAST(:a AS jsonb))"""
+                ),
+                p | {"id": p[ev], "a": json.dumps(doc)},
+            )
+        conn.execute(
+            text(
+                """INSERT INTO evidence (evidence_id, incident_id, kind, source_system, tool,
+                     collected_by, source_link, summary, content_sha256)
+                   VALUES (:ev2, :inc, 'log', 'logs', 'get_logs', 'evidence-collector', 'l',
+                     'ValueError on POST /v1/orders', :h)"""
+            ),
+            p,
+        )
+    url = f"/v1/incidents/{incident_id}/evidence"
+    outside = api.get(url, headers=as_(org, "aisre:viewer")).json()["items"]
+    by_id = {e["evidence_id"]: e for e in outside}
+    shown = by_id[p["ev"]]
+    assert shown["summary"] == "restricted runbook (owner: orders-team (synthetic))"
+    assert passage not in json.dumps(outside) and "Revert" not in json.dumps(shown)
+    assert shown["attributes"] == {
+        "doc_id": "rb-test",
+        "doc_version": "v3",
+        "restricted": True,
+        "owner": "orders-team (synthetic)",
+    }
+    assert by_id[p["gone"]]["summary"] == "restricted runbook (owner: unknown)"
+    assert by_id[p["ev2"]]["summary"] == "ValueError on POST /v1/orders"  # not a document
+    inside = api.get(url, headers=as_(org, "aisre:viewer,sre")).json()["items"]
+    assert {e["evidence_id"]: e for e in inside}[p["ev"]]["summary"] == passage

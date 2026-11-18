@@ -91,6 +91,7 @@ class Caller:
     grants: Grants = field(default_factory=dict)
     auth_time: datetime | None = None
     mfa: bool = False
+    groups: frozenset[str] = frozenset()  # identity groups as sent, for document reads (10.9)
 
     def roles_on(self, service: str) -> frozenset[Role]:
         return self.grants.get(EVERY_SERVICE, frozenset()) | self.grants.get(service, frozenset())
@@ -181,6 +182,7 @@ class Authenticator:
             roles_from_groups(claims.groups),
             claims.auth_time,
             claims.mfa,
+            frozenset(claims.groups),
         )
 
     def _dev(
@@ -196,8 +198,15 @@ class Authenticator:
             org_id = UUID(org) if org else DEV_ORG_ID
         except ValueError:
             raise _refuse(request, "bad_dev_org", f"{DEV_ORG_HEADER} is not a UUID.") from None
-        names = (groups if groups is not None else DEV_DEFAULT_GROUPS).split(",")
-        return Caller(f"dev:{caller}", org_id, roles_from_groups(n.strip() for n in names))
+        names = [
+            n.strip() for n in (groups if groups is not None else DEV_DEFAULT_GROUPS).split(",")
+        ]
+        return Caller(
+            f"dev:{caller}",
+            org_id,
+            roles_from_groups(names),
+            groups=frozenset(n for n in names if n),
+        )
 
 
 def current_caller(
