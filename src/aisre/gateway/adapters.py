@@ -58,7 +58,7 @@ class HttpResponse:
 def classify_http_error(status: int, body: Optional[dict[str, Any]] = None) -> ResultStatus:
     """Q10.38: permanent errors are never retried. A 429 for the provider's spend cap is permanent
     too: access stays paused until someone acts. Verify the error's exact field at build."""
-    if status in (401, 403):
+    if status in (401, 402, 403):  # 402 billing_error: stays until someone pays (T1.8)
         return ResultStatus.AUTH_ERROR
     if status in (400, 404, 413, 422):
         return ResultStatus.BAD_REQUEST
