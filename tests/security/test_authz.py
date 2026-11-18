@@ -250,10 +250,11 @@ def test_st20_cancel_severity_note_and_audit_export_routes_arrive_with_t15_t16()
 
 
 # ---------------------------------------------------------------- ST-21
-def test_st21_existence_probe_needs_the_api_and_intake():
+def test_st21_existence_probe_runs_against_postgresql():
     pytest.skip(
-        "Needs a running API and Intake: the same 404, Monitoring's 422, dead-lettering and the lead's "
-        "notification are all route behaviour. The dead-letter table is covered by schema-tests.sql (see README)"
+        "Dead-lettering needs the database: tests/integration/test_intake.py::"
+        "test_st21_existence_probe runs the case (the person's same 404 for an unknown and a "
+        "forbidden service, Monitoring's 422, three dead letters and three lines for the lead)"
     )
 
 

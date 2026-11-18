@@ -123,17 +123,15 @@ def test_intake_refusals_are_problem_details(client, headers, status, code):
     assert problem["type"].endswith(code) and problem["request_id"]
 
 
-def test_an_invalid_body_is_422_with_field_errors(client):
+def test_a_rejected_alert_that_cannot_be_dead_lettered_is_503_not_dropped(client):
+    """T1.2: with no database the alert can't be stored, so the sender is told to retry.
+    The 422 with field errors, and its dead letter, are in tests/integration/test_intake.py."""
     r = client.post(
         "/v1/incidents",
         json={"service": "orders-api"},
         headers={DEV_CALLER_HEADER: "alice", "Idempotency-Key": "key-00000001"},
     )
-    assert r.status_code == 422
-    problem = r.json()
-    assert problem["code"] == "validation_failed"
-    assert {tuple(e["loc"]) for e in problem["errors"]} >= {("environment",), ("title",)}
-    assert all("input" not in e for e in problem["errors"])
+    assert r.status_code == 503 and r.json()["code"] == "intake_unavailable"
 
 
 def test_unknown_route_is_a_problem(client):

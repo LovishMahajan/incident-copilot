@@ -2,9 +2,11 @@
 
 `create_incident` is the one write path for a new alert (ADR-19). In the caller's transaction
 it either opens an incident, with its alert row, its first timeline event and an outbox row
-that starts workflow `incident-<id>` (Artifact 7.7), or, when an open incident already holds
-the alert's deduplication key, attaches the alert to that incident and returns it (FR-03,
-Artifact 7.8). Nothing here commits: the caller owns the transaction, so the API can add the
+that starts workflow `incident-<id>` (Artifact 7.7), or attaches the alert to an open
+incident and returns that one: the incident holding the alert's deduplication key (FR-03,
+FR-42, Artifact 7.8), or else the newest one for the same service and environment opened
+within the grouping window, 10 minutes (FR-43, provisional). An attached alert gets its row
+and an `alert_attached` event, and starts nothing. Nothing here commits: the caller owns the transaction, so the API can add the
 idempotency key to the same one, and a failure anywhere leaves no part behind.
 
 Timeline events: the application supplies the event ID, type, source, actor, time,
@@ -22,7 +24,7 @@ from __future__ import annotations
 import os
 import time
 from dataclasses import dataclass
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from typing import Any
 from uuid import UUID
 
@@ -63,6 +65,7 @@ FINISHED_ACTIONS = (
     "undone",
     "withdrawn",
 )
+GROUPING_WINDOW = timedelta(minutes=10)  # FR-43, provisional: alerts for one service join
 START_WORKFLOW = "start_workflow"
 SIGNAL_WORKFLOW = "signal_workflow"
 
@@ -104,8 +107,10 @@ def create_incident(
     caller_id: str,
     body: IncidentCreate,
     raw_payload: dict[str, Any] | None = None,
+    grouping_window: timedelta = GROUPING_WINDOW,
 ) -> Intake:
-    """Open an incident for `body`, or attach it to the open one with the same dedup key.
+    """Open an incident for `body`, or attach it to an open one: the same dedup key, or the
+    same service and environment within GROUPING_WINDOW of that incident opening.
 
     `raw_payload` is the alert as received, stored on its `incident_alerts` row; it defaults
     to `body`. Raises UnknownService. Runs in the caller's transaction and doesn't commit.
@@ -116,15 +121,24 @@ def create_incident(
     payload = raw_payload if raw_payload is not None else body.model_dump(mode="json")
     now = datetime.now(UTC)
 
+    is_open = (incidents.c.org_id == org_id, incidents.c.status.not_in(CLOSED_STATES))
+    columns = (incidents.c.incident_id, incidents.c.display_ref, incidents.c.status)
     existing = conn.execute(
-        select(incidents.c.incident_id, incidents.c.display_ref, incidents.c.status)
-        .where(
-            incidents.c.org_id == org_id,
-            incidents.c.dedup_key == key,
-            incidents.c.status.not_in(CLOSED_STATES),
-        )
-        .with_for_update()
+        select(*columns).where(*is_open, incidents.c.dedup_key == key).with_for_update()
     ).first()
+    if existing is None:
+        existing = conn.execute(
+            select(*columns)
+            .where(
+                *is_open,
+                incidents.c.service_id == service_id,
+                incidents.c.environment_id == environment_id,
+                incidents.c.created_at >= func.now() - grouping_window,
+            )
+            .order_by(incidents.c.created_at.desc())
+            .limit(1)
+            .with_for_update()
+        ).first()
     if existing is not None:
         alert_id = _insert_alert(conn, existing.incident_id, body, key, payload, now)
         append_event(
