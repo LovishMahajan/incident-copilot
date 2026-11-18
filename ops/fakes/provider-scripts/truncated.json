@@ -1,0 +1,7 @@
+{
+  "match": "FAKE_MAX_TOKENS",
+  "response": {
+    "content": [{"type": "text", "text": "Scripted answer cut short"}],
+    "stop_reason": "max_tokens"
+  }
+}

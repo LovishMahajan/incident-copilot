@@ -1,0 +1,5 @@
+{
+  "match": "FAKE_OVERLOADED",
+  "status": 529,
+  "error": {"type": "overloaded_error", "message": "Scripted overload (fake provider)."}
+}
