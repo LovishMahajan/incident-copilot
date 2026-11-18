@@ -49,7 +49,7 @@ psql -U postgres -d aisre -v ON_ERROR_STOP=1 -f db/schema-tests.sql
 
 ## Run the local stack
 
-Needs Docker with Compose. `compose.yaml` runs PostgreSQL 17.12, Temporal 1.32.2 (schema set up by `temporal-sql-tool`, in its own databases on the same PostgreSQL), the Temporal UI 2.58.1, the migration job, the API and the worker with its outbox relay. From M1 it adds an object store (MinIO, with a one-shot job that creates the bucket), an OpenTelemetry collector and Prometheus 3.16 (which loads `ops/alerts.yml`), and three fakes from `ops/fakes/` for local use only: a token issuer, a model provider answering in the Anthropic Messages API shape from scripted fixtures, and a monitoring source serving `tests/fixtures`. None needs a key. Ports are bound to 127.0.0.1; change them in `.env` if one is taken.
+Needs Docker with Compose. `compose.yaml` runs PostgreSQL 17.12, Temporal 1.32.2 (schema set up by `temporal-sql-tool`, in its own databases on the same PostgreSQL), the Temporal UI 2.58.1, the migration job, the API and the worker with its outbox relay. From M1 it adds an object store (MinIO, with a one-shot job that creates the artifact bucket and the audit bucket with Object Lock), an OpenTelemetry collector and Prometheus 3.16 (which loads `ops/alerts.yml` and scrapes the API's and worker's `/metrics`), a one-shot job that ingests the synthetic runbook corpus (`corpus-seed`), and three fakes from `ops/fakes/` for local use only: a token issuer, a model provider answering in the Anthropic Messages API shape from scripted fixtures, and a monitoring source serving `tests/fixtures`. None needs a key. Ports are bound to 127.0.0.1; change them in `.env` if one is taken.
 
 ```
 cp .env.example .env
@@ -63,8 +63,8 @@ docker compose down -v           # stop and delete the data
 | Temporal UI | http://127.0.0.1:8233 |
 | Temporal frontend | 127.0.0.1:7233 |
 | PostgreSQL | 127.0.0.1:55432, database `aisre` |
-| Object store (MinIO S3 API, console) | http://127.0.0.1:59000, http://127.0.0.1:59001; bucket `aisre-artifacts` |
-| Prometheus | http://127.0.0.1:59090 |
+| Object store (MinIO S3 API, console) | http://127.0.0.1:59000, http://127.0.0.1:59001; buckets `aisre-artifacts` (evidence snapshots), `aisre-audit` (write-once audit copy, Object Lock) |
+| Prometheus | http://127.0.0.1:59090 (targets `api`, `worker`, `otel-collector`, `prometheus`) |
 | OpenTelemetry collector (OTLP gRPC, HTTP) | 127.0.0.1:54317, 127.0.0.1:54318 |
 | Fake token issuer | http://127.0.0.1:59100 (`/jwks`, `POST /token`) |
 | Fake model provider | http://127.0.0.1:59200 (`POST /v1/messages`, any `x-api-key`) |
@@ -98,9 +98,9 @@ docker compose exec api python -m aisre.api.dev_seed
 AISRE_EVIDENCE_SOURCES='{"sources": {"*": {"adapter": "fake_monitoring", "url": "http://fake-monitoring:8080/v1/scenarios/reference-incident"}}, "replay_as_of": "2026-10-20T14:20:00Z"}'
 ```
 
-Snapshots go to the object store when `AISRE_OBJECT_STORE_URL`, `_BUCKET`, `_ACCESS_KEY` and `_SECRET_KEY` are set (MinIO in the stack: `http://minio:9000`, `aisre-artifacts` and the `MINIO_ROOT_*` values); without them a record keeps its fingerprint and no snapshot. `compose.yaml` doesn't pass these to the worker yet, so the stack still runs the scripted collector. The fake adapter and `replay_as_of` are refused when `AISRE_ENV` is production.
+Snapshots go to the object store when `AISRE_OBJECT_STORE_URL`, `_BUCKET`, `_ACCESS_KEY` and `_SECRET_KEY` are set (MinIO in the stack: `http://minio:9000`, `aisre-artifacts` and the `MINIO_ROOT_*` values); without them a record keeps its fingerprint and no snapshot. `.env.example` sets all of these, so the stack's worker runs the real collector against the fake monitoring source: the reference incident gets `alert`, `change`, `metric`, `log`, `error_group`, `trace` and `dependency` rows with their strength tiers, and with `fake-monitoring` stopped each of those is a `gap` row instead. Leave `AISRE_EVIDENCE_SOURCES` empty to go back to the scripted collector. The fake adapter and `replay_as_of` are refused when `AISRE_ENV` is production.
 
-**Runbook retrieval** (`src/aisre/retrieval/corpus.py`, `src/aisre/record/corpus.py`, T1.17). The corpus lives in PostgreSQL (`documents`, `chunks`, `index_revisions`, ADR-62) and BM25 runs in the worker. Ingesting a folder builds a new immutable revision, scores it on the labelled query set (Artifact 10.13) and activates it only if every target holds; the evaluation is stored on the revision (migration `0005_m1_evidence`). `retrieve_knowledge` searches the newest activated revision for the identifiers in the baseline evidence, filtered to the incident's service and its owner group before ranking, and stores each passage as `runbook` or `past_incident` evidence pinned to its revision, document version, chunk and span. No activated revision is a gap. No real runbooks exist yet; `tests/fixtures/runbooks/` is a synthetic corpus of 15 documents with a 50-query labelled set, which on 2026-11-18 scored Recall@5 1.00, MRR 0.96, nDCG@5 0.97 (exact identifiers 1.00 / 1.00 / 1.00, paraphrases 1.00 / 0.91 / 0.93), with 0 wrong-service and 0 wrong-permission hits. The corpus and set were written together, so this shows the pipeline works, not how BM25 does on real runbooks. To ingest it into the stack's database for the development organisation (the image doesn't hold `tests/`, so run it from the host):
+**Runbook retrieval** (`src/aisre/retrieval/corpus.py`, `src/aisre/record/corpus.py`, T1.17). The corpus lives in PostgreSQL (`documents`, `chunks`, `index_revisions`, ADR-62) and BM25 runs in the worker. Ingesting a folder builds a new immutable revision, scores it on the labelled query set (Artifact 10.13) and activates it only if every target holds; the evaluation is stored on the revision (migration `0005_m1_evidence`). `retrieve_knowledge` searches the newest activated revision for the identifiers in the baseline evidence, filtered to the incident's service and its owner group before ranking, and stores each passage as `runbook` or `past_incident` evidence pinned to its revision, document version, chunk and span. No activated revision is a gap. No real runbooks exist yet; `tests/fixtures/runbooks/` is a synthetic corpus of 15 documents with a 50-query labelled set, which on 2026-11-18 scored Recall@5 1.00, MRR 0.96, nDCG@5 0.97 (exact identifiers 1.00 / 1.00 / 1.00, paraphrases 1.00 / 0.91 / 0.93), with 0 wrong-service and 0 wrong-permission hits. The corpus and set were written together, so this shows the pipeline works, not how BM25 does on real runbooks. The stack's `corpus-seed` job ingests it for the development organisation on every `docker compose up` (each run is a new revision, activated if the query set still passes), so the reference incident gets `runbook` and `past_incident` evidence. To ingest it by hand from the host:
 
 ```
 AISRE_DATABASE_URL=postgresql+psycopg://aisre_app:fake-app-password@127.0.0.1:55432/aisre \
@@ -120,16 +120,19 @@ uv run python -m aisre.cli incident close $ID --note "fixed by hand"   # sends t
 
 Writes send a fresh `Idempotency-Key` unless `--key` gives one. A refusal prints the API's problem document on standard error and exits 1. The fence and restore commands ADR-69 gives the CLI aren't there yet.
 
-**Integration tests** run from the host against the stack, with test settings:
+**Telemetry and the audit copy** (T1.19, T1.20). The API and the worker send spans to the collector (`OTEL_EXPORTER_OTLP_ENDPOINT`; `docker compose logs otel-collector` shows each batch) and serve `/metrics` on `AISRE_METRICS_PORT` (9464) inside the Compose network, which Prometheus scrapes as jobs `api` and `worker`. Both write the write-once audit copy (`AISRE_AUDIT_STORE_*`) to the `aisre-audit` bucket: timeline events every minute, audit log lines as they happen, each object under COMPLIANCE retention for `AISRE_AUDIT_STORE_LOCK_DAYS` (1 locally), so not even MinIO's root user can delete it until then. `docker compose down -v` still removes it with the volume. Without the `AISRE_AUDIT_STORE_*` settings there is no copy, and the weekly check verifies the chain only. Every one of these settings is in `src/aisre/config.py`.
+
+**Integration tests** run from the host against the stack, with test settings. The owner URL lets the audit copy's tamper tests (ST-31, ST-32) run; without it they skip:
 
 ```
 AISRE_ENV=test \
 AISRE_DATABASE_URL=postgresql+psycopg://aisre_app:fake-app-password@127.0.0.1:55432/aisre \
+AISRE_MIGRATION_DATABASE_URL=postgresql+psycopg://aisre_owner:fake-owner-password@127.0.0.1:55432/aisre \
 AISRE_TEMPORAL_ADDRESS=127.0.0.1:7233 \
 uv run pytest -q -m integration
 ```
 
-The `integration` tests expect the Compose worker to run with scripted skills.
+The `integration` tests expect the Compose worker to run with scripted skills, as in `.env.example`; with the evidence sources set as there, it also collects real evidence. Tests that drive an incident themselves keep the Compose relay from starting it (the `quiet` fixture in `tests/integration/conftest.py`). On 2026-11-18: 130 passed, 2 skipped (`paid`).
 
 ## M0 demo
 
@@ -145,7 +148,7 @@ token() { curl -s -X POST http://127.0.0.1:59100/token -d "{\"sub\": \"$1\", \"g
 MON=$(token monitoring aisre:monitoring); READ=$(token alice aisre:responder)
 ```
 
-Post the reference alert, keep the incident ID, and read the timeline a few seconds later. It ends in `aisre.incident.handed_over.v1`:
+Post the reference alert, keep the incident ID, and read the timeline a few seconds later. From M1 the evidence events (`aisre.evidence.collected.v1`) come between `investigating` and `diagnosed`, and it still ends in `aisre.incident.handed_over.v1`:
 
 ```
 ID=$(curl -s -X POST http://127.0.0.1:8000/v1/incidents -H 'Content-Type: application/json' \
@@ -189,7 +192,7 @@ curl -s "http://127.0.0.1:8000/v1/incidents/$ID2/timeline" -H "Authorization: Be
 docker compose run --rm --no-deps --entrypoint temporal temporal-namespace workflow show -w "incident-$ID2"
 ```
 
-The migrations built the schema from empty (37 tables), and `docker compose down -v` deletes everything:
+The migrations built the schema from empty (37 tables at M0, 39 from migration `0006_m1_ops`), and `docker compose down -v` deletes everything:
 
 ```
 docker compose exec postgres psql -U postgres -d aisre -tAc \
