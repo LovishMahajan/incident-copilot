@@ -7,6 +7,9 @@ then marks the row delivered in the same transaction that holds the claim. Deliv
 least once: a crash between Temporal and the commit sends the row again, which is harmless.
 "Already started" is success (the workflow ID is the dedupe key, and REJECT_DUPLICATE keeps a
 finished `incident-<id>` from starting twice), and the workflow ignores signal IDs it has seen.
+A signal to a run that has already ended (Temporal's NOT_FOUND) is delivered too: nothing is
+left to steer, and the record already holds the change the signal announced (T1.6). Without
+this, a closure after the 24-hour limit would hold the incident's later rows for ever.
 
 A failed row gets attempts + 1, its error, and an exponential backoff capped at one minute
 (`available_at`). Within a pass, once a row fails, that incident's later rows wait for the
@@ -33,6 +36,7 @@ from sqlalchemy import Connection, Engine, func, select, update
 from temporalio.client import Client
 from temporalio.common import WorkflowIDReusePolicy
 from temporalio.exceptions import WorkflowAlreadyStartedError
+from temporalio.service import RPCError, RPCStatusCode
 
 from aisre.record import SIGNAL_WORKFLOW, START_WORKFLOW
 from aisre.record.tables import outbox
@@ -153,7 +157,12 @@ class Relay:
             if name not in SIGNALS:
                 raise UnknownMessage(f"unknown signal {name!r}")
             arg = SIGNALS[name](**m.payload.get("arg", {}))
-            await self.client.get_workflow_handle(m.workflow_id).signal(name, arg)
+            try:
+                await self.client.get_workflow_handle(m.workflow_id).signal(name, arg)
+            except RPCError as e:
+                if e.status != RPCStatusCode.NOT_FOUND:
+                    raise
+                log.info("outbox row %s: %s has ended; signal dropped", m.outbox_id, name)
         else:
             raise UnknownMessage(f"unknown kind {m.kind!r}")
 
