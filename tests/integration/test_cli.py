@@ -50,12 +50,13 @@ def cli(url: str, org, groups: str, *argv: str) -> tuple[int, list[str]]:
     return code, out.getvalue().splitlines()
 
 
-def test_submit_show_timeline_cancel(api_url, add_service):
+def test_submit_show_timeline_cancel(api_url, add_service, quiet):
     org = uuid7()
     add_service(org, "orders-api")
     code, out = cli(api_url, org, "aisre:responder", "incident", "submit", str(ALERT))
     assert code == 0
     incident_id = json.loads(out[0])["incident_id"]
+    quiet(incident_id)
 
     code, out = cli(api_url, org, "aisre:viewer", "incident", "show", incident_id)
     assert code == 0 and json.loads(out[0])["status"] == "open"
@@ -77,11 +78,14 @@ def test_submit_show_timeline_cancel(api_url, add_service):
     assert code == 1 and out == []
 
 
-def test_close_sends_the_etag_and_follow_ends_with_the_incident(api_url, app_engine, add_service):
+def test_close_sends_the_etag_and_follow_ends_with_the_incident(
+    api_url, app_engine, add_service, quiet
+):
     org = uuid7()
     add_service(org, "orders-api")
     _, out = cli(api_url, org, "aisre:responder", "incident", "submit", str(ALERT))
     incident_id = json.loads(out[0])["incident_id"]
+    quiet(incident_id)
     for to in ("investigating", "inconclusive", "handed_over"):
         with app_engine.begin() as conn:
             status, version = conn.execute(

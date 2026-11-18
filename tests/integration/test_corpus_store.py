@@ -15,13 +15,13 @@ from pathlib import Path
 
 import pytest
 from monitoring_scenarios import CUT_OFF, FIXTURES, serving, sources
-from sqlalchemy import func, insert, select, text
+from sqlalchemy import func, insert, select, text, update
 
 from aisre.contracts import IncidentCreate
 from aisre.record import corpus as store
 from aisre.record import create_incident, uuid7
 from aisre.record.evidence import list_evidence
-from aisre.record.tables import environments, services
+from aisre.record.tables import environments, outbox, services
 from aisre.retrieval.corpus import QuerySet, load_queries, read_folder
 from aisre.workflow import activities as act
 from aisre.workflow.record_activities import EvidenceActivities
@@ -156,6 +156,13 @@ def orders_incident(app_engine):
             caller_id="monitoring",
             body=IncidentCreate.model_validate(alert["incident_create"]),
             grouping_window=timedelta(0),
+        )
+        # The Compose worker collects evidence too (compose.yaml): its relay never starts this
+        # incident, so the rows here are this test's alone.
+        conn.execute(
+            update(outbox)
+            .where(outbox.c.incident_id == intake.incident_id)
+            .values(delivered_at=func.now())
         )
     return org_id, intake.incident_id
 

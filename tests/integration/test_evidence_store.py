@@ -19,13 +19,14 @@ from uuid import UUID
 import pytest
 from monitoring_scenarios import CUT_OFF, FIXTURES, copy_reference, serving, sources
 from pydantic import SecretStr
-from sqlalchemy import func, select, text
+from sqlalchemy import func, select, text, update
 
 from aisre.agent.tool_registry import ToolGate, ToolRefused
 from aisre.contracts import IncidentCreate
 from aisre.evidence.snapshots import MemorySnapshots, S3Snapshots, snapshot_key
 from aisre.record import create_incident, uuid7
 from aisre.record.evidence import artifacts, evidence, list_evidence, load_evidence
+from aisre.record.tables import outbox
 from aisre.record.tool_calls import PgToolCalls, tool_calls
 from aisre.workflow import activities as act
 from aisre.workflow.record_activities import EvidenceActivities
@@ -44,6 +45,13 @@ def incident(app_engine, add_service):
             caller_id="monitoring",
             body=IncidentCreate.model_validate(alert["incident_create"]),
             grouping_window=timedelta(0),
+        )
+        # The Compose worker collects evidence too (compose.yaml): its relay never starts this
+        # incident, so the rows here are this test's alone.
+        conn.execute(
+            update(outbox)
+            .where(outbox.c.incident_id == intake.incident_id)
+            .values(delivered_at=func.now())
         )
     return org_id, intake.incident_id
 

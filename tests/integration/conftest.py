@@ -116,3 +116,24 @@ def add_service(app_engine):
     return lambda org_id, slug, environment="production": add_catalogue(
         app_engine, org_id, slug, environment
     )
+
+
+@pytest.fixture
+def quiet(app_engine):
+    """quiet(incident_id): mark the incident's start row delivered right after intake, so the
+    Compose worker's relay never runs its workflow and the test drives the incident alone.
+    The relay polls every 0.5 s; if it claimed the row first, the test fails here, not later."""
+    from sqlalchemy import text
+
+    def mark(incident_id) -> None:
+        with app_engine.begin() as conn:
+            won = conn.execute(
+                text(
+                    "UPDATE outbox SET delivered_at = now() WHERE incident_id = :i"
+                    " AND kind = 'start_workflow' AND delivered_at IS NULL"
+                ),
+                {"i": str(incident_id)},
+            ).rowcount
+        assert won == 1, f"the Compose relay started incident {incident_id} first; rerun"
+
+    return mark

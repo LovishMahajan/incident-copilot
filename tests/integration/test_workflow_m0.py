@@ -2,7 +2,7 @@
 
 1. An alert posted through the API reaches `handed_over`, run by the Compose worker (which
    needs `AISRE_SCRIPTED_SKILLS=true`, as in .env.example), and its timeline lists every step
-   in order.
+   in order, with the evidence the real collector stores when it is configured.
 2. A stale version is reloaded and retried; when it stays stale, the run hands over (ADR-69).
 3. A repeated transition_id or handover_key changes nothing.
 
@@ -158,8 +158,18 @@ def test_an_alert_posted_through_the_api_reaches_handed_over(
         page = api.get(made.json()["links"]["timeline"], headers=headers).json()
         view = api.get(made.json()["links"]["self"], headers=headers).json()
 
-    assert [e["type"] for e in page["items"]] == HANDED_OVER_PATH
-    assert [e["sequence"] for e in page["items"]] == [1, 2, 3, 4, 5]
+    # With AISRE_EVIDENCE_SOURCES set (compose.yaml), the real collector and retriever add one
+    # evidence event per record, all while investigating; the status path is the same.
+    every = page["items"]
+    assert [e["sequence"] for e in every] == list(range(1, len(every) + 1))
+    types = [e["type"] for e in every]
+    evidence = [i for i, t in enumerate(types) if t.startswith("aisre.evidence.")]
+    if evidence:
+        assert types.index("aisre.incident.status_changed.v1") < evidence[0]
+        assert evidence[-1] < len(types) - 3  # before diagnosed
+    items = [e for e in every if not e["type"].startswith("aisre.evidence.")]
+    assert [e["type"] for e in items] == HANDED_OVER_PATH
+    page = {"items": items}
     changes = [(e["data"]["from_status"], e["data"]["to_status"]) for e in page["items"][1:4]]
     assert changes == [
         ("open", "investigating"),

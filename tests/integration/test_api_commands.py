@@ -94,7 +94,7 @@ class Incident:
 
 
 @pytest.fixture
-def incident(api, app_engine, catalogue) -> Incident:
+def incident(api, app_engine, catalogue, quiet) -> Incident:
     org, service, _ = catalogue
     r = api.post(
         "/v1/incidents",
@@ -107,6 +107,7 @@ def incident(api, app_engine, catalogue) -> Incident:
         },
     )
     assert r.status_code == 201, r.text
+    quiet(r.json()["incident_id"])  # "The workflow isn't running" (module docstring)
     return Incident(api, app_engine, org, service, r.json()["incident_id"])
 
 

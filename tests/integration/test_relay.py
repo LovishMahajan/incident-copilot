@@ -133,7 +133,9 @@ def test_relay_delivers_a_signal(app_engine, catalogue, temporal):
     assert names == ["cancellation_requested"], (names, rows(app_engine, incident_id))
 
 
-def test_a_signal_to_no_workflow_backs_off(app_engine, catalogue, temporal):
+def test_a_signal_to_no_workflow_is_delivered_and_dropped(app_engine, catalogue, temporal):
+    """T1.6: Temporal's NOT_FOUND means the run has ended (or never ran), so nothing is left to
+    steer; the row is delivered, not retried (aisre.workflow.relay)."""
     org, service, _ = catalogue
     incident_id = new_incident(app_engine, org, service)
     with app_engine.begin() as conn:
@@ -149,12 +151,11 @@ def test_a_signal_to_no_workflow_backs_off(app_engine, catalogue, temporal):
         relay = Relay(app_engine, temporal)
         for _ in range(40):
             await relay.run_once()
-            failed = [r for r in rows(app_engine, incident_id) if r.kind == SIGNAL_WORKFLOW][0]
-            if failed.attempts:
+            row = [r for r in rows(app_engine, incident_id) if r.kind == SIGNAL_WORKFLOW][0]
+            if row.delivered_at is not None:
                 return
             await asyncio.sleep(0.25)
 
     asyncio.run(go())
-    failed = [r for r in rows(app_engine, incident_id) if r.kind == SIGNAL_WORKFLOW][0]
-    assert failed.delivered_at is None and failed.attempts >= 1
-    assert failed.last_error and failed.available_at > failed.created_at
+    dropped = [r for r in rows(app_engine, incident_id) if r.kind == SIGNAL_WORKFLOW][0]
+    assert dropped.delivered_at is not None and dropped.last_error is None
