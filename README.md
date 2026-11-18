@@ -70,7 +70,13 @@ curl -X POST http://127.0.0.1:8000/v1/incidents -H 'Content-Type: application/js
   --data @tests/fixtures/reference-incident/alert.json
 ```
 
-The service and environment must be in the organisation's catalogue (`services`, `environments`); otherwise the answer is `404 unknown_service`.
+The service and environment must be in the organisation's catalogue (`services`, `environments`); otherwise the answer is `404 unknown_service`. M0 has no catalogue route; `python -m aisre.api.dev_seed` adds one service and environment (default `orders-api`/`production`, the reference incident's) to the development organisation, and a rerun changes nothing:
+
+```
+docker compose exec api python -m aisre.api.dev_seed
+```
+
+**The worker** runs the workflow with the real `load_incident`, `record_transition` and `hand_over`. M0 has no model, so with `AISRE_SCRIPTED_SKILLS=true` (as in `.env.example`) the other activities answer with fixed results from `src/aisre/workflow/scripted.py`, and an incident goes `open` → `investigating` → `diagnosed` → `handed_over`, with every step in its timeline. Scripted results are refused when `AISRE_ENV` is `production`.
 
 **Integration tests** run from the host against the stack, with test settings:
 
@@ -80,3 +86,69 @@ AISRE_DATABASE_URL=postgresql+psycopg://aisre_app:fake-app-password@127.0.0.1:55
 AISRE_TEMPORAL_ADDRESS=127.0.0.1:7233 \
 uv run pytest -q -m integration
 ```
+
+The `integration` tests expect the Compose worker to run with scripted skills.
+
+## M0 demo
+
+From a fresh clone, with Docker running and nothing else on the ports in `.env`. Each block is copied from the run recorded in [the M0 evidence record](docs/layers/layer-13-implementation-planning/milestones/m0.md).
+
+```
+uv sync --python 3.12
+cp .env.example .env
+docker compose up -d --build --wait     # exits 0 once every service is healthy
+docker compose exec api python -m aisre.api.dev_seed
+```
+
+Post the reference alert, keep the incident ID, and read the timeline a few seconds later. It ends in `aisre.incident.handed_over.v1`:
+
+```
+ID=$(curl -s -X POST http://127.0.0.1:8000/v1/incidents -H 'Content-Type: application/json' \
+  -H 'X-Aisre-Dev-Caller: monitoring' -H 'Idempotency-Key: demo-run-0001' \
+  --data @tests/fixtures/reference-incident/alert.json \
+  | uv run python -c 'import json, sys; print(json.load(sys.stdin)["incident_id"])')
+curl -s "http://127.0.0.1:8000/v1/incidents/$ID/timeline" -H 'X-Aisre-Dev-Caller: monitoring'
+```
+
+The workflow is `incident-$ID`: open it in the Temporal UI (http://127.0.0.1:8233, namespace `default`), or ask Temporal from the command line (the admin-tools image has the `temporal` CLI) or through the UI's HTTP API. After the hand-over it stays running, waiting for a person to close the incident:
+
+```
+docker compose run --rm --no-deps --entrypoint temporal temporal-namespace workflow describe -w "incident-$ID"
+curl -s "http://127.0.0.1:8233/api/v1/namespaces/default/workflows/incident-$ID"
+```
+
+Post the same alert again, under a new key. It is attached to the open incident (`200`, `"deduplicated": true`, the same ID): no second incident and no second workflow:
+
+```
+curl -s -X POST http://127.0.0.1:8000/v1/incidents -H 'Content-Type: application/json' \
+  -H 'X-Aisre-Dev-Caller: monitoring' -H 'Idempotency-Key: demo-run-0002' \
+  --data @tests/fixtures/reference-incident/alert.json
+docker compose exec postgres psql -U postgres -d aisre -c 'SELECT count(*) FROM incidents'
+docker compose run --rm --no-deps --entrypoint temporal temporal-namespace workflow count
+```
+
+Kill the worker during a second run. Restart the worker with each scripted step taking 3 seconds, post an alert with another fingerprint (a new incident), kill the worker with `SIGKILL` once the incident is `investigating`, start it again, and the incident still reaches `handed_over`. Activities the dead worker held are retried once their heartbeat or start-to-close timeout passes, so allow about a minute:
+
+```
+AISRE_SCRIPTED_STEP_SECONDS=3 docker compose up -d --wait worker
+ID2=$(sed 's/orders-api:OrdersApiHighErrorRate/orders-api:OrdersApiHighErrorRate:run2/' \
+    tests/fixtures/reference-incident/alert.json \
+  | curl -s -X POST http://127.0.0.1:8000/v1/incidents -H 'Content-Type: application/json' \
+    -H 'X-Aisre-Dev-Caller: monitoring' -H 'Idempotency-Key: demo-run-0003' --data @- \
+  | uv run python -c 'import json, sys; print(json.load(sys.stdin)["incident_id"])')
+until curl -s "http://127.0.0.1:8000/v1/incidents/$ID2" -H 'X-Aisre-Dev-Caller: monitoring' | grep -q '"status":"investigating"'; do sleep 0.2; done
+docker compose kill -s SIGKILL worker
+docker compose start worker
+until curl -s "http://127.0.0.1:8000/v1/incidents/$ID2" -H 'X-Aisre-Dev-Caller: monitoring' | grep -q '"status":"handed_over"'; do sleep 2; done
+curl -s "http://127.0.0.1:8000/v1/incidents/$ID2/timeline" -H 'X-Aisre-Dev-Caller: monitoring'
+docker compose run --rm --no-deps --entrypoint temporal temporal-namespace workflow show -w "incident-$ID2"
+```
+
+The migrations built the schema from empty (37 tables), and `docker compose down -v` deletes everything:
+
+```
+docker compose exec postgres psql -U postgres -d aisre -tAc \
+  "SELECT count(*) FROM information_schema.tables WHERE table_schema = 'public' AND table_type = 'BASE TABLE'"
+docker compose down -v
+```
+

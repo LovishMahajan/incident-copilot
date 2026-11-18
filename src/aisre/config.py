@@ -37,6 +37,7 @@ ENV_VARS: dict[str, str] = {
     "temporal_namespace": "AISRE_TEMPORAL_NAMESPACE",
     "log_level": "AISRE_LOG_LEVEL",
     "scripted_skills": "AISRE_SCRIPTED_SKILLS",
+    "scripted_step_seconds": "AISRE_SCRIPTED_STEP_SECONDS",
 }
 
 
@@ -59,6 +60,8 @@ class Settings(BaseModel):
     # M0 (T0.11): the worker answers the skill activities with aisre.workflow.scripted's fixed
     # results, so an incident runs end to end with no model. Refused in production.
     scripted_skills: bool = False
+    # Demo pacing for the scripted skill steps, so a worker kill lands mid-run (T0.12).
+    scripted_step_seconds: float = Field(default=0.0, ge=0, le=10)
 
     # Fixed: equal to aisre.workflow.activities.INVESTIGATION_QUEUE and DISPATCHER_QUEUE.
     investigation_task_queue: ClassVar[str] = "aisre-investigation"
