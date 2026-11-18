@@ -24,6 +24,7 @@ from aisre.agent.agent_contracts import (
     SkillContext,
 )
 from aisre.agent.skills.reasoning import Inputs
+from aisre.agent.validation import missing_required_sources
 from aisre.record import diagnoses as rec
 
 R = TypeVar("R")
@@ -78,6 +79,7 @@ class PgSkillStore:
                 hypothesis_confidence=hypothesis_confidence,
                 produced_by=produced_by,
                 now=now,
+                missing_sources=missing_required_sources(inputs.evidence),
             )
         )
 
