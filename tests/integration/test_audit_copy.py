@@ -61,14 +61,8 @@ def as_(org, groups: str, caller: str = "lena") -> dict[str, str]:
 @pytest.fixture
 def incident(api, catalogue, quiet):
     org, service, _ = catalogue
-    r = api.post(
-        "/v1/incidents",
-        json=ALERT["incident_create"] | {"service": service},
-        headers=as_(org, "aisre:monitoring", "monitoring") | {"Idempotency-Key": f"ac-{org.hex}"},
-    )
-    assert r.status_code == 201, r.text
-    incident_id = r.json()["incident_id"]
-    quiet(incident_id)  # its timeline is the two events below, nothing from the Compose worker
+    # Its timeline: created, then the note below; nothing from the Compose worker.
+    incident_id = quiet(org, service)
     note = api.post(
         f"/v1/incidents/{incident_id}/notes",
         json={"note": "looking"},

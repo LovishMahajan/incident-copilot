@@ -134,7 +134,7 @@ AISRE_TEMPORAL_ADDRESS=127.0.0.1:7233 \
 uv run pytest -q -m integration
 ```
 
-The `integration` tests expect the Compose worker as `.env.example` configures it: scripted skills for what isn't built, real evidence from the fake monitoring source, and the real model skills against the fake provider. Tests that drive an incident themselves keep the Compose relay from starting it (the `quiet` fixture in `tests/integration/conftest.py`). On 2026-11-18: 134 passed, 2 skipped (`paid`).
+The `integration` tests expect the Compose worker as `.env.example` configures it: scripted skills for what isn't built, real evidence from the fake monitoring source, and the real model skills against the fake provider. Tests that drive an incident themselves open it with no undelivered start row, so the Compose relay never starts it (the `quiet` fixture in `tests/integration/conftest.py`). On 2026-11-18: 134 passed, 2 skipped (`paid`).
 
 **The honesty variant** (Run 2 of the reference incident: `release.json` and `config-diff.txt` withheld). The fake monitoring source serves a scenario with files withheld when its name says so, `reference-incident:without=release.json,config-diff.txt`, and the change history then answers 404, a gap. Restart the worker pointed at it, post the alert, and the incident goes `open` → `investigating` → `inconclusive` → `handed_over`, its diagnosis starting "Root cause not established"; restart without the override to go back:
 

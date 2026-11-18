@@ -118,22 +118,39 @@ def add_service(app_engine):
     )
 
 
+REFERENCE_ALERT = HERE.parent / "fixtures/reference-incident/alert.json"
+
+
 @pytest.fixture
 def quiet(app_engine):
-    """quiet(incident_id): mark the incident's start row delivered right after intake, so the
-    Compose worker's relay never runs its workflow and the test drives the incident alone.
-    The relay polls every 0.5 s; if it claimed the row first, the test fails here, not later."""
-    from sqlalchemy import text
+    """quiet(org_id, service) -> incident_id: open an incident the Compose worker never runs, so
+    the test drives it alone. It goes through intake's own `create_incident`, as the reference
+    alert from the monitoring caller, and its start row is marked delivered in the same
+    transaction: the relay only claims undelivered rows, so it never sees one. Not a race."""
+    import json
 
-    def mark(incident_id) -> None:
+    from sqlalchemy import func, update
+
+    from aisre.api.alerts import to_incident_create
+    from aisre.record.incidents import create_incident
+    from aisre.record.tables import outbox
+
+    body = json.loads(REFERENCE_ALERT.read_text())["incident_create"]
+
+    def open_quietly(org_id, service: str) -> str:
         with app_engine.begin() as conn:
-            won = conn.execute(
-                text(
-                    "UPDATE outbox SET delivered_at = now() WHERE incident_id = :i"
-                    " AND kind = 'start_workflow' AND delivered_at IS NULL"
-                ),
-                {"i": str(incident_id)},
-            ).rowcount
-        assert won == 1, f"the Compose relay started incident {incident_id} first; rerun"
+            made = create_incident(
+                conn,
+                org_id=org_id,
+                caller_id="dev:monitoring",
+                body=to_incident_create(body | {"service": service}),
+            )
+            assert not made.deduplicated
+            conn.execute(
+                update(outbox)
+                .where(outbox.c.incident_id == made.incident_id, outbox.c.delivered_at.is_(None))
+                .values(delivered_at=func.now())
+            )
+        return str(made.incident_id)
 
-    return mark
+    return open_quietly

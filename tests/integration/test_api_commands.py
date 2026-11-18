@@ -4,9 +4,6 @@ reads what the API wrote, the outbox rows the relay would deliver included."""
 
 from __future__ import annotations
 
-import json
-from pathlib import Path
-
 import pytest
 from fastapi.testclient import TestClient
 from sqlalchemy import select, text
@@ -16,9 +13,6 @@ from aisre.api.auth import DEV_CALLER_HEADER, DEV_GROUPS_HEADER, DEV_ORG_HEADER
 from aisre.record.tables import outbox
 from aisre.record.transitions import Transition, record_transition
 
-ALERT = json.loads(
-    (Path(__file__).parents[1] / "fixtures/reference-incident/alert.json").read_text()
-)
 LEAD, RESPONDER, VIEWER = "aisre:incident_lead", "aisre:responder", "aisre:viewer"
 
 
@@ -96,19 +90,8 @@ class Incident:
 @pytest.fixture
 def incident(api, app_engine, catalogue, quiet) -> Incident:
     org, service, _ = catalogue
-    r = api.post(
-        "/v1/incidents",
-        json=ALERT["incident_create"] | {"service": service},
-        headers={
-            DEV_CALLER_HEADER: "monitoring",
-            DEV_ORG_HEADER: str(org),
-            DEV_GROUPS_HEADER: "aisre:monitoring",
-            "Idempotency-Key": f"cmd-open-{org.hex[-12:]}",
-        },
-    )
-    assert r.status_code == 201, r.text
-    quiet(r.json()["incident_id"])  # "The workflow isn't running" (module docstring)
-    return Incident(api, app_engine, org, service, r.json()["incident_id"])
+    incident_id = quiet(org, service)  # "The workflow isn't running" (module docstring)
+    return Incident(api, app_engine, org, service, incident_id)
 
 
 def test_a_note_is_an_event_with_its_author(incident):
