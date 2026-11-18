@@ -92,6 +92,14 @@ docker compose exec api python -m aisre.api.dev_seed
 
 **The worker** runs the workflow with the real `load_incident`, `record_transition` and `hand_over`. M0 has no model, so with `AISRE_SCRIPTED_SKILLS=true` (as in `.env.example`) the other activities answer with fixed results from `src/aisre/workflow/scripted.py`, and an incident goes `open` → `investigating` → `diagnosed` → `handed_over`, with every step in its timeline. Scripted results are refused when `AISRE_ENV` is `production`.
 
+**Evidence** (`src/aisre/evidence/`, T1.10). With `AISRE_EVIDENCE_SOURCES` set on the worker, `collect_evidence` is the real Evidence Collector: the baseline plan (alert, changes, 5xx rate, error rate by version, logs, error groups, traces, dependency health) or a targeted round's requests, each through the ToolGate, then the source configured for that tool. Results are scoped to the incident's service, environment and window, redacted, capped, fingerprinted and stored as `evidence` rows with a timeline event each; a failed source is a `gap` row, never an empty one. Tool calls are counted and inserted in one transaction per incident (`tool_calls`, ADR-69). The variable is JSON naming an adapter per tool (`"*"` for the rest); against the fake monitoring source, replaying the reference incident up to its evidence cut-off:
+
+```
+AISRE_EVIDENCE_SOURCES='{"sources": {"*": {"adapter": "fake_monitoring", "url": "http://fake-monitoring:8080/v1/scenarios/reference-incident"}}, "replay_as_of": "2026-10-20T14:20:00Z"}'
+```
+
+Snapshots go to the object store when `AISRE_OBJECT_STORE_URL`, `_BUCKET`, `_ACCESS_KEY` and `_SECRET_KEY` are set (MinIO in the stack: `http://minio:9000`, `aisre-artifacts` and the `MINIO_ROOT_*` values); without them a record keeps its fingerprint and no snapshot. `compose.yaml` doesn't pass these to the worker yet, so the stack still runs the scripted collector. The fake adapter and `replay_as_of` are refused when `AISRE_ENV` is production.
+
 **Integration tests** run from the host against the stack, with test settings:
 
 ```

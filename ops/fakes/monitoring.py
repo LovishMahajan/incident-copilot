@@ -1,7 +1,7 @@
 """LOCAL USE ONLY (Artifact 13.5 T1.1): a fake monitoring source, serving synthetic scenarios.
 
-The read-only systems the Evidence Collector's adapters will query (T1.10): metrics, logs,
-traces, changes and the service catalogue. Each scenario is a folder of fixture files, in the
+The read-only systems the Evidence Collector's adapters query (T1.10, aisre.evidence.sources):
+metrics, logs, an error tracker, traces, changes, dependency health and the service catalogue. Each scenario is a folder of fixture files, in the
 reference incident's layout (tests/fixtures/reference-incident/). The answer key is never
 served: it is what an investigation must find, not something monitoring knows.
 
@@ -12,9 +12,15 @@ served: it is what an investigation must find, not something monitoring knows.
     GET /v1/scenarios/<name>/traces           trace.json
     GET /v1/scenarios/<name>/changes          release.json, plus config-diff.txt as `config_diff`
     GET /v1/scenarios/<name>/catalog          service-catalog.json
+    GET /v1/scenarios/<name>/errors           error groups: logs.ndjson's errors grouped by type
+                                              and message, as an error tracker would (the
+                                              reference incident has no tracker of its own)
+    GET /v1/scenarios/<name>/dependencies     dependency-health.json
     GET /healthz
 
-Optional `start` and `end` (ISO 8601, UTC) filter metrics by `minute_utc` and logs by `ts`.
+Optional `start` and `end` (ISO 8601, UTC) filter metrics by `minute_utc`, logs by `ts` and
+error groups by the logs they are built from. A missing fixture file is 404, which an adapter
+reports as an unavailable source, never as an empty one (ADR-54).
 FAKE_MONITORING_FIXTURES names the folder holding the scenarios (default: tests/fixtures in
 this repository); FAKE_MONITORING_PORT the port (default 8080). Standard library only.
 """
@@ -24,6 +30,7 @@ from __future__ import annotations
 import csv
 import json
 import os
+import re
 import sys
 import threading
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -55,12 +62,54 @@ def read(root: Path, scenario: str, kind: str, query: dict[str, str]) -> Any:
     if kind == "logs":
         records = [json.loads(ln) for ln in _comment_free(d / "logs.ndjson")]
         return [r for r in records if _in_window(r["ts"], start, end)]
+    if kind == "errors":
+        records = [json.loads(ln) for ln in _comment_free(d / "logs.ndjson")]
+        return _error_groups([r for r in records if _in_window(r["ts"], start, end)])
     if kind == "changes":
         diff = d / "config-diff.txt"
         changes = json.loads((d / "release.json").read_text())
         return changes | {"config_diff": diff.read_text() if diff.exists() else None}
-    files = {"alert": "alert.json", "traces": "trace.json", "catalog": "service-catalog.json"}
+    files = {
+        "alert": "alert.json",
+        "traces": "trace.json",
+        "catalog": "service-catalog.json",
+        "dependencies": "dependency-health.json",
+    }
     return json.loads((d / files[kind]).read_text())
+
+
+def _error_groups(records: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Errors grouped by type and message, with first and last sighting, count, versions and the
+    stack's files, in order of first sighting."""
+    groups: dict[tuple[str, str], dict[str, Any]] = {}
+    for r in records:
+        err = r.get("error")
+        if not err:
+            continue
+        g = groups.setdefault(
+            (err["type"], err["message"]),
+            {
+                "type": err["type"],
+                "message": err["message"],
+                "service": r["service"],
+                "count": 0,
+                "first_seen": r["ts"],
+                "last_seen": r["ts"],
+                "versions": [],
+                "frames": [],
+            },
+        )
+        g["count"] += 1
+        g["first_seen"], g["last_seen"] = (
+            min(g["first_seen"], r["ts"]),
+            max(g["last_seen"], r["ts"]),
+        )
+        if r.get("version") and r["version"] not in g["versions"]:
+            g["versions"].append(r["version"])
+        for frame in re.findall(r'File "([^"]+)", line (\d+)', err.get("stack", "")):
+            if list(frame) not in g["frames"]:
+                g["frames"].append(list(frame))
+    return sorted(groups.values(), key=lambda g: g["first_seen"])
 
 
 def handler_for(root: Path) -> type[BaseHTTPRequestHandler]:

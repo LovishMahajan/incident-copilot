@@ -13,6 +13,14 @@ with aisre.workflow.scripted's fixed results, so an incident runs to `handed_ove
 the worker refuses that in production, as Settings does. Every other activity is the interface
 in activities.py, which raises if called. Without scripts, a workflow stops at the slot, retrying.
 
+Evidence (T1.10): with `AISRE_EVIDENCE_SOURCES` set, `collect_evidence` is the real Evidence
+Collector (record_activities.EvidenceActivities), ahead of any script. The variable is JSON for
+aisre.evidence.sources.SourceSet.from_config, which names the adapter answering each READ tool,
+for example `{"sources": {"*": {"adapter": "fake_monitoring", "url":
+"http://fake-monitoring:8080/v1/scenarios/reference-incident"}}}`. Snapshots go to the object
+store when `AISRE_OBJECT_STORE_URL`, `_BUCKET`, `_ACCESS_KEY` and `_SECRET_KEY` are all set.
+These are read here, not in aisre.config, until the settings module takes them over.
+
 Budget jobs (T1.21): the worker registers BudgetJobWorkflow with the ledger's expiry and
 reconciliation activities, over PostgreSQL, and starts both jobs if they aren't running
 (aisre.workflow.budget_jobs).
@@ -27,28 +35,33 @@ SIGTERM or SIGINT: the relay finishes its pass, then the worker drains.
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
+import os
 import signal
 import sys
 import tempfile
 import time
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from datetime import timedelta
 from pathlib import Path
 from typing import Any, cast
 
+from pydantic import SecretStr
 from sqlalchemy import Engine
 from temporalio.client import Client
 from temporalio.worker import Worker
 
 from aisre.config import Settings
+from aisre.evidence.snapshots import S3Snapshots
+from aisre.evidence.sources import SourceSet
 from aisre.gateway.jobs import BudgetJobActivities
 from aisre.gateway.ledger import PgBudgetLedger
 from aisre.record import make_engine
 from aisre.workflow import activities as act
 from aisre.workflow import scripted
 from aisre.workflow.budget_jobs import BudgetJobWorkflow, ensure_budget_jobs
-from aisre.workflow.record_activities import RecordActivities
+from aisre.workflow.record_activities import EvidenceActivities, RecordActivities
 from aisre.workflow.relay import Relay
 from aisre.workflow.workflow import IncidentWorkflow, ReconciliationWorkflow
 
@@ -62,13 +75,39 @@ def activity_name(fn: Callable[..., Any]) -> str:
     return fn.__name__  # every activity here is defined under its own name
 
 
-def investigation_activities(settings: Settings, engine: Engine) -> list[Callable[..., Any]]:
-    """Real record activities, then the scripts if enabled, then the interfaces for the rest."""
-    chosen = RecordActivities(engine).all()
+def evidence_activities(
+    settings: Settings, engine: Engine, environ: Mapping[str, str] | None = None
+) -> list[Callable[..., Any]]:
+    """T1.10: the real Evidence Collector, when its sources are configured; else none."""
+    env = os.environ if environ is None else environ
+    config = env.get("AISRE_EVIDENCE_SOURCES")
+    if not config:
+        return []
+    production = settings.env == "production"
+    sources = SourceSet.from_config(json.loads(config), production=production)
+    store = [env.get(f"AISRE_OBJECT_STORE_{k}") for k in ("URL", "BUCKET", "ACCESS_KEY")]
+    secret = env.get("AISRE_OBJECT_STORE_SECRET_KEY")
+    url, bucket, access = store
+    snapshots = (
+        S3Snapshots(url, bucket, access, SecretStr(secret))
+        if url and bucket and access and secret
+        else None
+    )
+    return EvidenceActivities(engine, sources, snapshots).all()
+
+
+def investigation_activities(
+    settings: Settings, engine: Engine, environ: Mapping[str, str] | None = None
+) -> list[Callable[..., Any]]:
+    """Real record and evidence activities, then the scripts if enabled for what is left, then
+    the interfaces for the rest."""
+    chosen = RecordActivities(engine).all() + evidence_activities(settings, engine, environ)
     if settings.scripted_skills:
         if settings.env == "production":
             raise RuntimeError("scripted skills are refused when AISRE_ENV is production")
-        chosen += scripted.scripted_activities(settings.scripted_step_seconds)
+        names = {activity_name(a) for a in chosen}
+        scripts = scripted.scripted_activities(settings.scripted_step_seconds)
+        chosen += [a for a in scripts if activity_name(a) not in names]
     names = {activity_name(a) for a in chosen}
     # activities.py isn't strict: its list is typed as plain functions.
     interfaces = cast(Sequence[Callable[..., Any]], act.ALL_INVESTIGATION_ACTIVITIES)
