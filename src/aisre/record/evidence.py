@@ -3,7 +3,8 @@
 `store_round` writes one collection round in one transaction, under the incident's tool-call
 lock (aisre.record.tool_calls): each tool call is counted and admitted, then the evidence it
 produced, its snapshot's `artifacts` row, and one timeline event per record
-(`aisre.evidence.collected.v1`, or `aisre.evidence.gap_recorded.v1` for a gap). A call the
+(`aisre.evidence.collected.v1`, or `aisre.evidence.gap_recorded.v1` for a gap), plus
+`aisre.evidence.injection_flagged.v1` for a record the collector flagged (ST-33). A call the
 budget refuses at that point is dropped with its evidence, so nothing is stored that the
 `tool_calls` log doesn't account for (ADR-69). Evidence is append-only (schema.sql).
 
@@ -46,6 +47,7 @@ from aisre.contracts import (
     EvidenceCollectedData,
     EvidenceRecord,
     GapRecordedData,
+    InjectionFlaggedData,
     Strict,
 )
 from aisre.contracts import EvidenceKind as RecordKind
@@ -198,12 +200,10 @@ def store_round(
     calls: Sequence[Mapping[str, Any]],
     tool_calls: PgToolCalls,
     now: datetime,
-    events: Mapping[UUID, Sequence[tuple[str, Strict]]] | None = None,
 ) -> tuple[list[UUID], list[dict[str, Any]]]:
     """Admits `calls` (rows as ToolGate.record writes them; `fresh` marks a call whose
-    `evidence_ids` are new in `items`) and stores the evidence each produced. `events` adds
-    events per evidence ID, after the one this writes. Returns (stored evidence IDs, refused
-    calls with their `hash`)."""
+    `evidence_ids` are new in `items`) and stores the evidence each produced. Returns (stored
+    evidence IDs, refused calls with their `hash`)."""
     lock_incident(conn, str(incident_id))
     dropped: set[str] = set()
     refused: list[dict[str, Any]] = []
@@ -248,7 +248,13 @@ def store_round(
                 strength_tier=ev.strength_tier,
             )
             kind = "aisre.evidence.collected.v1"
-        for event_type, event_data in [(kind, data), *(events or {}).get(ev.evidence_id, [])]:
+        written: list[tuple[str, Strict]] = [(kind, data)]
+        if ev.flagged_injection:
+            flagged = InjectionFlaggedData(
+                evidence_id=ev.evidence_id, source_system=ev.source_system, tool=ev.tool
+            )
+            written.append(("aisre.evidence.injection_flagged.v1", flagged))
+        for event_type, event_data in written:
             append_event(
                 conn,
                 incident_id,
