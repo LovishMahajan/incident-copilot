@@ -192,6 +192,21 @@ class TestOut:
 
 
 @dataclass
+class ReviewIn:
+    """open_draft_pull_request: for an action whose test `test_run_id` passed (ADR-72)."""
+
+    action_id: str
+    test_run_id: str
+    review_key: str  # idempotency key, sent to the review system as Idempotency-Key
+
+
+@dataclass
+class ReviewOut:
+    review_ref: str  # repository#number
+    review_url: str
+
+
+@dataclass
 class ApprovalRequestIn:
     action_id: str
     action_digest: str
@@ -522,6 +537,15 @@ async def run_sandbox_test(inp: TestIn) -> TestOut:
     raise NotImplementedError
 
 
+@activity.defn(name="open_draft_pull_request")
+async def open_draft_pull_request(inp: ReviewIn) -> ReviewOut:
+    """Release A (ADR-44, FR-18): a draft pull request in the review system for a fix whose
+    failure reproduced and whose test passed, with the patch, FR-19's fields and the test result
+    with its isolation label. Never merged by the platform. Records `patches.review_ref` once and
+    `aisre.action.review_opened.v1`. Implementation: aisre.remediation.review."""
+    raise NotImplementedError
+
+
 @activity.defn(name="request_approval")
 async def request_approval(inp: ApprovalRequestIn) -> ApprovalRequestOut:
     """For a fix: open the request, set approvers_needed from action.ApprovalPolicy.approvers_needed
@@ -596,6 +620,7 @@ ALL_INVESTIGATION_ACTIVITIES = [
     diagnose,
     review_diagnosis,
     draft_patch,
+    open_draft_pull_request,
     request_approval,
     escalate_approval,
     close_approval_request,

@@ -121,6 +121,14 @@ class PatchRejected(Exception):
         self.code, self.detail = code, detail
 
 
+def may_edit(path: str, action_kind: str, policy: EditPolicy | None = None) -> bool:
+    """Whether `action_kind` could edit `path` at all: in its policy, and never on a path that is
+    always protected. A restorable path still has to pass check_paths as an exact restoration."""
+    if _protected(path, _ALWAYS) or (_protected(path) and action_kind != "config_revert"):
+        return False
+    return _editable(path, (policy or DEFAULT_POLICY).allowed.get(action_kind, []))
+
+
 @dataclass(frozen=True)
 class FileChangeFacts:
     """One file a commit changed: its SHA-256 before the commit (at the parent) and after it.

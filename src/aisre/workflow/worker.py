@@ -26,10 +26,14 @@ Skills (T1.14, T1.18): with `AISRE_PROVIDER_API_KEY` set, `hypothesise`, `diagno
 `review_diagnosis` are the real skills (aisre.agent.skills), ahead of any script: the Model
 Gateway over the Anthropic transport (to `AISRE_PROVIDER_URL` when set, which locally is
 Compose's fake provider), the durable ledger, the prompts in `AISRE_PROMPTS_DIR`, and
-PgSkillStore. `draft_patch` stays scripted until M2. `run_sandbox_test` is not registered here: it runs
-in the Test Runner, on its own queue, the only process with Docker (ADR-71,
-aisre.remediation.test_runner). Without a key, tests that ask for scripted
-skills get them.
+PgSkillStore. Without a key, tests that ask for scripted skills get them.
+
+Patch and review (T2.8, ADR-72): with the review system configured (`AISRE_REVIEW_ADAPTER`, `_URL`,
+`_TOKEN`) and the object store, `open_draft_pull_request` is real (aisre.remediation.review), and
+with a provider key too, so is `draft_patch` (aisre.agent.skills.patching), reading the repository
+through the review system. Otherwise `draft_patch` stays scripted (`no_allowed_fix`), as in M0
+and M1. `run_sandbox_test` is not registered here: it runs in the Test Runner, on its own queue,
+the only process with Docker (ADR-71, aisre.remediation.test_runner).
 
 Budget jobs (T1.21): the worker registers BudgetJobWorkflow with the ledger's expiry and
 reconciliation activities, over PostgreSQL, and starts both jobs if they aren't running
@@ -71,6 +75,7 @@ from temporalio.client import Client
 from temporalio.worker import Interceptor, Worker
 
 from aisre.agent.skills.activities import ModelSkills
+from aisre.agent.skills.patching import PatchSkill, PgPatchStore
 from aisre.agent.skills.reasoning import SCHEMAS, load_prompts
 from aisre.agent.skills.store import PgSkillStore
 from aisre.api import audit
@@ -88,6 +93,7 @@ from aisre.record.audit_copy import store_from_settings
 from aisre.reliability import telemetry
 from aisre.reliability.audit_jobs import AuditJobActivities, ensure_audit_jobs
 from aisre.reliability.temporal_telemetry import interceptors
+from aisre.remediation.review import ReviewActivities, client_from_settings
 from aisre.workflow import activities as act
 from aisre.workflow import scripted
 from aisre.workflow.budget_jobs import BudgetJobWorkflow, ensure_budget_jobs
@@ -105,6 +111,23 @@ def activity_name(fn: Callable[..., Any]) -> str:
     return fn.__name__  # every activity here is defined under its own name
 
 
+def object_store(settings: Settings) -> S3Snapshots | None:
+    s = settings
+    if not (
+        s.object_store_url
+        and s.object_store_bucket
+        and s.object_store_access_key
+        and s.object_store_secret_key
+    ):
+        return None
+    return S3Snapshots(
+        s.object_store_url,
+        s.object_store_bucket,
+        s.object_store_access_key,
+        s.object_store_secret_key,
+    )
+
+
 def evidence_activities(settings: Settings, engine: Engine) -> list[Callable[..., Any]]:
     """T1.10, T1.17: the real Evidence Collector and Knowledge Retriever, when the evidence
     sources are configured; else none."""
@@ -112,34 +135,42 @@ def evidence_activities(settings: Settings, engine: Engine) -> list[Callable[...
         return []
     production = settings.env == "production"
     sources = SourceSet.from_config(settings.evidence_sources, production=production)
-    s = settings
-    snapshots = (
-        S3Snapshots(
-            s.object_store_url,
-            s.object_store_bucket,
-            s.object_store_access_key,
-            s.object_store_secret_key,
-        )
-        if s.object_store_url
-        and s.object_store_bucket
-        and s.object_store_access_key
-        and s.object_store_secret_key
-        else None
+    return EvidenceActivities(engine, sources, object_store(settings)).all()
+
+
+def model_skills(
+    settings: Settings, engine: Engine, transport: AnthropicTransport | None
+) -> ModelSkills | None:
+    if transport is None:
+        return None
+    gateway = ModelGateway(
+        ClaudeAdapter(), transport, PgBudgetLedger(engine), CLAUDE_PRICES, SCHEMAS
     )
-    return EvidenceActivities(engine, sources, snapshots).all()
+    prompts = load_prompts(Path(settings.prompts_dir))
+    return ModelSkills(gateway, prompts, PgSkillStore(engine))
 
 
 def skill_activities(
     settings: Settings, engine: Engine, transport: AnthropicTransport | None
 ) -> list[Callable[..., Any]]:
-    """T1.18: the real model-backed skills, when the gateway is configured; else none."""
-    if transport is None:
+    """T1.18, T2.8: the real model-backed skills, when the gateway is configured; else none.
+    `draft_patch` also needs the review system and the object store."""
+    skills = model_skills(settings, engine, transport)
+    if skills is None:
         return []
-    gateway = ModelGateway(
-        ClaudeAdapter(), transport, PgBudgetLedger(engine), CLAUDE_PRICES, SCHEMAS
-    )
-    prompts = load_prompts(Path(settings.prompts_dir))
-    return ModelSkills(gateway, prompts, PgSkillStore(engine)).all()
+    chosen = skills.all()
+    client, blobs = client_from_settings(settings), object_store(settings)
+    if client is not None and blobs is not None:
+        chosen += PatchSkill(skills, client, PgPatchStore(engine, blobs)).all()
+    return chosen
+
+
+def review_activities(settings: Settings, engine: Engine) -> list[Callable[..., Any]]:
+    """T2.8: the draft pull request, when the review system and the object store are set."""
+    client, blobs = client_from_settings(settings), object_store(settings)
+    if client is None or blobs is None:
+        return []
+    return ReviewActivities(engine, blobs, client).all()
 
 
 def provider_transport(settings: Settings) -> AnthropicTransport | None:
@@ -160,6 +191,7 @@ def investigation_activities(
         RecordActivities(engine).all()
         + evidence_activities(settings, engine)
         + skill_activities(settings, engine, transport)
+        + review_activities(settings, engine)
         + (notifier or Notifier(engine)).activities()
     )
     if settings.scripted_skills:

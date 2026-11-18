@@ -118,6 +118,7 @@ module = [
     "aisre.evaluation.seed",
     "aisre.evaluation.runner",
     "aisre.remediation.test_runner",
+    "aisre.remediation.review",
 ]
 # `strict = true` here applies to every module, so name the flags --strict sets.
 disallow_any_generics = true
