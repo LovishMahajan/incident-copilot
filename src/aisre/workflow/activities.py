@@ -19,9 +19,11 @@ Imported into workflow code only through workflow.unsafe.imports_passed_through(
 
 from __future__ import annotations
 
+import json
+import logging
 from collections import Counter
 from dataclasses import dataclass, field
-from datetime import datetime, timedelta
+from datetime import UTC, datetime, timedelta
 from typing import Literal, Optional
 
 from temporalio import activity
@@ -46,7 +48,8 @@ from aisre.agent.agent_contracts import (
     SkillUsage,
 )
 from aisre.agent.tool_registry import ToolGate, ToolRefused
-from aisre.agent.validation import UnsafeOutput, check_output
+from aisre.agent.validation import UnsafeOutput, check_output, mask_secrets
+from aisre.reliability import telemetry
 from aisre.workflow.states import InvalidTransition
 
 # Task queues (Artifact 6: the worker process and the dispatcher process)
@@ -62,6 +65,10 @@ REFUSED_EXPIRED = "approval expired"  # start of the dispatcher's reason when th
 DB_REFUSALS = {"23514", "23001"}  # check_violation, restrict_violation: the record said no
 MAX_PATCH_CANDIDATES = 3  # per diagnosis, one action each, drafted one at a time (ADR-69)
 VOIDED = "voided"  # close reason for an approval the dispatcher found tampered or outdated
+UNSAFE_EVENT = "aisre.model_output.unsafe"  # the audit line for output stopped by ADR-59
+MASKED_COPY_MAX = 4000  # characters of the masked answer kept in that line
+
+audit = logging.getLogger("aisre.audit")
 
 
 # ---------------------------------------------------------------------------
@@ -306,18 +313,44 @@ def precheck_requests(
     return allowed, refused
 
 
-def checked_result(skill: str, output, usage: SkillUsage) -> SkillResult:
+def checked_result(
+    skill: str, output, usage: SkillUsage, incident_id: Optional[str] = None
+) -> SkillResult:
     """The last check on any model output (ADR-59). A secret is a data risk, so it takes the
-    security stop; links and commands are invalid output."""
+    security stop; links and commands are invalid output. Either way, unsafe_result."""
     try:
         check_output(output)
     except UnsafeOutput as e:
-        code = "security_risk" if str(e) == "secret" else "invalid_output"
-        return SkillResult(
-            failure=SkillFailure(skill=skill, code=code, detail=f"unsafe model output: {e}"),
-            usage=usage,
-        )
+        return unsafe_result(skill, e.code, output.model_dump_json(), usage, incident_id)
     return SkillResult(output=output, usage=usage)
+
+
+def unsafe_result(
+    skill: str, kind: str, text: str, usage: SkillUsage, incident_id: Optional[str] = None
+) -> SkillResult:
+    """Model output that failed the output check, whether here or in the gateway: no retry, and
+    the audit copy is masked (ST-23, ST-24). One `aisre.model_output.unsafe` line on the audit
+    logger, which the write-once copy keeps (T1.20), with the masked answer and never the text a
+    pattern matched; `aisre_model_output_unsafe_total` counts it. For a secret this is the leak
+    procedure's start: the security stop hands the incident over at once (ADR-46), and the
+    security lead reads the line and rotates what leaked."""
+    masked = mask_secrets(text)[:MASKED_COPY_MAX]
+    telemetry.model_output_unsafe.labels(task=skill, kind=kind).inc()
+    record = {
+        "event": UNSAFE_EVENT,
+        "time": datetime.now(UTC).isoformat(),
+        "incident_id": incident_id,
+        "skill": skill,
+        "kind": kind,
+        "leak_procedure": kind == "secret",
+        "masked_output": masked,
+    }
+    audit.warning(json.dumps(record, sort_keys=True), extra={"aisre": record})
+    code = "security_risk" if kind == "secret" else "invalid_output"
+    return SkillResult(
+        failure=SkillFailure(skill=skill, code=code, detail=f"unsafe model output: {kind}"),
+        usage=usage,
+    )
 
 
 def dispatch_out(result, attempt_id: str = "", external_ref: Optional[str] = None) -> DispatchOut:

@@ -5,6 +5,11 @@ The only component that calls a model (Artifact 6). For each call:
   → circuit check → per-call input limit → budget reservation → concurrency slot → provider call
   → classification → output validation → settlement → (bounded retry)
 
+Output validation includes ADR-59's check (validation.check_output): an answer holding a secret,
+a link or a command is `invalid_output` with the error "unsafe model output: <kind>", its text
+blocks masked, and it is never retried, since a retry would resend the context that produced it.
+So the attempt's record keeps no unmasked copy and nothing reusable (ST-24).
+
 Fleet limits are checked once per call, not per attempt: a call is one step, so a step under way
 finishes (ADR-55) and the next one is refused.
 """
@@ -23,6 +28,7 @@ from typing import Any, Awaitable, Callable, Optional, Protocol
 from pydantic import BaseModel, ValidationError
 
 from aisre.agent.coordinator import Limits
+from aisre.agent.validation import UnsafeOutput, check_output, mask_secrets
 from aisre.gateway.adapters import HttpResponse, sha256
 from aisre.gateway.gateway_contracts import (
     MAX_INPUT_TOKENS_PER_CALL,
@@ -31,6 +37,7 @@ from aisre.gateway.gateway_contracts import (
     Capability,
     ModelRequest,
     ModelResult,
+    ReasoningBlock,
     ResultStatus,
     StopReason,
     TextBlock,
@@ -38,6 +45,16 @@ from aisre.gateway.gateway_contracts import (
     Usage,
     estimate_tokens,
 )
+
+UNSAFE_OUTPUT = "unsafe model output: "  # validation error prefix; the kind follows, never the text
+
+
+def unsafe_kind(result: ModelResult) -> Optional[str]:
+    """`secret`, `link` or `command` when the gateway stopped an answer under ADR-59."""
+    for e in result.validation_errors:
+        if e.startswith(UNSAFE_OUTPUT):
+            return e.removeprefix(UNSAFE_OUTPUT)
+    return None
 
 
 # ---------------------------------------------------------------------------
@@ -493,7 +510,7 @@ class ModelGateway:
                     }
                 )
                 continue
-            if last.status not in RETRYABLE:  # auth, bad request, refusal, budget...
+            if last.status not in RETRYABLE or unsafe_kind(last):  # auth, refusal, ADR-59...
                 return last
             if last.status == ResultStatus.INVALID_OUTPUT:  # tell the model what was wrong
                 current = current.model_copy(
@@ -683,6 +700,23 @@ class ModelGateway:
                     "validation_errors": [
                         f"{'.'.join(map(str, x['loc']))}: {x['msg']}" for x in e.errors()
                     ],
+                }
+            )
+        try:
+            check_output(parsed)
+        except UnsafeOutput as e:
+            masked = [
+                b.model_copy(update={"text": mask_secrets(b.text)})
+                if isinstance(b, TextBlock)
+                else b
+                for b in result.content
+                if not isinstance(b, ReasoningBlock)
+            ]
+            return result.model_copy(
+                update={
+                    "status": ResultStatus.INVALID_OUTPUT,
+                    "content": masked,
+                    "validation_errors": [f"{UNSAFE_OUTPUT}{e.code}"],
                 }
             )
         return result.model_copy(update={"parsed": parsed.model_dump(mode="json")})
