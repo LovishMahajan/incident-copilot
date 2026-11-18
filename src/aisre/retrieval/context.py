@@ -60,7 +60,7 @@ def merge_repeated_logs(evidence: list[dict]) -> list[dict]:
         else:
             other.append(e)
     merged = []
-    for tpl, items in groups.items():
+    for _tpl, items in groups.items():
         first = items[0]
         refs = tuple(f'evidence:{i["evidence_id"]}' for i in items)
         merged.append({**first, "summary": f'{first["summary"]} (seen {len(items)} times; sources: {", ".join(refs)})',

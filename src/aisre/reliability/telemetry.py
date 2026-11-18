@@ -9,7 +9,6 @@ from __future__ import annotations
 
 import re
 import threading
-from typing import Iterable, Optional, Sequence
 
 from prometheus_client import CollectorRegistry, Counter, Gauge, Histogram
 

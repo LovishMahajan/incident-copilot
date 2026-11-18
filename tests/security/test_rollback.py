@@ -10,7 +10,6 @@ from pathlib import Path
 import pytest
 
 from aisre.verification import verification
-from aisre.workflow import workflow as wf
 from aisre.remediation.action import ApprovalError, MATRIX, Perm, Role
 from aisre.remediation.dispatcher import Outcome
 from aisre.workflow.states import ActionState as A, InvalidTransition, check_action

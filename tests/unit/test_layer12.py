@@ -69,7 +69,7 @@ def test_redaction_leaves_times_and_module_paths():
 
 
 def test_span_export_redacts_and_exporter_failure_does_not_raise():
-    from opentelemetry.sdk.trace.export import SpanExporter, SpanExportResult
+    from opentelemetry.sdk.trace.export import SpanExporter
     from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanExporter
 
     mem = InMemorySpanExporter()

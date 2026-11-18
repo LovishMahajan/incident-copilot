@@ -20,7 +20,7 @@ from aisre.workflow.activities import DispatchIn
 from aisre.remediation.dispatcher import Dispatcher, Ledger, Outcome
 from aisre.reliability.fence import Actor, FenceReason, FenceState, ReconciliationReport
 from aisre.workflow.states import ActionState as A, InvalidTransition, check_action
-from support import (KEYS, ORDINARY, POLICY, SIGNER, SOON, T0, FakeRelease, MemoryStore, decide, make_action, make_rollback,
+from support import (KEYS, ORDINARY, POLICY, SOON, T0, FakeRelease, MemoryStore, decide, make_action, make_rollback,
                      people, rig, rows)
 from aisre.workflow.workflow import ApprovalSignal, IncidentWorkflow
 

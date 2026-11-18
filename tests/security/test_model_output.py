@@ -7,14 +7,14 @@ import asyncio
 import dataclasses
 import json
 import uuid
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timezone
 
 import pytest
 from pydantic import ValidationError
 
 from aisre.workflow.activities import checked_result
 from aisre.gateway.adapters import HttpResponse
-from aisre.agent.agent_contracts import (Claim, Confidence, CriticVerdict, DiagnosisDraft, DiagnosisResult, Evidence, EvidenceKind,
+from aisre.agent.agent_contracts import (Claim, Confidence, CriticVerdict, DiagnosisDraft, Evidence, EvidenceKind,
                              HypothesisDraft, IssueKind, PatchFileEdit, PatchProposal, SkillUsage)
 from aisre.agent.coordinator import AgentState, Step, StopKind, after_critique, after_diagnosis, apply_result, next_step
 from aisre.gateway.gateway import GatewayConfig
