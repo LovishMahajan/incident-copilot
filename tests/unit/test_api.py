@@ -139,3 +139,22 @@ def test_an_invalid_body_is_422_with_field_errors(client):
 def test_unknown_route_is_a_problem(client):
     r = client.get("/v1/nothing")
     assert r.status_code == 404 and r.json()["code"] == "not_found"
+
+
+def test_every_v1_route_declares_and_enforces_an_adr50_permission(client):
+    """T1.4: no /v1 route without a permission (aisre.api.permissions.requires)."""
+    from fastapi.routing import APIRoute
+
+    from aisre.api.permissions import PERMISSION_KEY, Needs
+    from aisre.remediation.action import Perm
+
+    routes = [r for r in client.app.routes if isinstance(r, APIRoute) and r.path.startswith("/v1")]
+    assert routes
+    for route in routes:
+        declared = Perm((route.openapi_extra or {})[PERMISSION_KEY])
+        checks = [d.dependency for d in route.dependencies if isinstance(d.dependency, Needs)]
+        assert [c.perm for c in checks] == [declared], route.path
+    spec = client.get("/openapi.json").json()
+    assert spec["paths"]["/v1/incidents/{incident_id}/timeline"]["get"][PERMISSION_KEY] == (
+        "incident:read"
+    )

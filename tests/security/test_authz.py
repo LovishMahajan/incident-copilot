@@ -208,9 +208,44 @@ def test_st20_a_grant_on_one_service_gives_nothing_on_another():
     assert Directory({("u", "payments"): {Role.INCIDENT_LEAD}}).can("u", SVC, Perm.READ) is False
 
 
-def test_st20_route_enforcement_and_denial_logging_need_the_api():
+# At the routes (T1.4), with the database unreachable: a denial comes before any read.
+INCIDENT = "/v1/incidents/00000000-0000-7000-8000-0000000000aa"
+
+
+@pytest.mark.parametrize(
+    "groups,method,path,perm",
+    [
+        (["aisre:monitoring"], "GET", INCIDENT + "/timeline", "incident:read"),
+        (["aisre:monitoring"], "GET", INCIDENT, "incident:read"),
+        (["aisre:viewer"], "POST", "/v1/incidents", "incident:create"),
+        (["aisre:platform_admin"], "POST", "/v1/incidents", "incident:create"),
+        ([], "GET", INCIDENT, "incident:read"),
+        (["aisre:security_lead"], "GET", INCIDENT + "/timeline", "incident:read"),
+    ],
+)
+def test_st20_a_route_refuses_what_the_matrix_refuses_and_logs_it(
+    token_api, token_issuer, caplog, groups, method, path, perm
+):
+    token = token_issuer[0].token("mallory", groups)
+    with caplog.at_level("INFO", logger="aisre.audit"):
+        r = token_api.request(
+            method,
+            path,
+            json={"service": "orders-api"},
+            headers={"Authorization": f"Bearer {token}", "Idempotency-Key": "st20-key-001"},
+        )
+    assert r.status_code == 403 and r.json()["code"] == "forbidden"
+    assert set(r.json()) <= PROBLEM_KEYS
+    (event,) = [json.loads(m) for m in caplog.messages]
+    assert event["event"] == "aisre.authz.denied" and event["permission"] == perm
+    assert event["caller"] == "user:mallory" and event["path"] == path
+
+
+def test_st20_cancel_severity_note_and_audit_export_routes_arrive_with_t15_t16():
     pytest.skip(
-        "Needs a running API: the matrix is data until a route enforces it and logs the denial"
+        "Viewer cancels, Responder confirms severity, Platform admin adds a note and Viewer reads "
+        "the audit export need routes that T1.5 and T1.6 add; each will declare its permission "
+        "with aisre.api.permissions.requires, which tests/unit/test_api.py checks for every route"
     )
 
 
