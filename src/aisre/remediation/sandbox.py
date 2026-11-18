@@ -12,6 +12,7 @@ import hashlib
 import json
 import re
 import subprocess
+import threading
 import time
 from dataclasses import dataclass, field
 from datetime import datetime
@@ -42,10 +43,33 @@ class SandboxSpec:
 STOP_GRACE_S = 10                          # Q11.28: stop, then kill after this
 REAP_INTERVAL_S = 300                      # Q11.30: the Test Runner schedules reap() this often
 REAP_AGE_S = 3600                          # Q11.30, FR-23: nothing labelled survives past this
+MAX_SANDBOXES = 3                          # ADR-56: at most this many run at once on the test host (provisional)
 
 
 class SpecRejected(Exception):
     pass
+
+
+class SandboxBusy(Exception):
+    """No slot came free in time. Nothing was started, so nothing needs cleaning up."""
+
+
+class SandboxLimiter:
+    """The cap on sandboxes running at once, held by the one Test Runner process on the test host.
+    A run waits for a slot; the launcher never starts a fourth."""
+
+    def __init__(self, limit: int = MAX_SANDBOXES):
+        self.limit = limit
+        self._slots = threading.BoundedSemaphore(limit)
+
+    def acquire(self, wait_s: float) -> bool:
+        return self._slots.acquire(timeout=wait_s) if wait_s > 0 else self._slots.acquire(blocking=False)
+
+    def release(self) -> None:
+        self._slots.release()
+
+
+LIMITER = SandboxLimiter()
 
 
 def launch_args(spec: SandboxSpec, run_id: str, workspace_volume: str) -> list[str]:
@@ -209,9 +233,13 @@ def read_bundle(stdout: str, exit_code: int) -> Optional[ResultBundle]:
 
 
 def run_sandbox(spec: SandboxSpec, run_id: str, expected_patch_sha256: str, base_revision: str, *,
-                popen=subprocess.Popen, run=subprocess.run) -> Optional[ResultBundle]:
-    """The Test Runner's launcher step: workspace, run under the wall clock, cleanup. On the deadline
-    it writes the bundle itself, or classify would see none and call a timeout a crash."""
+                popen=subprocess.Popen, run=subprocess.run, limiter: SandboxLimiter = LIMITER,
+                slot_wait_s: float = 0) -> Optional[ResultBundle]:
+    """The Test Runner's launcher step: a slot, workspace, run under the wall clock, cleanup. On the
+    deadline it writes the bundle itself, or classify would see none and call a timeout a crash.
+    With every slot taken it waits `slot_wait_s`, then raises SandboxBusy before creating anything."""
+    if not limiter.acquire(slot_wait_s):
+        raise SandboxBusy(f"{limiter.limit} sandboxes are already running")
     name, volume = f"aisre-test-{run_id}", workspace_volume(run_id)
     started = time.monotonic()
     try:
@@ -233,8 +261,11 @@ def run_sandbox(spec: SandboxSpec, run_id: str, expected_patch_sha256: str, base
                                 exit_code=proc.returncode, duration_s=time.monotonic() - started, timed_out=True,
                                 log_artifact_sha256=None)
     finally:                                                 # also on cancellation; a failure here is the reaper's
-        run(["docker", "rm", "--force", name], capture_output=True)
-        run(["docker", "volume", "rm", "--force", volume], capture_output=True)
+        try:
+            run(["docker", "rm", "--force", name], capture_output=True)
+            run(["docker", "volume", "rm", "--force", volume], capture_output=True)
+        finally:
+            limiter.release()
 
 
 def _older(lines: str, now: datetime) -> list[str]:

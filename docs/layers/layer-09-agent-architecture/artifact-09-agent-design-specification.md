@@ -3,7 +3,7 @@
 - **Layer:** 9, Agent Architecture and Engineering Reasoning
 - **Built from:** Artifact 3 (Incident and Evidence Catalog), Artifact 7 (Data and Interface Specification), Artifact 8 (Workflow Specification)
 - **Status:** Proposed: gaps resolved and reference code aligned 2026-11-02 per [decisions.md](../../decisions.md); pending team sign-off
-- **Sources:** [conversation.md](conversation.md), [files/coordinator.py](files/coordinator.py), [files/agent_contracts.py](files/agent_contracts.py), [files/tool_registry.py](files/tool_registry.py), [files/validation.py](files/validation.py), [files/test_agent.py](files/test_agent.py), [assets/image2.png](assets/image2.png), [technical-specification.md](../../reference/technical-specification.md), [system-design.md](../../reference/system-design.md), [Layer 3](../layer-03-sre-fundamentals/conversation.md), [Layer 4](../layer-04-requirements/conversation.md), [Layer 7 schema](../layer-07-data-apis-events/files/schema-tables.sql), [Layer 7 contracts](../layer-07-data-apis-events/files/contracts.py), [Layer 8 workflow.py](../layer-08-workflows-state-machines/files/workflow.py), [Layer 10](../layer-10-inference-retrieval/conversation.md), [Layer 12 eval_harness.py](../layer-12-reliability-evaluation/files/eval_harness.py), [decisions.md](../../decisions.md)
+- **Sources:** [conversation.md](conversation.md), the code in [src/aisre/agent/](../../../src/aisre/agent/) and [tests/unit/test_agent.py](../../../tests/unit/test_agent.py) (ADR-67), their filed copies [files/coordinator.py](files/coordinator.py), [files/agent_contracts.py](files/agent_contracts.py), [files/tool_registry.py](files/tool_registry.py), [files/validation.py](files/validation.py), [files/test_agent.py](files/test_agent.py), [assets/image2.png](assets/image2.png), [technical-specification.md](../../reference/technical-specification.md), [system-design.md](../../reference/system-design.md), [Layer 3](../layer-03-sre-fundamentals/conversation.md), [Layer 4](../layer-04-requirements/conversation.md), [db/schema.sql](../../../db/schema.sql), [Layer 7 contracts](../layer-07-data-apis-events/files/contracts.py), [Layer 8 workflow.py](../layer-08-workflows-state-machines/files/workflow.py), [Layer 10](../layer-10-inference-retrieval/conversation.md), [Layer 12 eval_harness.py](../layer-12-reliability-evaluation/files/eval_harness.py), [decisions.md](../../decisions.md)
 
 ## Required sections
 
@@ -32,14 +32,21 @@ The design is a **workflow with an agent loop inside it**. The Temporal workflow
 **How the workflow drives the coordinator** (ADR-52). The workflow owns durability, and the coordinator owns the investigation's decisions. The `investigating` phase of the Layer 8 workflow is this loop:
 
 ```python
-state = AgentState(started_at=workflow.now(), limits=LIMITS)
+# Simplified from IncidentWorkflow._investigate in src/aisre/workflow/workflow.py
+s = AgentState(started_at=granted_at, limits=LIMITS, evidence_only=await self._evidence_only())
+deadline = granted_at + LIMITS.investigation              # the 15 minutes start at the slot grant
 while True:
-    step = coordinator.next_step(state, workflow.now())   # pure: decides, logs the reason
-    if step in (Step.FINISH_ESTABLISHED, Step.FINISH_INCONCLUSIVE):
-        break
+    step = next_step(s, workflow.now())                   # pure: decides, logs the reason
+    if step in FINISH_STEPS:                              # FINISH_ESTABLISHED, FINISH_INCONCLUSIVE
+        return s, step
     await self._safe_point()
-    result = await self._cancellable(plan.fn, self._step_input(step, state), ...)  # capped by the deadline
-    apply_result(state, step, result)                     # after_collect, after_hypotheses, ...
+    plan = STEP_PLANS[step]
+    try:
+        result = await self._cancellable(plan.fn, self._step_input(step, s), ...)  # capped by the deadline
+    except ActivityError as e:                            # no result at all
+        after_failure(s, plan.skill, "deadline_passed" or "store_failed", ...)
+        continue
+    apply_result(s, step, result)                         # after_collect, after_hypotheses, ...
 ```
 
 - **One step, one activity.** Each result is checkpointed by Temporal, and `AgentState` lives in the workflow, so a replay rebuilds it exactly.
@@ -81,7 +88,7 @@ while True:
 | Critic verdicts and issues | PostgreSQL; the last verdict in coordinator state |
 | Counters: model calls, tool calls, input and output tokens, cost, revisions, rounds, critic failures | Coordinator state, fed from each `SkillResult` (9.3) |
 | Final confidence, and any skill failure | Coordinator state |
-| Repeated-call hashes | ToolGate log in PostgreSQL |
+| Repeated-call hashes | The `tool_calls` table in PostgreSQL (ADR-69; in `db/schema.sql`). The ToolGate reaches it through a storage interface, `ToolCallStore`, whose default, `MemoryToolCalls`, keeps the log in memory. The PostgreSQL-backed store isn't built (Artifact 13, T1.10) |
 | Start time and limits | Coordinator state |
 | Decision log | Coordinator state, copied to the timeline |
 
@@ -118,7 +125,7 @@ One do-everything agent marks its own homework, gives weaker results on each job
 | Knowledge Retriever | 30 s | 3 Temporal attempts (`TOOL_RETRY`). A failed search becomes a gap | `search_runbooks`, `search_past_incidents` | `eval-knowledge` |
 | Hypothesis Generator | 300 s (provisional) | 3 gateway attempts, then the step fails | May suggest READ tools only, as `evidence_needed`. Runs none | `eval-hypothesis` |
 | Diagnoser | 300 s | 3 gateway attempts, then the step fails | None | `eval-diagnosis` |
-| Critic | 300 s (provisional) | 3 gateway attempts per run, 2 runs, 6 at most (ADR-52) | May suggest READ tools only, as `evidence_requests`. Runs none | `eval-critic` |
+| Critic | 300 s (provisional) | 3 gateway attempts per run. Two failed runs end the investigation, so failed runs use 6 at most (ADR-52). With up to 3 diagnoses to review, the worst case is 12 (9.10) | May suggest READ tools only, as `evidence_requests`. Runs none | `eval-critic` |
 | Patch Proposer | 300 s (provisional) | 3 gateway attempts per candidate, up to 3 candidates (Artifact 11) | `draft_patch` | `eval-patch` |
 
 Only the gateway retries a model failure (ADR-27). Model activities return every application failure as a value, and Temporal gets one extra run for one purpose: a lost worker (ADR-52).
@@ -127,7 +134,7 @@ Only the gateway retries a model failure (ADR-27). Model activities return every
 
 | Set | Suite categories | Scored on | Pass mark (provisional) |
 | --- | --- | --- | --- |
-| `eval-collector` | All 10, with sources made to fail in `insufficient_evidence` | Each required source collected or recorded as a gap (ADR-54) | 100% |
+| `eval-collector` | All 12, with sources made to fail in `insufficient_evidence` | Each required source collected or recorded as a gap (ADR-54) | 100% |
 | `eval-knowledge` | `config_change`, `code_regression`, plus the labelled query set in Artifact 10 | Recall@5; wrong-service and wrong-permission hits | Recall@5 ≥ 0.9; 0 wrong hits |
 | `eval-hypothesis` | `config_change`, `code_regression`, `dependency_failure`, `database_failure`, `capacity`, `noisy_coincident_deploy`, `multi_cause` | True cause among the hypotheses | ≥ 90% |
 | `eval-diagnosis` | `config_change`, `code_regression`, `noisy_coincident_deploy`, `insufficient_evidence`, `flaky_or_transient`, `multi_cause` | Leading cause, honesty, false established | ADR-65 gates |
@@ -241,8 +248,13 @@ Permitted groups come from the platform's identity, never the input. Stale passa
 
 | Field | Type | Rule |
 | --- | --- | --- |
-| `action_id` | str | The new action |
+| `action_id` | str | The new action. One candidate is one action (ADR-69) |
 | `patch_sha256` | 64 hex characters | Fingerprint computed by code (ADR-64) |
+| `action_kind` | str | From the allowed list; default `config_revert` |
+| `hold_seconds` | int | The action's hold period: 600 by default, never below its service's (ADR-66, ADR-69) |
+| `sandbox_available` | bool | False in Release A when no sandbox exists: the untested draft is handed over (ADR-44) |
+
+ADR-69 allows up to 3 candidates per diagnosis, drafted one at a time. The skill input carries the candidate number as `SkillIn.candidate_no`, 1 to 3.
 
 `DiagnosisResult`, the `diagnose` activity's output: the draft, plus the code-computed facts the coordinator reads.
 
@@ -300,7 +312,7 @@ Direct access would risk destructive commands, injection becoming code execution
 4. If it passes, the adapter (which holds the credential) runs it read-only, redacts the result, and stores it as evidence.
 5. The model gets the evidence ID and a short extract, or the refusal code. Refusals are recorded.
 
-Tool requests come from the hypothesis skill's `evidence_needed` and the critic's `evidence_requests`. Both are typed `EvidenceRequest` records naming READ tools only, and the coordinator decides whether to run them. The activity that produced them pre-checks each with the ToolGate, and drops and records any that would be refused or that repeat an earlier call. A targeted round therefore runs only calls that are new and allowed.
+Tool requests come from the hypothesis skill's `evidence_needed` and the critic's `evidence_requests`. Both are typed `EvidenceRequest` records naming READ tools only, and the coordinator decides whether to run them. The activity that produced them pre-checks each with the ToolGate under its own skill's fixed tool list, so a tool the hypothesis skill or the critic may not suggest is refused `tool_not_allowed`. It drops and records any that would be refused or that repeat an earlier call. `precheck_requests(gate, requests, skill)` takes the producing skill, `hypothesise` or `critique`, as a required argument, and is tested. A targeted round therefore runs only calls that are new and allowed.
 
 **Tool kinds** ([Q9.40](conversation.md)):
 
@@ -330,7 +342,7 @@ The four added tools' limits are provisional. `draft_patch` allows 3 calls to ma
 
 The gate caps output too. `ToolGate.cap_output` runs on every result before storage: anything over `max_output_bytes` is truncated, marked `is_partial`, and stored as a snapshot; only a short extract goes to the model.
 
-**Parameter schemas** ([Q9.41](conversation.md)): unknown fields refused; `end` after `start`; `limit` 1–500 (default 200); `level` one of error, warning, info; text filter up to 200 characters; `metric` one of `http_5xx_rate`, `http_latency_p95`, `http_request_rate`, `error_rate_by_version`; `action_kind` from the allowed list. `AlertQuery`: `service` and an optional `alert_id`. `ErrorGroupQuery`: the window fields, plus an optional `release` up to 100 characters. `KnowledgeQuery`: `service`, `query` up to 200 characters, `k` 1–10 (default 5).
+**Parameter schemas** ([Q9.41](conversation.md)): unknown fields refused; `end` after `start`; `limit` 1–500 (default 200); `level` one of error, warning, info; text filters up to 200 characters, apart from `path` at 300; `metric` one of `http_5xx_rate`, `http_latency_p95`, `http_request_rate`, `error_rate_by_version`; `action_kind` from the allowed list. `AlertQuery`: `service` and an optional `alert_id`. `ErrorGroupQuery`: the window fields, plus an optional `release` up to 100 characters. `KnowledgeQuery`: `service`, `query` up to 200 characters, `k` 1–10 (default 5).
 
 **`ToolGate.check`, in order.** The model sees the refusal code, so it can correct the request.
 
@@ -358,7 +370,7 @@ The gate caps output too. `ToolGate.cap_output` runs on every result before stor
 
 **Prompt injection** ([Q9.46](conversation.md)): evidence enters only as labelled data, as short extracts; instruction-like text is flagged (`flagged_injection`) and shown to the critic and approvers; outputs are typed, with no field for "run this"; tool requests are gated; the coordinator decides the next step; writes need a person and the dispatcher. The injection test set runs against the agent, and zero unsafe actions is the pass mark.
 
-**Repeated calls** ([Q9.47](conversation.md)): the canonical hash covers the tool name and validated, normalised parameters. The first repeat returns the stored evidence rather than querying again. A third identical call is refused.
+**Repeated calls** ([Q9.47](conversation.md)): the canonical hash covers the tool name and validated, normalised parameters. The first repeat returns the stored evidence rather than querying again. A third identical call is refused. Per-incident budgets, repeat detection and the stored results for repeats are kept in the `tool_calls` table (ADR-69), so they survive a worker restart. The ToolGate counts budgets and repeats from its `ToolCallStore`, and `stored_result` answers a repeat. The default store is in memory, for tests; the PostgreSQL-backed store, which must count and insert in one transaction per incident because parallel calls share the budget, isn't built (Artifact 13, T1.10).
 
 ## 9.5 Evidence schema
 
@@ -582,7 +594,7 @@ The policy lives in `coordinator.next_step` ([coordinator.py](files/coordinator.
 | --- | --- | --- | --- |
 | 1 | At most 2 revisions: the diagnosis runs at most 3 times | `revision limit (2) reached` | Yes |
 | 2 | A revision repeats the same diagnosis (same fingerprint) | `revision repeated the same diagnosis` | Yes |
-| 3 | Support ratio didn't improve, and no new evidence arrived since the previous diagnosis | `revision did not improve support and no new evidence` | To add (C18) |
+| 3 | Support ratio didn't improve, and no new evidence arrived since the previous diagnosis | `revision did not improve support and no new evidence` | Yes |
 
 If none applies, pending requests run as a targeted round, then the coordinator runs the next `DIAGNOSE`. With none pending it goes straight to `DIAGNOSE`.
 
@@ -723,7 +735,7 @@ Layer 9's answers have no Assumptions blocks, although the conversation log refe
 
 ## Decisions and conflicts
 
-The sections above state the resolved position, and the code in `files/` implements it. [test_agent.py](files/test_agent.py) has 109 passing tests, and 18 deliberate mutants of the key behaviours were all caught. C7 and C8 are tested by driving `next_step` with scripted results.
+The sections above state the resolved position. The code the team builds on is `src/aisre/agent/` (ADR-67), and `files/` holds the filed copy. [tests/unit/test_agent.py](../../../tests/unit/test_agent.py) covers it (112 passing on 2026-11-17; 109 in the filed copy, [test_agent.py](files/test_agent.py)), and 18 deliberate mutants of the key behaviours were all caught. C7 and C8 are tested by driving `next_step` with scripted results.
 
 What remains:
 
@@ -777,6 +789,13 @@ What remains:
 | Skill outputs versus what the coordinator reads | `DiagnosisDraft` carries no fingerprint or support ratio, and `verdict = None` can't fit `CriticVerdict`. `DiagnosisResult` and `ReviewResult` carry them | ADR-52, Layer decision (proposed) |
 | Critic overflow | Requests beyond a round's limit are logged as not run, for critic requests as for hypothesis requests | Layer decision (proposed) |
 | Accept with no confidence | Ends inconclusive, so it fails closed | ADR-53, Layer decision (proposed) |
+| Critic attempts: "6 at most" (9.2) vs 12 (9.10) | Both hold and 9.2 now says so: failed runs use at most 6 attempts, and the worst case across 3 diagnoses is 12 | ADR-52, Layer decision (proposed) |
+| Evaluation categories: "All 10" | 12, as ADR-65 counts them | ADR-65 |
+| Where the tool call log lives | The `tool_calls` table, behind a storage interface on the ToolGate | ADR-69 |
+| Which skill a request is pre-checked under | The skill that produced it, so `tool_not_allowed` applies to hypothesis and critic requests | Layer decision (proposed) |
+| `PatchOut` fields | 9.3 lists all five. One candidate is one action, up to 3 per diagnosis | ADR-69 |
+| Text filter length | 200 characters, `path` 300, as `tool_registry.py` has it | Layer decision (proposed) |
+| Revision rule 3 "To add" | Tested: `test_agent.py` asserts the stop reason | Layer decision (proposed) |
 
 **Needs the team:** whether any Claude and ChatGPT disagreement affected a decision in this layer, Owner: Team, settled when: the conversation logs are filled in.
 

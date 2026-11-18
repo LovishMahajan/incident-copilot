@@ -6,11 +6,14 @@ from __future__ import annotations
 import base64
 import dataclasses
 import inspect
+import uuid
 from datetime import timedelta
 
 import pytest
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 
+from aisre.contracts import EVENT_DATA
+from aisre.workflow import activities as act
 from aisre.workflow import workflow as wf
 from aisre.remediation.action import ApprovalError, Directory, ImpactFacts, Role, Signer, Standing, evaluate, verify_signature
 from aisre.workflow.activities import DispatchIn
@@ -77,10 +80,39 @@ def test_st01_malformed_signature_is_ignored_not_fatal(signature):
     refused_by_dispatcher(rig((a, [bad])), a.action_id)
 
 
-def test_st01_st02_st13_voiding_the_approval_and_alerting_are_not_implemented():
-    pytest.skip("Needs a component that doesn't exist: the dispatcher's role may write only aisre.execution.* events "
-                "(schema.sql check_timeline_writer), ExecutionRefusedData has no alert flag, and neither alerts.yml nor "
-                "any module turns a signature refusal into aisre.approval.voided.v1 or a security alert")
+def test_st01_st02_a_forged_or_edited_row_makes_the_refusal_void_the_approval():
+    """The dispatcher's role may write only aisre.execution.* events, so it reports void_approval and the
+    workflow closes the request as voided (tests/unit/test_workflow.py)."""
+    a = make_action()
+    forged = decide(a, "priya", signer=Signer("k1", ATTACKER_KEY))
+    edited = dataclasses.replace(decide(a, "priya"), subject="sam")
+    for stored in ([forged], [edited]):
+        r = rig((a, stored))
+        result = refused_by_dispatcher(r, a.action_id)
+        assert result.void_approval and act.dispatch_out(result).void_approval
+        assert [e["type"] for e in r.ledger.events] == ["aisre.execution.refused.v1"]      # its own event only
+
+
+def test_st01_st02_st13_control_an_ordinary_refusal_voids_nothing():
+    a = make_action()
+    assert refused_by_dispatcher(rig((a, [])), a.action_id).void_approval is False          # nobody approved yet
+    late = rig((a, [decide(a, "priya")]), now=T0 + timedelta(hours=2))
+    assert refused_by_dispatcher(late, a.action_id).void_approval is False                   # it expired
+    assert rig((a, [decide(a, "priya")])).run(a.action_id).void_approval is False            # it ran
+
+
+def test_st01_st02_st13_the_voided_close_is_the_workflows_to_ask_for_and_its_event_has_a_payload():
+    closing = act.ApprovalRequestIn("a1", "d" * 64, "a1:approval:1", close_reason=act.VOIDED,
+                                    close_detail="patch content changed")
+    data = EVENT_DATA["aisre.approval.voided.v1"](approval_request_id=uuid.uuid4(), action_id=uuid.uuid4(),
+                                                  reason=closing.close_detail)
+    assert closing.close_reason == "voided" and data.reason == "patch content changed"
+
+
+def test_st01_st02_st13_alerting_security_and_the_approver_needs_the_notifier():
+    pytest.skip("Needs the Notifier and a running workflow: the hand-over after a voided approval names security and "
+                "the approvers as its audience (test_workflow.py), but `notify` is an interface and no alert rule "
+                "reads aisre.approval.voided.v1")
 
 
 def test_st01_a_good_signature_with_junk_added_is_not_good():

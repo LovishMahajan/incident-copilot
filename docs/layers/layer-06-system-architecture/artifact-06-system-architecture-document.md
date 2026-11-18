@@ -114,7 +114,12 @@ flowchart TB
     telemetry["Telemetry: OpenTelemetry,<br/>Prometheus, Grafana"]
     reviewSystem["Review system"]
     release["Release process"]
+    modelProvider["Model provider"]
+    tools["Logs, traces, error tracker,<br/>change history"]
+    monitoring["Existing monitoring"]
+    messaging["Messaging"]
 
+    monitoring -->|"alerts"| intake
     intake -->|"incident and start event"| recordApi
     approval -->|"decision, signed approval"| recordApi
     recordApi -->|"writes record and outbox row (one transaction)"| incidentsDb
@@ -138,6 +143,11 @@ flowchart TB
     reviewer --> gateway
     proposer --> gateway
     proposer -->|"draft pull request"| reviewSystem
+    gateway -->|"redacted extracts"| modelProvider
+    collector -->|"read-only queries"| tools
+    collector -->|"read-only queries"| monitoring
+    verifier -->|"read-only queries"| monitoring
+    notifier -->|"notifications"| messaging
     recordWorker -->|"reads and writes incidents"| incidentsDb
 
     testRunner -->|"creates; collects scanned results"| isolated
@@ -157,6 +167,8 @@ Earlier version: [the team's original screenshot](assets/image6.png).
 
 One codebase, four processes: API, worker, dispatcher and isolated test environment (ADR-51). The workflow server and the stores are supporting services, not platform processes.
 
+**Built so far.** The diagram is the target. None of the four processes runs yet: `src/aisre/` holds their modules as tested libraries, with no API, worker entry point or dispatcher process, and no sandbox has run under gVisor. The Incident Record module (`src/aisre/record/`), the outbox relay, the Evidence Collector's adapters and the Notifier don't exist. The API, record, relay and worker entry point are planned for M0, the adapters and Notifier for M1, the sandbox host for M2 and the dispatcher process for M3 ([Artifact 13](../layer-13-implementation-planning/artifact-13-complete-implementation-plan.md), ADR-67).
+
 **Process split** ([Q6.3](conversation.md)): by what each part needs to be trusted with, and how it must behave at runtime.
 
 | Responsibility | Where it runs | Why it's separate |
@@ -174,7 +186,7 @@ One codebase, four processes: API, worker, dispatcher and isolated test environm
 | Validate mandatory fields | Collect evidence |
 | Deduplicate against open incidents | Retrieve runbooks |
 | Store the incident, its start event and an outbox row, in one transaction (ADR-19) | Generate and test patches |
-| Return the incident ID | Generate and test patches |
+| Return the incident ID | Call the model; build and review hypotheses |
 | Read requests: status, timeline | Wait for approval; execute; verify recovery |
 | Recording an approval or a cancellation, with its outbox row | Act on the approval or cancellation |
 
@@ -240,28 +252,39 @@ flowchart TB
     engine --> gateway
     engine --> reviewer
     reviewer --> gateway
+    reviewer -->|"revise"| engine
     reviewer -->|"accepted"| proposer
     reviewer -->|"rejected or inconclusive"| notifier
     proposer --> gateway
     proposer -->|"draft pull request"| reviewSystem
     proposer -->|"no allowed fix"| notifier
     proposer --> testRunner
+    testRunner -->|"failed or not reproduced: next candidate, up to 3"| proposer
+    testRunner -->|"no candidate passes"| notifier
     testRunner -->|"Release A: tested recommendation"| notifier
     testRunner -->|"Release B: request approval"| approval
     approval -->|"stores signed approval"| recordStored
     approval -->|"decision signal through the outbox"| orchestratorDispatch
+    orchestratorDispatch -->|"rejected or expired"| notifier
     orchestratorDispatch -->|"action ID only, on the dispatcher's queue"| dispatcher
     dispatcher -->|"reloads action and signatures"| recordStored
-    dispatcher -->|"change applied"| verifier
-    verifier -->|"recovered"| close
-    verifier -->|"not recovered"| undo
-    verifier -->|"inconclusive"| notifier
+    dispatcher -->|"outcome"| orchestratorDispatch
+    orchestratorDispatch -->|"applied: verify recovery"| verifier
+    orchestratorDispatch -->|"refused, not applied, or still unknown"| notifier
+    verifier -->|"verdict"| orchestratorDispatch
+    orchestratorDispatch -->|"verified"| close
+    orchestratorDispatch -->|"failed"| undo
+    orchestratorDispatch -->|"inconclusive"| notifier
     undo --> notifier
     collector -.->|"large items"| artifacts
     testRunner -.->|"test output"| artifacts
 ```
 
 Earlier version: [the team's original screenshot](assets/image8.png).
+
+**Reading the diagram.** The workflow calls the Recovery Verifier once the dispatcher reports the change applied, and acts on its verdict; the dispatcher and the Verifier never call each other (ADR-48). The failure paths are drawn: a diagnosis sent back for revision; a test that fails or doesn't reproduce, which leads to the next patch candidate, up to 3 per diagnosis (ADR-69); a rejected or expired approval request; a change refused, not applied or of unknown outcome; and a failed or inconclusive verdict. Each ends with the Notifier handing over to a person.
+
+**Built so far.** The workflow, coordinator, output validation, Model Gateway, retrieval, patch checks, sandbox launcher, approval and signing rules, dispatcher and verification logic exist as tested modules in `src/aisre/`. The activity bodies that collect evidence and call the model, Intake, the Incident Record, the Notifier and the API routes aren't built, and no component runs in a process yet (6.2).
 
 **Component summary** ([Q6.22](conversation.md)):
 
@@ -296,19 +319,20 @@ Earlier version: [the team's original screenshot](assets/image8.png).
 | Q6.15 | Diagnosis Engine | Computes facts in code, asks the model (through the gateway) for ranked hypotheses that cite evidence, produces a diagnosis or an inconclusive result. After review accepts the diagnosis, its Patch Proposer skill drafts the patch for the leading hypothesis as a draft pull request (ADR-51) |
 | Q6.16 | Diagnosis Reviewer | Separate from the Engine; calls the model through the gateway; checks citations exist and support the claim, checks the action is on the allowed list and within the incident's service, scores confidence from evidence strength, confirms alternatives were considered. Can reject or downgrade; never approves a production change |
 | Q6.17 | Test Runner | Creates the isolated environment, with no network (ADR-60), reproduces the failure, applies the patch, runs the checks, collects the scanned results, destroys the environment; no production credentials |
-| Q6.18 | Approval Service | Sends approval requests, checks the approver's rights and recent sign-in, records decisions, signs approvals and stores them, handles escalation and expiry. Has no path to the dispatcher (ADR-51) |
+| Q6.18 | Approval Service | Sends approval requests, checks the approver's rights and recent sign-in, records decisions, signs approvals and stores them, and records each request's escalation and expiry. The workflow's timers decide when a request escalates or expires (Q6.11); the Approval Service only records it. Has no path to the dispatcher (ADR-51) |
 | Q6.19 | Trusted Dispatcher | Takes only an action ID, reloads the action and approvals from trusted storage, verifies the signatures against the action digest, checks expiry, re-checks the service state, applies the change once through the release process, records the attempt; the only component with production write access (ADR-49, ADR-51) |
 | Q6.20 | Recovery Verifier | Reads monitoring directly, using criteria recorded before execution; requires recovery to hold for the set period; returns its verdict to the workflow. It writes nothing to production and has no dispatcher path. On a failed verdict the workflow starts the rollback action; on an inconclusive one it hands over (ADR-48, ADR-66) |
 | Q6.21 | Artifact Store | Large items: raw evidence snapshots, patch diffs, test output, model inputs and outputs. The record keeps a reference and a fingerprint; items are write-once, encrypted, access-controlled, and deleted when retention ends |
 | Q6.22 | Platform Telemetry | Receives metrics, traces and structured logs from every process; exposes health and availability, queue length and wait time, step durations, model cost, tokens and errors, evidence source errors, limit breaches; raises alerts on the platform's own targets. Separate from customers' monitoring, which the platform only reads |
 
-**Model Gateway and providers** ([Q6.36](conversation.md)): the Diagnosis Engine and the Reviewer call the gateway through one internal interface, and the gateway calls one adapter per provider. The active adapter is solid; the deferred one is dashed. The provider boxes sit outside the platform's boundary.
+**Model Gateway and providers** ([Q6.36](conversation.md)): the Diagnosis Engine, its Patch Proposer skill and the Reviewer call the gateway through one internal interface, and the gateway calls one adapter per provider. The active adapter is solid; the deferred one is dashed. The provider boxes sit outside the platform's boundary.
 
 ```mermaid
 flowchart LR
     subgraph workerProc["Worker process"]
         engine["Diagnosis Engine"]
         reviewer["Diagnosis Reviewer"]
+        proposer["Patch Proposer skill"]
         gateway["Model Gateway"]
         claude["Claude adapter"]
         tinker["Tinker adapter: deferred"]
@@ -319,6 +343,7 @@ flowchart LR
 
     engine --> gateway
     reviewer --> gateway
+    proposer --> gateway
     gateway --> claude
     gateway -.-> tinker
     claude --> claudeApi
@@ -355,7 +380,7 @@ Earlier version: [the team's original screenshot](assets/image3.png).
 | Migrations | Alembic | **Accept** | ADR-05 |
 | Workflow engine | Temporal | **Accept**, single node on PostgreSQL | ADR-06 |
 | Model providers | Claude and Tinker | **Replace:** Claude only; Tinker deferred | ADR-07 |
-| Retrieval | BM25 | **Accept**, using PostgreSQL full-text search | ADR-09 |
+| Retrieval | BM25 | **Accept**: PostgreSQL stores the corpus and the worker ranks it (amended by ADR-62) | ADR-09 |
 | Execution | Restricted sandbox | **Replace:** per-test container under gVisor on a separate host | ADR-10 |
 | Metrics | Prometheus | **Accept** | ADR-11 |
 | Dashboard | Grafana | **Accept**, for platform health only | ADR-12 |
@@ -383,7 +408,7 @@ Each record follows the decision log format from Artifact 2. Status is **Accepte
 | ADR-06 | Temporal, single node on PostgreSQL | Crash recovery, timers, cancellation, retries and history built in | PostgreSQL job queue (fallback), Celery (no durable timers) | Platform owner | Too heavy to run; or the burst test fails | Medium, behind the orchestrator interface |
 | ADR-07 | Claude only initially; **Tinker deferred** (Status: **Replaced**) | No custom model in the first version; Tinker is for fine-tuning; its serving is in beta | Two providers from the start | SRE lead | Accuracy, cost or data-residency conditions in Q6.27 | Low, behind the gateway |
 | ADR-08 | Thin internal model gateway with provider adapters | Full control of limits, validation, logging and cost | Third-party abstraction library | Platform owner | Many providers needed | Low |
-| ADR-09 | BM25 through PostgreSQL full-text search | Exact terms shared by alerts and runbooks; no extra system | Vector database | SRE lead | Retrieval misses measured | Low |
+| ADR-09 | BM25 ranking in the worker, over a corpus stored in PostgreSQL (amended by ADR-62; was "through PostgreSQL full-text search") | Exact terms shared by alerts and runbooks; no extra system | Vector database | SRE lead | Retrieval misses measured | Low |
 | ADR-10 | Per-test container under gVisor, on a separate host (Status: **Replaced** "restricted sandbox" with this specific choice) | Strong isolation without running virtual machines | Plain containers (weaker); Firecracker (more to run) | Security lead | Escape test fails; stronger guarantee needed | Medium |
 | ADR-11 | Prometheus for metrics and alerts | Standard; percentile queries; alerting | Hosted metrics service | Platform owner | Organisation standard differs | Low |
 | ADR-12 | Grafana for platform-health dashboards only | Standard; works with Prometheus and traces | Building our own | Platform owner | — | Low |
@@ -531,7 +556,7 @@ Earlier version: [the team's original screenshot](assets/image1.png).
 - Each module owns its own tables; other modules don't read them directly.
 - Shared code is limited to common types, such as the incident ID and the evidence record.
 - Dependencies point one way: for example, diagnosis depends on evidence, never the reverse.
-- A test fails if a module imports another module's internals.
+- A test fails if a module imports another module's internals (planned for M0; no such check exists yet).
 
 **Left out for now, and what would change that** ([Q6.33](conversation.md)):
 
@@ -566,7 +591,7 @@ Earlier version: [the team's original screenshot](assets/image1.png).
 | Item | Resolution | Decided by |
 | --- | --- | --- |
 | Observability tools | Prefer the organisation's existing installations rather than running new ones ([Q6.31](conversation.md)). | Team answer (Q6.31) |
-| Migrations | Run once, as a separate step, before new processes start. Each is tested in the build pipeline, and a check fails the build if models and migrations disagree ([Q6.25](conversation.md)). | Team answer (Q6.25) |
+| Migrations | Run once, as a separate step, before new processes start. Each is tested in the build pipeline, and a check fails the build if models and migrations disagree ([Q6.25](conversation.md)). Planned for M0: no pipeline or migrations exist yet, and `db/schema.sql` is the schema until then (ADR-64). | Team answer (Q6.25) |
 | Model Gateway interface | One internal interface, per-provider behaviour as configuration, a fake provider adapter for tests ([Q6.28](conversation.md)). | Team answer (Q6.28) |
 | Local development | Fakes for outside systems (monitoring source, release process, model adapter), and the synthetic test cases as seed data ([Q6.32](conversation.md)). | Team answer (Q6.32) |
 | 1. API to workflow server | Outbox only. The API never calls Temporal; the relay runs in the worker, so the process count is unchanged. 6.2 and 6.3 redrawn. | ADR-19, ADR-51 |
@@ -583,6 +608,12 @@ Earlier version: [the team's original screenshot](assets/image1.png).
 | Recovery Verifier and undo | Q6.20's "asks the dispatcher to undo" is replaced: the Verifier writes nothing and has no dispatcher path. The workflow starts a rollback action on the verdict. Inconclusive hands over. | ADR-48, ADR-66 |
 | Where BM25 runs | ADR-09's PostgreSQL full-text search is replaced: PostgreSQL stores the corpus and the worker ranks it. | ADR-62 |
 | Kubernetes revisit trigger | Q6.33's trigger gains more than 20 services, or sustained concurrency above 5. | ADR-51 |
+| Who calls the Recovery Verifier | The workflow, once the dispatcher reports the change applied. The 6.3 arrow from the dispatcher to the Verifier was wrong and is redrawn. | ADR-48 |
+| Failure paths in 6.3 | Revision, failed or unreproduced test, rejection or expiry, refused or unknown execution are drawn. A failed test leads to the next candidate, up to 3 per diagnosis. | ADR-69, Layer decision (proposed) |
+| Approval escalation and expiry: Approval Service or workflow | The workflow's timers own them. The Approval Service records the result. | Layer decision (proposed), Q6.11 |
+| Outside systems missing from 6.2 | Model provider, evidence tools, monitoring and messaging added, each with the worker module that calls it. | Layer decision (proposed) |
+| Patch Proposer and the gateway | The Patch Proposer calls the Model Gateway too; the provider diagram shows it. | ADR-52 |
+| Diagrams against what is built | 6.2 and 6.3 say which processes and modules don't exist yet. The import-boundary test and the migration checks are marked planned for M0. | ADR-67 |
 | Claude and ChatGPT disagreements | No record exists; [conversation.md](conversation.md) marks it TBD for the team. | Open: see below |
 
 **Needs the team:** Claude vs ChatGPT disagreements and the agent used per conversation, Owner: Team, settled when: conversation logs are filled in (the share link needs sign-in).

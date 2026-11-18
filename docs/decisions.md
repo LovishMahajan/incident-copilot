@@ -1,8 +1,8 @@
 # Decision Register
 
-The one decision log the worksheet asks for (Q2.23). It settles the cross-layer gaps and conflicts found in Artifacts 1–12.
+The one decision log the worksheet asks for (Q2.23). It settles the cross-layer gaps and conflicts found in Artifacts 1–13.
 
-**Status of everything here: Proposed (2026-11-02), pending team sign-off.** Owners are roles, because the sources name no people. Each decision can be overturned in review; change it here first, then in the artifacts it lists.
+**Status of everything here: Proposed (2026-11-02, amended through 2026-11-17), pending team sign-off.** Owners are roles, because the sources name no people. Each decision can be overturned in review; change it here first, then in the artifacts it lists.
 
 ## How to read the docs
 
@@ -72,7 +72,7 @@ ADR numbers continue from the existing series and this file is the log. Q2.23's 
 
 | Machine | Transition | Trigger |
 | --- | --- | --- |
-| Incident | `handed_over` → `investigating` | A person requests re-investigation. New workflow run `incident-<id>-r2`. No automatic path exists |
+| Incident | `handed_over` → `investigating` | A person requests re-investigation. New workflow run `incident-<id>-r<N>`, starting at `-r2`. No automatic path exists |
 | Incident | `not_recovered` → `reconciling` | A rollback's outcome is unknown |
 | Action | `proposed` → `awaiting_approval` | Rollback actions only, which skip `testing` (ADR-48) |
 
@@ -193,7 +193,7 @@ The audit's "15 vs 60 minutes" is not a conflict. These are two different timers
 | Processes | One codebase, four processes: API, worker, dispatcher, isolated test environment. Supersedes "one deployable" |
 | API to Temporal | Outbox only (ADR-19). Diagrams redrawn |
 | Signed approval route | Stored by the API. The workflow sends only the action ID on the dispatcher's task queue. The dispatcher reloads the action and signatures from trusted storage. Diagrams 6.2, 6.3, 6.7 redrawn |
-| Dispatcher and database | Its own role: read actions, patches, approvals and verification results; write `execution_attempts`, action status for `applying` and its outcomes, and its own timeline events. Listed in the component summary |
+| Dispatcher and database | Its own role: read actions, patches, approvals, verification results, the fence tables, stop requests and deployment blocks; write deployment blocks; write `execution_attempts`, action status for `applying` and its outcomes, and its own timeline events. Listed in the component summary |
 | Temporal hosting | Self-hosted single node, in its own database on the same PostgreSQL instance. Temporal keeps running through a loss of the incidents database, but not through a loss of the instance. Closes the System Design open decision |
 | Patch Proposer | A skill inside the Diagnosis Engine, running after the review accepts the diagnosis. No new component. The draft-pull-request credential is the worker's only write credential outside the platform |
 | Notifier | Component 15, in the worker. Added to the Q6.6 module list |
@@ -210,13 +210,13 @@ The audit's "15 vs 60 minutes" is not a conflict. These are two different timers
 The Layer 8 workflow owns durability, and the Layer 9 coordinator owns the investigation's decisions:
 
 1. The workflow's `investigating` phase is a loop: call pure `coordinator.next_step(state, now)`, run the returned step as one activity, feed the result back. Each result is checkpointed by Temporal.
-2. A patch candidate is one `draft_patch` activity, up to 3 per action. Steps are `COLLECT_BASELINE`, `RETRIEVE_KNOWLEDGE` (added), `HYPOTHESISE`, `COLLECT_TARGETED`, `DIAGNOSE`, `CRITIQUE`, then a stop verdict.
+2. A patch candidate is one `draft_patch` activity and its own action (ADR-47), up to 3 per diagnosis (ADR-69). Steps are `COLLECT_BASELINE`, `RETRIEVE_KNOWLEDGE` (added), `HYPOTHESISE`, `COLLECT_TARGETED`, `DIAGNOSE`, `CRITIQUE`, then a stop verdict.
 3. A skill failure returns a typed failure to the coordinator, which stops as inconclusive.
 4. Crash recovery: Temporal re-runs the activity once on another worker (ADR-27). A completed model result is reused by `input_sha256` (ADR-61), so nothing is re-billed.
 5. Model calls happen in hypothesise, diagnose, critique and patch proposal, always through the gateway. Technical specification section 5 is amended.
 6. `ModelDiagnosisOutput` is replaced by `DiagnosisDraft`. Field names follow `agent_contracts.py`, and ADR-64 aligns storage.
 7. Limits read from one configuration object. Tokens and spend are added to the termination policy.
-8. Invalid output: 3 gateway attempts per step, then the step fails. A critic failing twice ends the investigation as inconclusive, so a critic can't exceed 6 attempts total.
+8. Invalid output: 3 gateway attempts per step, then the step fails. A critic failing twice ends the investigation as inconclusive, so a critic can't have more than 6 failed attempts; with revisions, the worst case is 12 critique attempts in all.
 9. Revision checks run before pending evidence requests, so no wasted third round. A targeted round adding nothing stops the loop whether or not a critic has run.
 
 - **Owner:** SRE lead. **Reversal:** Medium.
@@ -405,8 +405,8 @@ Prompts live at `prompts/<skill>/v<N>.md`, immutable once merged. A new version 
 | `model_attempts` | Adds checkpoint, adapter version, output schema fingerprint, provider request ID, stop reason, cache tokens, usage reported or estimated, prompt fingerprint. Task name `critique` |
 | Undo | `is_undo` is removed (ADR-48) |
 | Catalogue | `services` gains `critical` and `hold_seconds` (ADR-49, ADR-66) |
-| Table count | 34 tables, not 22, including `investigation_queue`, `fence_state` and `fence_reasons` for Layers 8 and 12, and `reservation_corrections` for ADR-61. Technical specification section 4 is amended |
-| Digests | `action_digest` and `test_bundle_digest` are write-once, set at `testing` → `awaiting_approval`, because the test bundle doesn't exist when the action is created |
+| Table count | 37 tables, not 22. Beyond the first 30: `investigation_queue`, `fence_state`, `fence_reasons`, `reservation_corrections`, `tool_calls`, `stop_requests`, `deployment_blocks`. Technical specification section 4 is amended |
+| Digests | `action_digest` and `test_bundle_digest` are write-once, set at `testing` → `awaiting_approval`, because the test bundle doesn't exist when the action is created. A rollback is the exception: it copies its parent's digests at creation |
 | Intake | `dead_letters` table (ADR-58) |
 | Retrieval | `documents`, `chunks`, `index_revisions` (ADR-62) |
 
@@ -496,8 +496,37 @@ The worksheet requires M0–M5. M1–M4 keep the meaning they have in Artifacts 
 | M4 Harden | Crash recovery, outages, backups, telemetry, burst handling, all 40 security tests, frozen evaluation suite | Restore drill passes, the suite is frozen and its gates pass; Release A goes live as the advisory pilot |
 | M5 Pilot and decide | Advisory pilot, measured baselines, pilot accuracy, approval review | A recorded decision on Release B, and the final report |
 
-- **Rationale:** renumbering 97 requirements and 40 security tests has real cost and no benefit. **Owner:** Engineering manager. **Reversal:** Low. **Revisit when:** a milestone misses its gate.
+- **Rationale:** renumbering the requirements and 40 security tests has real cost and no benefit. **Owner:** Engineering manager. **Reversal:** Low. **Revisit when:** a milestone misses its gate.
 - **Resolves:** the M1–M4 vs M0–M5 difference between Layers 1–12 and the worksheet.
+
+### ADR-69: Decisions from the Layer 1–13 audit (2026-11-17)
+
+| Topic | Decision |
+| --- | --- |
+| Patch candidates | One candidate is one action. Up to 3 actions per diagnosis, drafted one at a time: the next is drafted only when the previous one's test fails. Corrects ADR-52's "per action" |
+| Incident version | People can change severity while the workflow runs, so the workflow never trusts its copy of the incident `version`: see "Stale version" below |
+| Stop request | Cancelling during `awaiting_approval` or before the dispatcher records intent is a stop, not a revocation. Anyone with the cancel permission can raise it, and the dispatcher refuses an action whose incident has a stop. A revocation still withdraws only the caller's own approval |
+| Cancel and rollback | A cancel never skips the rollback of a failed fix. Once a change is applied, the verify and rollback path always completes; the cancel takes effect after it |
+| Final confidence | `diagnoses` stores `final_confidence` and `final_outcome`, written once at review. APIs show these, so a diagnosis capped to low reads as inconclusive |
+| Unknown-outcome block | Held per deployment in its own table, not derived from attempt rows. A late apply after `not_applied` puts the block back, and only an outcome resolution by the incident lead clears it |
+| Tool call log | `tool_calls` table: per-incident budgets, repeat detection and stored results for repeats |
+| Re-investigation queue | A queue row carries its run ID. Reconciliation removes a row only when its run has ended |
+| Dispatcher and fence | The dispatcher role can read `fence_state` and `fence_reasons` |
+| Model per task | `diagnose` and `critique` use the `default` alias (Opus 5.5); `hypothesise` and `draft_patch` use `standard` (Sonnet 5.5). Set in code until `prompts/` exists (provisional) |
+| Per-service hold | An action's `hold_seconds` can't be below its service's |
+| Deadlines | Q13.51's deadlines stand over Artifact 2.7's: release process before M3, rotas before the pilot, so by the end of M4, provider terms before the first real incident data is sent, named people before M0 |
+| Test host owner | Security lead owns it; Platform owner provisions it |
+| Fence and restore | Operated through the CLI by a Platform admin at first. No HTTP endpoints in the first version; a lead sets a manual fence through the CLI too |
+| Patch mismatch | When the dispatcher finds a mismatch, it returns a void-required result. The workflow closes the request as voided and writes `aisre.approval.voided.v1`, because the dispatcher's role can't write that event |
+| Injection flagging | A deterministic flagger marks instruction-like text when evidence is normalised (provisional patterns). Flagged items are shown to the approver |
+| Void record | A request already closed as `decided` keeps that close reason, since it is write-once. The void is recorded by the `aisre.approval.voided.v1` event |
+| What counts as a stop | Only a person's cancel is a stop. A Temporal-level cancel before intent isn't. A stop applies to actions created before it, so a later re-investigation isn't refused by an old stop |
+| Stale version | The workflow sends the last version it saw, and on a stale-version refusal reloads and retries, at most 5 times, then hands over. If the hand-over write is also refused as stale, the run fails, because nothing more can be recorded |
+| Late apply resolved as applied | The action stays `not_applied`, which is final. The deployment block row and the outcome resolution are the record that the change landed, and the timeline links them |
+| Release A closure | "Never close without independent verification" applies where the platform applied the change. In Release A a person applied it, and the incident lead's acceptance closes it |
+
+- **Owner:** Platform owner; Security lead for the stop, block and fence rows. **Reversal:** Low, except the block table (Medium). **Revisit when:** team review.
+- **Resolves:** the code and design defects found in the 2026-11-17 audit, and the Layer 13 conflicts.
 
 ## Not conflicts
 
@@ -515,11 +544,18 @@ Decisions can't supply these. Each stays open in its artifact, marked `**Needs t
 | Team review and sign-off of every artifact and decision | All role owners | "Reviewed by" filled in |
 | Claude vs ChatGPT disagreements, agent per conversation | Team | Conversation logs filled in. The share link needs sign-in |
 | Baseline time to cause and recovery, reversal rate | SRE lead | Measured from past incidents |
-| Real alert samples, peak concurrency, personal data in logs | SRE lead, Platform owner, Security lead | Samples inspected (System Design section 10) |
+| Real alert samples (SRE lead), peak concurrency (Platform owner), personal data in logs (Security lead) | As named | Samples inspected (System Design section 10) |
 | Release process supports apply, undo and lookup by key | Platform owner | Scenario revert done through it |
 | On-call rotas and night coverage | Engineering manager | Rotas confirmed |
 | Provider terms on retention and training | Security lead | Terms confirmed |
 | Actual monthly budget and hourly cost | Engineering manager | Finance confirms (ADR-56) |
 | The frozen suite and its baseline run | SRE lead | Built from the specification in Artifact 12, then run once |
+| Sandbox checkout seeding: how the code at `base_revision` reaches a no-network sandbox | Security lead | Decided before M2 |
+| Identity system and secrets manager choice | Security lead | Chosen before M3 |
+| Temporal server version | Platform owner | Pinned at M0 |
+| Where write-ahead logs are archived | Platform owner | Decided before the M4 restore drill |
+| Provider availability record | SRE lead | Read from the provider's status history before M1 |
+| Labelled retrieval query set; frozen suite `suite-1.0` and its baseline | SRE lead | Built at M1 and M4 (Artifact 13) |
+| Layer 13 open items | Owners in Artifact 13, 13.11 | Each has a milestone deadline there |
 | Whether the amended behaviour works in a running system | Platform owner | The remaining items in [code-changes-required.md](code-changes-required.md) done, and the 21 skipped security tests run |
 | Legal deletion of runbook text: `documents` and `chunks` are append-only, so `purge_document` can't remove body text from PostgreSQL | Security lead | A deletion path is decided |

@@ -262,6 +262,30 @@ def check_output(output: BaseModel) -> None:
             raise UnsafeOutput("command")
 
 
+# ST-33: text in evidence that addresses the reader instead of describing the system. Provisional,
+# like the lists above. A hit only flags the record: it stays readable, and supports no claim.
+_INJECTION = re.compile(
+    r"(?is)\b(ignore|disregard|forget|override)\b.{0,40}\b(instructions?|rules|prompts?|guidance|guardrails)\b"
+    r"|\byou are now\b|\bnew instructions?\b|\bas an? (ai|assistant|language model)\b"
+    r"|\b(skip|bypass|without|no need for|don'?t wait for)\b.{0,30}\b(approvals?|approvers?|review|verification)\b"
+    r"|\b(hide|conceal|suppress|do not (report|mention|show)|don'?t (report|mention|show))\b.{0,40}"
+    r"\b(errors?|failures?|alerts?|incidents?|evidence)\b"
+    r"|\b(run|execute)\b.{0,20}`[^`\n]+`"
+    r"|\bmark (this|the) (incident|alert|diagnosis) as (resolved|recovered|closed|established)\b"
+    r"|<\s*/?\s*(system|instructions?)\s*>")
+
+
+def flags_injection(text: str) -> bool:
+    """Deterministic, and run on every extract at evidence normalisation, before storage (ST-33)."""
+    return bool(_INJECTION.search(text))
+
+
+def flag_injection(ev: Evidence) -> Evidence:
+    """The normalisation step itself: the record as it is stored. A flagged record supports nothing
+    (_supports) and is shown to the approver as flagged."""
+    return ev.model_copy(update={"flagged_injection": True}) if flags_injection(ev.summary) else ev
+
+
 def mask_secrets(text: str) -> str:
     """For any copy of failed output stored for audit (ADR-59)."""
     for p in _SECRET_PATTERNS:

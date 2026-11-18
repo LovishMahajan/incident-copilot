@@ -3,7 +3,7 @@
 - **Layer:** 11, Patch Generation, Sandboxing, Approval and Execution
 - **Built from:** Artifacts 5, 8 and 9
 - **Status:** Proposed: gaps resolved and reference code aligned 2026-11-02 per [decisions.md](../../decisions.md); pending team sign-off
-- **Sources:** [decisions.md](../../decisions.md), [conversation.md](conversation.md), [files/patch.py](files/patch.py), [files/sandbox.py](files/sandbox.py), [files/action.py](files/action.py), [files/dispatcher.py](files/dispatcher.py), [files/verification.py](files/verification.py), [files/test_remediation.py](files/test_remediation.py), [System Design](../../reference/system-design.md), [Technical specification](../../reference/technical-specification.md), [Layer 8 workflow.py](../layer-08-workflows-state-machines/files/workflow.py), [Layer 7 schema-tables.sql](../layer-07-data-apis-events/files/schema-tables.sql)
+- **Sources:** [decisions.md](../../decisions.md), [conversation.md](conversation.md), the code in [src/aisre/remediation/](../../../src/aisre/remediation/), [src/aisre/verification/](../../../src/aisre/verification/) and [tests/unit/test_remediation.py](../../../tests/unit/test_remediation.py) (ADR-67), their filed copies [files/patch.py](files/patch.py), [files/sandbox.py](files/sandbox.py), [files/action.py](files/action.py), [files/dispatcher.py](files/dispatcher.py), [files/verification.py](files/verification.py), [files/test_remediation.py](files/test_remediation.py), [System Design](../../reference/system-design.md), [Technical specification](../../reference/technical-specification.md), [Layer 8 workflow.py](../layer-08-workflows-state-machines/files/workflow.py), [Layer 7 schema-tables.sql](../layer-07-data-apis-events/files/schema-tables.sql)
 
 ## Required sections
 
@@ -12,7 +12,7 @@
 | 11.1 Patch schema | Q11.1, Q11.4–Q11.7, Q11.10–Q11.12 | Yes |
 | 11.2 Diff and hashing strategy | Q11.2, Q11.3, Q11.8, Q11.9 | Yes |
 | 11.3 Sandbox threat model | Q11.13, Q11.14, Q11.22, Q11.23, Q11.31–Q11.34 | Yes |
-| 11.4 Resource isolation | Q11.15–Q11.21, Q11.24–Q11.30 | Yes |
+| 11.4 Resource isolation | Q11.15–Q11.21, Q11.24–Q11.30 | Partial |
 | 11.5 Trusted test harness | Q11.35–Q11.48 | Yes |
 | 11.6 Approval API | Q11.50, Q11.53, Q11.54, Q11.58, Q11.60–Q11.64 | Yes |
 | 11.7 Authorization matrix | Q11.49, Q11.51, Q11.52, Q11.59, Q11.65, Q11.66 | Yes |
@@ -61,12 +61,12 @@ The model proposes the new content; `build_patch_from_contents` computes the hun
 **Candidates** ([Q11.10](conversation.md), [Q11.11](conversation.md)):
 
 - Each candidate is its own patch and its own action, with the same `diagnosis_id` and its own `candidate_no`.
-- At most 3 per diagnosis, drafted in order: configuration revert, commit revert, release rollback.
-- Tested one at a time, stopping at the first that passes. Identical digests are tested once.
+- At most 3 per diagnosis, in order: configuration revert, commit revert, release rollback (ADR-69).
+- Drafted and tested one at a time. The next candidate is drafted only when the previous one's test fails, so drafting stops at the first that passes. Identical digests are tested once.
 - Each draft counts against the model-call budget, and each test against a sandbox budget (provisional: 3 runs per incident, 45 minutes of sandbox time in total).
-- The approval screen shows candidates side by side, smallest reversal first. Approving one approves only that one; the others are withdrawn when it executes.
+- Only the candidate that passed reaches approval. The approval request shows it with the earlier candidates' diffs and failed tests, smallest reversal first. Approving it approves only that action; the earlier candidates' actions have already ended `test_failed`.
 
-**When nothing passes** ([Q11.12](conversation.md)): nothing is deployed. The action becomes `test_failed` and the incident goes to `handed_over`, with the diagnosis and evidence, each candidate's diff and test results, the reproduction test, and a suggestion of the safest manual option, labelled as a suggestion. There is no "best effort" deployment and no relaxing of tests.
+**When nothing passes** ([Q11.12](conversation.md)): nothing is deployed. Each candidate's action becomes `test_failed` and the incident goes to `handed_over`, with the diagnosis and evidence, each candidate's diff and test results, the reproduction test, and a suggestion of the safest manual option, labelled as a suggestion. There is no "best effort" deployment and no relaxing of tests.
 
 ## 11.2 Diff and hashing strategy
 
@@ -148,7 +148,7 @@ Re-evaluate when the sandbox's purpose widens, or after any security incident.
 | Each test | 120 s | Harness | Timeout ([Q11.28](conversation.md)) |
 | Whole run | 900 s wall clock (`wall_clock_s`); stop, then kill after 10 s | Launcher, which records the result as timed out | Timeout ([Q11.28](conversation.md)) |
 | Workflow | Activity timeout and heartbeat | Artifact 8 | Timeout ([Q11.28](conversation.md)) |
-| Sandboxes at once | 3, provisional | Test Runner | Queued (ADR-56) |
+| Sandboxes at once | 3, provisional | Test Runner, through `SandboxLimiter` on `run_sandbox` (`MAX_SANDBOXES`; built and tested, per process) | Queued (ADR-56). The reference launcher refuses with `SandboxBusy` by default, because `run_sandbox_test`'s 900 s timeout has no allowance for a wait; queueing arrives with T2.6 |
 
 The launcher, not `docker run`, applies the workspace size and the wall clock, because neither is a container flag.
 
@@ -303,6 +303,8 @@ All three calls send `If-Match` with the action's version, and an `Idempotency-K
 
 A repeat with the same key and body returns the stored response, not a refusal.
 
+**What is built.** `record_decision` in `action.py` enforces the ten codes that depend on the decision itself: `reauth_required`, `forbidden`, `self_approval`, `not_own_approval`, `not_found`, `digest_mismatch`, `duplicate`, `action_not_open`, `execution_started` and `reason_required`. The other six belong to the HTTP layer and aren't built: `unauthenticated`, `idempotency_key_reused`, `request_in_progress`, `stale_version`, `version_required` and `invalid_request`. They arrive with the approval routes at M3. `unauthenticated` raises a security alert, as the table says: it is in `SECURITY_ALERT_CODES` and in the `AisreApprovalRefused` rule, though no caller reaches the module unauthenticated until the routes exist.
+
 **Open for a decision:**
 
 | Action status | Approve | Reject | Revoke |
@@ -449,7 +451,7 @@ Service identities use least privilege (ADR-51). Security staff read the full au
 | `policy_version` | Edit policy and approval policy in force at creation, as `edit-policy@N\|approval-policy@N` |
 | `test_bundle_digest` | The passing harness result for this exact patch. A `rollback` copies the parent's |
 | `recovery_predicates_digest` | What "recovered" means, including the recorded baseline, fixed before execution. A `rollback` copies the parent's |
-| `hold_seconds` | The hold period, from the service catalogue (ADR-64, ADR-66). A `rollback` copies the parent's |
+| `hold_seconds` | The hold period, from the service catalogue (ADR-64, ADR-66). Never below its service's `hold_seconds` (ADR-69). A `rollback` copies the parent's |
 | `high_impact` | Whether two approvers are needed, as recorded at creation. A `rollback` copies the parent's. The dispatcher re-derives the rule (11.7), so a false value lowers nothing |
 | `parent_action_id` | For a rollback, the action it reverses |
 | `created_at` | Creation time |
@@ -465,9 +467,13 @@ Service identities use least privilege (ADR-51). Security staff read the full au
 
 *Answers Q11.65, Q11.67–Q11.69, Q11.73.*
 
-**Owner:** the Trusted Dispatcher (security lead). It runs as its own process (ADR-51), and holds the only production write access and only the public approval key. Its database role reads actions, patches and approvals, and writes `execution_attempts` and its own timeline events. In Release A the production write credential isn't provisioned at all (ADR-44). The release process performs the deployment through its normal, audited pipeline.
+**Owner:** the Trusted Dispatcher (security lead). It runs as its own process (ADR-51), and holds the only production write access and only the public approval key. Its database role reads actions, patches, approvals and verification results, the fence tables `fence_state` and `fence_reasons`, and `stop_requests` and `deployment_blocks` (ADR-51, ADR-69). It writes `execution_attempts`, action status for `applying` and its outcomes, a late-apply row in `deployment_blocks` with its resolution, and its own `aisre.execution.*` timeline events. In Release A the production write credential isn't provisioned at all (ADR-44). The release process performs the deployment through its normal, audited pipeline.
 
 **Input:** `Dispatcher.execute(action_id)` takes only the ID. Approvals are stored by the API, and the workflow sends only the action ID on the dispatcher's task queue ([Q11.65](conversation.md), ADR-51). The request isn't trusted: it could come from a compromised worker, a bug, or arguments shaped by injected text. So the dispatcher loads the action and decisions from trusted storage, recomputes the action digest, and verifies signatures against that digest ([Q11.68](conversation.md)).
+
+**Stop request (ADR-69).** A cancel during `awaiting_approval`, or before the dispatcher records intent, is a stop on the incident. Anyone with the cancel permission can raise it. It needs a reason and, like a rejection, no recent sign-in. The dispatcher refuses an action whose incident has a stop raised since the action was created, and the action becomes `withdrawn`. No approval is voided or withdrawn by it: a revocation still withdraws only the caller's own approval. A rollback is never stopped, and after intent a stop is refused `execution_started`. Only a person's cancel is a stop; a Temporal-level cancel isn't. Built and tested: `stop_requests` in the schema, `action.request_stop`, the dispatcher's pre-check and the database's refusal of intent. Not built: the cancellation route that writes the row (Artifact 13, T3.5).
+
+**Mismatch (ADR-69).** On a signature, digest or revision mismatch the dispatcher refuses, sends nothing and returns a void-required result (`DispatchResult.void_approval`). The workflow closes the approval request as voided and writes `aisre.approval.voided.v1`, because the dispatcher's role writes only `aisre.execution.*` events. An unreadable patch store or any other refusal voids nothing. Built and tested: the result and the workflow's voided close. Not built: the activity body that writes the event, the Notifier and an alert rule (Artifact 13, T3.6). A request already closed as `decided` keeps that reason, and the event records the void.
 
 **The `ReleaseProcess` interface** ([Q11.67](conversation.md)). There is no shell, no free-form command and no general API passthrough. There are three keyed operations and one unkeyed read. Undo isn't a separate method: it is a new `rollback` action, with its own execution key, sent through `apply`.
 
@@ -517,7 +523,7 @@ Any failure means `REFUSED`, nothing sent, with the reason recorded. Check 9 and
 | Attempt | One `execution_attempts` row per try: same key, increasing `attempt_no` |
 | Applied | At most one row with outcome `applied` per key, enforced by a partial unique index |
 | Approval | Authorises the action. Two approvers still authorise one key. Each attempt records the `approval_id` that completed the count, for audit, and the `action_digest` |
-| Unknown outcome | Blocks every further change on that deployment, not just that key, until a person clears it (11.11) |
+| Unknown outcome | Blocks every further change on that deployment, not just that key, until a person clears it (11.11). ADR-69 holds the block per deployment in its own table, `deployment_blocks`: a change that lands after `not_applied` puts it back, and only the Incident lead's outcome resolution clears it. The action stays `not_applied`; the block row and the resolution are the record. Built and tested in the schema and the in-memory ledger; the real dispatcher's SQL for the block writes remains (Artifact 13, T3.7) |
 
 **Three layers** ([Q11.71](conversation.md)):
 
@@ -661,7 +667,7 @@ How it is recorded:
 | Request | `POST /v1/actions/{fix}/approvals` carries `action_digest` and `rollback_action_digest`. Leaving the second out gives no conditional approval |
 | Storage | One transaction writes two signed `approval_decisions` rows: the fix's approval, and a row for the rollback action |
 | Rollback row | `action_id` and `action_digest` are the rollback's, `decision` = `approved`, `conditional` = true, `conditional_on_approval_id` = the same person's approval of the fix. Both fields are inside the signature |
-| Lifetime | `valid_until` = the fix approval's `valid_until` + `hold_seconds` + 15 minutes. It is fixed at signing, and counts only from a `not_recovered` verdict |
+| Lifetime | `valid_until` = the fix approval's `valid_until` + `hold_seconds` + 15 minutes. It is fixed at signing, and counts only from a `failed` verdict |
 | Use | The dispatcher treats the row like any approval, and also requires the parent's recorded `failed` verdict. Before that verdict it doesn't count |
 
 A fresh approval is needed if there is no conditional approval, it has lapsed, or a high-impact rollback has only one of its two signatures. The request then follows the normal timers: it escalates at 15 minutes and expires at 60 (ADR-49).
@@ -671,7 +677,7 @@ A fresh approval is needed if there is no conditional approval, it has lapsed, o
 | Event | Rollback action |
 | --- | --- |
 | Parent verified, or never executed | `proposed` → `withdrawn` |
-| `not_recovered` verdict | `proposed` → `awaiting_approval` (ADR-46), then `approved` at once if its conditional approvals count |
+| `failed` verdict | `proposed` → `awaiting_approval` (ADR-46), then `approved` at once if its conditional approvals count |
 | Dispatch | `approved` → `applying` → `executed` |
 | Rollback executed | Parent `executed` → `undone` |
 
@@ -731,7 +737,7 @@ The answers in this layer have no labelled assumptions list, so these are the va
 | --- | --- | --- |
 | Value: approval validity | 15 minutes in code, answers, System Design and Technical specification | ADR-49 |
 | Value: request expiry | 60 minutes everywhere | ADR-49 |
-| Value: request escalation | 15 minutes. Not in `ApprovalPolicy`; 15 minutes in Layer 8 `workflow.py` and the answers | ADR-49 |
+| Value: request escalation | 15 minutes: `ApprovalPolicy.escalates`, the Layer 8 workflow timer and the answers | ADR-49 |
 | Value: recent sign-in | 15 minutes, two-factor, everywhere | ADR-49 |
 | Value: approver count | 1, or 2 if high-impact | ADR-49 |
 | Value: hold period | 600 s default, longer per service; open decision closed | ADR-66 |
@@ -776,10 +782,18 @@ The answers in this layer have no labelled assumptions list, so these are the va
 | How the result leaves the sandbox | The last line of the harness's stdout, because the volume can't be read after the run (11.5) | Layer decision (proposed) |
 | Target answers neither `applied` nor `rejected` | `unknown`, not `not_applied`, because 11.10 lets the target say "in progress" | Layer decision (proposed) |
 | Reader with no access to a service | `not_found`, not `forbidden`, as the 11.6 table and ADR-58 say | ADR-58 |
+| Candidates: all drafted, then tested, and shown side by side | Drafted one at a time, the next only when the previous test fails. One candidate is one action, up to 3 per diagnosis | ADR-69 |
+| Dispatcher role in 11.9 | Reads verification results, the fence tables, stop requests and deployment blocks too; writes action status for `applying` and its outcomes, and a late-apply block | ADR-51, ADR-69 |
+| Late apply after `not_applied` | The per-deployment block is put back, and only an outcome resolution clears it | ADR-69 |
+| Cancel after approval | A stop request on the incident, which the dispatcher honours. Not a revocation | ADR-69 |
+| Action hold period below the service's | Refused | ADR-69 |
+| Rollback trigger named a `not_recovered` verdict | The verdict is `failed`; `not_recovered` is the incident state | ADR-48, ADR-64 |
+| Refusal codes with no code behind them | 11.6 says which ten `record_decision` enforces and which six wait for the HTTP layer | Layer decision (proposed) |
+| 11.4 marked complete while sandbox seeding is open | 11.4 is Partial until a seeding method is chosen | Layer decision (proposed) |
 
 **Needs the team:** whether the amended behaviour works in code, Owner: Platform owner, settled when: the items in Reference code status below are built and tested on the real services.
 
-**Reference code status.** [files/test_remediation.py](files/test_remediation.py) has 167 passing tests, and 19 safety lines broken one at a time were all caught. "Tested" in this artifact means that suite. It uses fakes for Docker and the release process, and these modules hold their ledger in memory.
+**Reference code status.** The code the team builds on is `src/aisre/remediation/` and `src/aisre/verification/` (ADR-67). [tests/unit/test_remediation.py](../../../tests/unit/test_remediation.py) covers it (176 passing on 2026-11-17; 167 in the filed copy, [files/test_remediation.py](files/test_remediation.py)), and 19 safety lines broken one at a time were all caught. "Tested" in this artifact means that suite. It uses fakes for Docker and the release process, and these modules hold their ledger in memory.
 
 **Docker and gVisor are not proven on a real run.** Checked on Docker 29, on 2026-11-02:
 
@@ -797,7 +811,7 @@ What remains:
 | Item | What remains |
 | --- | --- |
 | Launcher | A real run of the table above, on the test host |
-| Harness | It isn't in `files/`. It must meet the stdout and `error_signature` rules in 11.5 |
+| Harness | It isn't in `src/` or `files/`. It must meet the stdout and `error_signature` rules in 11.5 |
 | Test Runner | Scheduling `reap()` every `REAP_INTERVAL_S`, and setting `aisre_sandboxes_leftover` |
 | Dispatcher ledger | `Ledger.put` writes attempt, status and version together in memory. The real transaction, the `aisre_dispatcher` connection and the advisory lock remain. The deployment block is in `Ledger.begin` with the intent write, so the two can't be separated |
 | Outcome resolution | `resolve_outcome` records it and clears the block. The HTTP layer, `If-Match`, `Idempotency-Key` and a refusal event remain |

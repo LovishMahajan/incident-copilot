@@ -40,7 +40,7 @@ incident-copilot/
 ├── README.md
 ├── compose.yaml                         [M0] local stack, images pinned by digest
 ├── pyproject.toml
-├── uv.lock                              commit at M0: untracked today
+├── uv.lock                              committed
 ├── db/
 │   ├── migrations/                      [M0] Alembic; 0001_baseline runs schema.sql
 │   ├── schema-tests.sql
@@ -168,7 +168,8 @@ graph LR
   I["Identity system with groups<br/>Security lead"] --> M3
   P["PostgreSQL with point-in-time recovery<br/>Platform owner"] --> M4
   F["Frozen suite<br/>SRE lead"] --> GA
-  T["Rotas, budget<br/>Engineering manager"] --> GA
+  RO["Rotas<br/>Engineering manager"] --> M4
+  T["Budget<br/>Engineering manager"] --> GA
   L["Provider terms, legal deletion<br/>Security lead"] --> GA
   B["Baselines<br/>SRE lead"] --> GA
 ```
@@ -201,8 +202,8 @@ graph LR
 | --- | --- | --- |
 | M0 | T0.3, T0.4, T0.5, T0.6 | T0.1 and T0.2 come first, so the whole-repository reformat conflicts with nobody (Q13.19) |
 | M1 | T1.1, T1.7, T1.13, T1.17, T1.19 | T1.8, T1.14 and T1.18 close the path: gateway, then skills, then the coordinator on real skills |
-| M2 | T2.1, T2.3, T2.8, T2.11 | T2.5, T2.6 and T2.9 need the host |
-| M3 | T3.2, T3.4, T3.8 | T3.5, T3.6, T3.7 and T3.9 need the dispatcher path |
+| M2 | T2.3, T2.8, T2.11. T2.1 is done during M1 | T2.5, T2.6 and T2.9 need the host |
+| M3 | T3.2, T3.4, T3.8, T3.14. T3.1 is done during M2 | T3.5, T3.6, T3.7, T3.9 and T3.16 need the dispatcher path. T3.15 follows T3.3 and T3.4, and T3.17 follows T3.8 |
 | M4 | T4.1, T4.2, T4.3, T4.4, T4.5, T4.8, T4.9, T4.11, T4.12 | T4.6 after T4.5, T4.7 after T4.6, T4.10 after T4.3. T4.13 and T4.14 close the milestone |
 | M5 | T5.2, T5.3, T5.4 | T5.6 needs the pilot's data, T5.7 needs T5.6 |
 
@@ -249,7 +250,7 @@ Versions below are exact where `uv.lock` holds one, read 2026-11-02. `uv lock --
 | Ruff | Formatting and linting | Not in `pyproject.toml` | [Q13.19](conversation.md) | Verify at M0 |
 | mypy, Pydantic plugin | Type checking | Not in `pyproject.toml` | [Q13.20](conversation.md) | Verify at M0 |
 | Secret scanner | CI | Not chosen | [Q13.11](conversation.md) | Verify at M0 |
-| PostgreSQL | Incident Record, Temporal store | **17.11 tested; 16 targeted.** 182 of 182 schema checks pass on 17.11. Nothing has run on 16. The README needs 16 or later | Run 2026-11-02 | `compose.yaml` pins 17; CI runs `db/schema-tests.sql` on 16 too, at M0 |
+| PostgreSQL | Incident Record, Temporal store | **17.11 tested; 16 targeted.** 223 of 223 schema checks pass on 17.11. Nothing has run on 16. The README says tested on 17.11 only | Run 2026-11-17 | `compose.yaml` pins 17; CI runs `db/schema-tests.sql` on 16 too, at M0 |
 | Temporal server and UI | Self-hosted single node (ADR-51) | Not pinned. Must work with `temporalio` 1.35.0 | [Q13.16](conversation.md) | Verify at M0 |
 | Docker, Compose | Local stack (ADR-14) | 29.7.2, v5.4.0 on this Mac | `docker --version` | Verify at M0 |
 | HTTP client for the provider | `ModelGateway` takes a `Transport`; no client is in `pyproject.toml` | Not chosen | `src/aisre/gateway/gateway.py` | Verify at M1 |
@@ -271,7 +272,7 @@ API version `2026-10-21` rejects `temperature`, `top_p` and `top_k`, so the Clau
 
 **Reproducibility rules** ([Q13.13](conversation.md), [Q13.14](conversation.md)):
 
-- **Commit `uv.lock` at M0.** Until it's committed it protects nobody.
+- **`uv.lock` is committed,** with `src/`, `tests/` and `pyproject.toml`. Every later change to it goes through a pull request.
 - **Use uv, and nothing alongside it.** Runtime dependencies go in `[project.dependencies]`, development tools in `[dependency-groups]`. Add with `uv add`, run with `uv run`.
 - **Dependency changes** are pull requests changing `pyproject.toml` and `uv.lock` together.
 - **Container images** are pinned by digest in `compose.yaml`.
@@ -313,7 +314,7 @@ The names, "Delivers" and "Ends with" are ADR-68's. M1–M4 keep the meaning the
 | --- | --- |
 | Goal | Prove the path from an alert to a durable workflow, with no model at all. If this path is sound, every later milestone only replaces fakes ([Q13.38](conversation.md)) |
 | Entry | HG-01 passed; the M0 criteria accepted by the Engineering manager ([Q13.39](conversation.md)) |
-| Exit | The six M0 outcomes in 13.8 pass, CI is green, and `uv run alembic upgrade head` builds the 34 tables from empty |
+| Exit | The six M0 outcomes in 13.8 pass, CI is green, and `uv run alembic upgrade head` builds the 37 tables from empty |
 | Security gate | No ST case is due. Secret scan and session guard are live, and `CODEOWNERS` is required on the paths in 13.12. No new skip in `tests/security/`. Invariant 10 holds |
 | Demo | A scripted incident goes from alert to `handed_over`, surviving a worker kill |
 | Owner role | Platform owner |
@@ -340,7 +341,7 @@ The names, "Delivers" and "Ends with" are ADR-68's. M1–M4 keep the meaning the
 | --- | --- |
 | Goal | Real evidence, a real model and real skills on synthetic incidents. Code still decides what runs: the model proposes evidence requests, and the coordinator and tool gate choose ([Q13.41](conversation.md)) |
 | Entry | M0 accepted; HG-02 passed; spend limits durable before the first paid call, because invariant 8 enforces a limit before the call it limits ([Q13.40](conversation.md)) |
-| Exit | Every M1 requirement and criterion in 13.8 passes |
+| Exit | Every M1 requirement and criterion in 13.8 passes. The test host runs a container under gVisor with no network (T2.1, which has no dependency and is done during M1) |
 | Security gate | 15 cases first due: ST-17, ST-19 to ST-24, ST-29 to ST-36. No model holds a credential. Injection 0 unsafe |
 | Demo | The reference incident gets a cited diagnosis. Withhold evidence, and it says "Root cause not established" |
 | Owner role | SRE lead |
@@ -352,8 +353,8 @@ Gateway first, then coordinator on evidence alone, then retrieval, so a retrieva
 | Field | Value |
 | --- | --- |
 | Goal | A patch is never drafted without a way to test it ([Q13.43](conversation.md)) |
-| Entry | M1 accepted; test host with `runsc` available; runnable reference application planned |
-| Exit | Every M2 requirement and criterion in 13.8 passes. Release A's build ends here |
+| Entry | M1 accepted, which includes the test host (T2.1). The runnable reference application is built inside M2 (T2.3) |
+| Exit | Every M2 requirement and criterion in 13.8 passes. The release process is confirmed to apply, undo and look up one change by key, or an adapter is agreed (T3.1, which has no dependency and is done during M2). Release A's build ends here |
 | Security gate | 5 more cases: ST-16, ST-25 to ST-28, 20 in total. Live attacks on the real host, never a mocked runtime |
 | Demo | A patch is drafted, the failure reproduces, the fix passes in the sandbox. Nothing is tested without reproduction |
 | Owner role | Security lead |
@@ -363,7 +364,7 @@ Gateway first, then coordinator on evidence alone, then retrieval, so a retrieva
 | Field | Value |
 | --- | --- |
 | Goal | Approval comes before any write path exists, together with the dispatcher, on synthetic targets. Write execution exists; production write doesn't ([Q13.44](conversation.md), [Q13.45](conversation.md)) |
-| Entry | M2 accepted; HG-03 passed; release process confirmed; identity system available |
+| Entry | M2 accepted, which includes the release process confirmed (T3.1); HG-03 passed. The identity system and secrets manager are chosen before M3 (13.11) and wired in T3.3 |
 | Exit | Every M3 requirement and criterion in 13.8 passes |
 | Security gate | 19 more cases: ST-01 to ST-15, ST-18, ST-37, ST-39, ST-40, 39 in total. The credential for production write doesn't exist (ADR-44) |
 | Demo | Run 1 on a synthetic target: approval and revert. Then a failed fix is rolled back, and self-approval is refused |
@@ -376,7 +377,7 @@ The M3 target is the reference application in `ops/reference-app/`, behind a fak
 | Field | Value |
 | --- | --- |
 | Goal | The platform survives its own failures and watches itself. A page must reach someone ([Q13.46](conversation.md)). The evaluation suite is frozen, and Release A is gated on it ([Q13.47](conversation.md)) |
-| Entry | M3 accepted; managed PostgreSQL with point-in-time recovery available |
+| Entry | M3 accepted; PostgreSQL with point-in-time recovery available; on-call rotas confirmed (ADR-69) |
 | Exit | Every M4 requirement and criterion in 13.8 passes, all ADR-65 gates hold, and HG-08 and HG-09 pass |
 | Security gate | ST-38 first due. All 40 pass on a running system, with no xfail or skip left (ADR-65) |
 | Demo | Restore drill, kill tests, a burst of 60 queued by severity, alerts reaching a person. All 40 security cases shown |
@@ -389,7 +390,7 @@ The M3 target is the reference application in `ops/reference-app/`, behind a fak
 | Milestone | Suite |
 | --- | --- |
 | M1 | Seed: development cases, and nightly runs start |
-| M2, M3 | Grow it to 400; label and redact |
+| M2, M3 | Grow it to 400; label and redact (T2.11). M3 finishes the labelling (T3.14) |
 | M4 | Freeze `suite-1.0`, run baseline-1, recalibrate the threshold, gate Release A |
 | M5 | Report the result. Every future change is a paired comparison against it |
 
@@ -467,21 +468,42 @@ A task with no dependency can start now. Tasks are tracked in GitHub Issues (pro
 | WR-35 | Known risk | Provisional patterns can reject real text | T2.10 |
 | WR-36 | Known risk | Legal deletion | T4.11 |
 
+**ADR-69 and audit code work (2026-11-17).** Module-level changes to `src/`, `db/` and `tests/`, with their state on 2026-11-17 from [code-changes-required.md](../../code-changes-required.md): 13 done and 6 partly done. Done means built and tested at module level. Partly means the logic, interface, schema and tests exist and a real caller is missing; the last column names the task that supplies it. None is proven on a running system until its task.
+
+| Item | Decided by | State at module level | What remains | Reaches a running system in |
+| --- | --- | --- | --- | --- |
+| The workflow never trusts the incident `version`: a `StaleVersion` refusal is reloaded and retried, at most 5 times | ADR-69 | Done | The `record_transition` body raises `StaleVersion` when its update touches no row. After 5 reloads the workflow hands over (built and tested) | T0.11 |
+| `tool_calls` table, and the `ToolCallStore` interface on the ToolGate | ADR-69 | Partly | The PostgreSQL-backed store, counting and inserting in one transaction per incident | T1.10 |
+| Flagger for instruction-like text, `validation.flag_injection` (provisional patterns) | ADR-69 | Partly | The Evidence Collector that calls it, the `aisre.evidence.injection_flagged.v1` event and the approver's view | T1.12 |
+| Model per task: `TASK_MODEL_ALIAS` in `gateway_contracts.py` | ADR-69 | Done | None at module level | T1.14 |
+| `final_outcome` and `final_confidence` on diagnoses, written once at review | ADR-69 | Done | None at module level | T1.15 |
+| Evidence requests pre-checked under the skill that produced them | Audit | Done | None at module level | T1.18 |
+| Up to 3 patch candidates per diagnosis, each its own action | ADR-69 | Done | None at module level | T2.8 |
+| At most 3 sandboxes at once: `SandboxLimiter` on `run_sandbox` | ADR-56 | Partly | The limiter is per process and assumes one Test Runner. `run_sandbox_test`'s 900 s timeout has no allowance for a queued wait, so the default is no wait | T2.6 |
+| `unauthenticated` raises a security alert | Audit | Done | None at module level | T3.2 |
+| Dispatcher role reads `fence_state` and `fence_reasons` | ADR-69 | Done | None at module level | T3.4 |
+| Stop request: `stop_requests` table, `action.request_stop`, and the dispatcher refusing an action whose incident has a stop | ADR-69 | Partly | The cancellation route that writes the row | T3.5 |
+| Void-required result; the workflow closes the request as `voided` and hands over to the approvers and security | ADR-69 | Partly | The `close_approval_request` body that writes `aisre.approval.voided.v1`, the Notifier and an alert rule | T3.6 |
+| `deployment_blocks` table; a late apply puts the block back | ADR-69 | Partly | The real dispatcher's SQL for the two block writes | T3.7 |
+| An action's `hold_seconds` can't be below its service's | ADR-69 | Done | None at module level | T3.8 |
+| A cancel never skips the rollback of a failed fix | ADR-69 | Done | None at module level | T3.9 |
+| Queue row carries its run ID; severity ordering copes with no severity | ADR-69, audit | Done | None at module level | T4.3 |
+
 ### M0 tasks
 
 | ID | Task | Depends on | Files or modules | Owner | Test | Closes |
 | --- | --- | --- | --- | --- | --- | --- |
-| T0.1 | Commit `src/`, `tests/`, `pyproject.toml`, `uv.lock` | None | Repository root | Platform owner | `uv lock --check` on a fresh clone | — |
+| T0.1 | Done: `src/`, `tests/`, `pyproject.toml` and `uv.lock` are committed. What remains is the check on a fresh clone | None | Repository root | Platform owner | `uv lock --check` on a fresh clone | — |
 | T0.2 | Add Ruff, mypy, markers, FastAPI, SQLAlchemy, Alembic, a driver. Reformat in one pull request | T0.1 | `pyproject.toml`, `uv.lock` | Platform owner | `uv run ruff check .`, `uv run mypy src` | — |
 | T0.3 | Typed settings, `.env.example`, `.env` ignored | T0.2 | `src/aisre/config.py`, `.env.example`, `.gitignore` | Platform owner | Fresh clone starts from the example file with fake values | — |
 | T0.4 | CI, required checks, `CODEOWNERS`, secret scan, skips reported | T0.2 | `.github/` | Platform owner | A failing pull request can't merge; a planted fake key fails | — |
 | T0.5 | Session guard and integration folder | T0.2 | `tests/conftest.py`, `tests/integration/` | Security lead | A fake production variable stops the run before the first test | — |
 | T0.6 | Compose stack: PostgreSQL, Temporal, UI, migration job, API, worker | T0.2 | `compose.yaml` | Platform owner | `docker compose up` healthy from a fresh clone | — |
-| T0.7 | `0001_baseline`; freeze `schema.sql`; move text tests to the migrated catalogue | T0.6 | `db/migrations/`, `tests/unit/test_contracts.py`, `tests/unit/test_workflow.py`, `tests/unit/test_layer10.py` | Platform owner | `uv run alembic upgrade head` builds 34 tables; `db/schema-tests.sql` on 16 and 17 | — |
+| T0.7 | `0001_baseline`; freeze `schema.sql`; move text tests to the migrated catalogue | T0.6 | `db/migrations/`, `tests/unit/test_contracts.py`, `tests/unit/test_workflow.py`, `tests/unit/test_layer10.py` | Platform owner | `uv run alembic upgrade head` builds 37 tables; `db/schema-tests.sql` on 16 and 17 | — |
 | T0.8 | Incident Record: one transaction for incident, event, outbox row | T0.7 | `src/aisre/record/` | Platform owner | `integration`: force a failure after the second write | WR-07 |
 | T0.9 | Thin intake, read and timeline routes | T0.8 | `src/aisre/api/` | Platform owner | Import test: `aisre.api` can't reach `temporalio` | WR-08 |
 | T0.10 | Outbox relay and worker entry point | T0.8 | `src/aisre/workflow/relay.py`, `src/aisre/workflow/worker.py` | Platform owner | `integration`: relay delivers a start and a signal; a repeat is success | WR-24, WR-31 |
-| T0.11 | Real `load_incident`, `record_transition`, `hand_over`; scripted skills | T0.10 | `src/aisre/workflow/activities.py`, `src/aisre/record/` | Platform owner | `integration`: reaches `handed_over` on a real Temporal server | WR-12 |
+| T0.11 | Real `load_incident`, `record_transition`, `hand_over`; scripted skills. `record_transition` raises `StaleVersion` when its update touches no row (the workflow's hand-over after 5 stale reloads is already built and tested, ADR-69) | T0.10 | `src/aisre/workflow/activities.py`, `src/aisre/workflow/workflow.py`, `src/aisre/record/` | Platform owner | `integration`: reaches `handed_over` on a real Temporal server | WR-12 |
 | T0.12 | M0 demo from a fresh clone, evidence record | T0.3–T0.11 | `docs/layers/layer-13-implementation-planning/milestones/` | Engineering manager | The six outcomes in 13.8 | — |
 
 ### M1 tasks
@@ -493,13 +515,13 @@ A task with no dependency can start now. Tasks are tracked in GitHub Issues (pro
 | T1.3 | Token verification against the fake issuer | T1.1, T0.9 | `src/aisre/api/` | Security lead | ST-19 | WR-09 |
 | T1.4 | ADR-50 matrix at the routes, denial and read logging | T1.3 | `src/aisre/api/` | Security lead | ST-20, ST-22 | WR-11 |
 | T1.5 | Evidence, diagnosis and action reads, timeline stream, exports, CLI | T1.4 | `src/aisre/api/`, `src/aisre/cli.py` | Platform owner | FR-36, FR-38 | WR-11 |
-| T1.6 | Cancellation, notes, severity, closure, re-investigation routes | T1.4 | `src/aisre/api/` | Platform owner | FR-33 | WR-11 |
+| T1.6 | Cancellation, notes, severity, closure, re-investigation routes | T1.4 | `src/aisre/api/` | Platform owner | FR-33, FR-51 | WR-11 |
 | T1.7 | Durable reservations, daily and monthly ledgers | T0.8 | `src/aisre/gateway/gateway.py`, `src/aisre/record/` | SRE lead | NFR-13, NFR-15, NFR-36, NFR-37, NFR-42, ST-35 | WR-01, WR-03 |
 | T1.8 | Real transport, result reuse on `model_attempts`, Artifact 10.1 re-checked | T1.7 | `src/aisre/gateway/` | SRE lead | NFR-32, NFR-33, ST-36 | — |
 | T1.9 | Live contract test for each pinned model | T1.8 | `tests/integration/` | SRE lead | `paid`: fails when a request rule is broken on purpose | — |
-| T1.10 | Evidence adapters, redaction, gaps, `collect_evidence` body | T1.1 | `src/aisre/evidence/`, `src/aisre/agent/skills/` | SRE lead | FR-07 to FR-09, FR-44, NFR-18, NFR-29, ST-17, ST-30 | WR-12, WR-16 |
+| T1.10 | Evidence adapters, redaction, gaps, `collect_evidence` body; the PostgreSQL-backed `ToolCallStore` on `tool_calls`, counting and inserting in one transaction per incident | T1.1 | `src/aisre/evidence/`, `src/aisre/agent/skills/`, `src/aisre/agent/tool_registry.py`, `src/aisre/record/` | SRE lead | FR-07 to FR-09, FR-44, NFR-18, NFR-29, ST-17, ST-30 | WR-12, WR-16 |
 | T1.11 | Compute `ObservationFacts` for `assign_tier` | T1.10 | `src/aisre/evidence/`, `src/aisre/agent/validation.py` | SRE lead | FR-46, ST-34 | WR-17 |
-| T1.12 | Flag instruction-like text, show it to people | T1.10 | `src/aisre/evidence/` | Security lead | ST-33, FR-39 | — |
+| T1.12 | The Evidence Collector calls `validation.flag_injection` on every extract, writes `aisre.evidence.injection_flagged.v1` and shows the flag to people | T1.10 | `src/aisre/evidence/`, `src/aisre/agent/validation.py` | Security lead | ST-33, FR-39 | — |
 | T1.13 | First prompt versions; CI refuses edits to merged prompts | T0.4 | `prompts/`, `.github/workflows/ci.yml` | SRE lead | A changed merged prompt fails CI | — |
 | T1.14 | `hypothesise`, `diagnose`, `review_diagnosis` bodies, heartbeats | T1.8, T1.13 | `src/aisre/agent/skills/` | SRE lead | FR-10, FR-11, FR-14 to FR-16, FR-45 | WR-12, WR-14 |
 | T1.15 | Store diagnoses through `stored_fields()` | T1.14 | `src/aisre/record/` | SRE lead | FR-12 | WR-05 |
@@ -510,18 +532,19 @@ A task with no dependency can start now. Tasks are tracked in GitHub Issues (pro
 | T1.20 | Write-once audit copy, weekly chain check | T1.1 | `src/aisre/record/`, `src/aisre/workflow/` | Platform owner | FR-37, ST-31, ST-32 | WR-30 |
 | T1.21 | Schedule reservation expiry and spend reconciliation | T1.7 | `src/aisre/gateway/`, `src/aisre/workflow/` | SRE lead | Time-skipped schedule test | WR-26, WR-27 |
 | T1.22 | Evaluation seed, case and key stores, nightly run stopping at $10 | T1.18 | `src/aisre/evaluation/`, case store, key store | SRE lead | FR-13, FR-14, FR-15, FR-16, FR-39 on the development split | — |
-| T1.23 | M1 demo, evidence record | T1.2–T1.22 | `docs/layers/layer-13-implementation-planning/milestones/` | SRE lead | The M1 criteria in 13.8 | — |
+| T1.23 | M1 demo, evidence record | T1.2–T1.22, T1.24 | `docs/layers/layer-13-implementation-planning/milestones/` | SRE lead | The M1 criteria in 13.8 | — |
+| T1.24 | Restricted-runbook display: a reader who may not read a cited runbook sees "restricted runbook (owner: …)", never its text | T1.5, T1.17 | `src/aisre/api/`, `src/aisre/retrieval/` | SRE lead | Artifact 10.9: a reader outside the document's groups gets the notice; ST-22 | — |
 
 ### M2 tasks
 
 | ID | Task | Depends on | Files or modules | Owner | Test | Closes |
 | --- | --- | --- | --- | --- | --- | --- |
-| T2.1 | Linux test host with `runsc`, separate from the platform host | None | Host | Security lead | A container runs there under gVisor with no network | — |
+| T2.1 | Linux test host with `runsc`, separate from the platform host. Done during M1, as an M1 exit condition. The Platform owner provisions it (ADR-69) | None | Host | Security lead | A container runs there under gVisor with no network | — |
 | T2.2 | Choose how the checkout reaches the sandbox at `base_revision` | T2.1 | `src/aisre/remediation/sandbox.py`, `ops/sandbox/` | Security lead | The method runs on the test host | — |
 | T2.3 | Runnable `orders-api` | T1.23 | `ops/reference-app/` | Platform owner | Fails at the bad revision, passes at the good one | — |
 | T2.4 | Harness image and sandbox spec, pinned | T2.2 | `ops/sandbox/` | Security lead | A patch touching the path is refused | — |
 | T2.5 | Launcher on the real host, volume creation, wall-clock wrapper | T2.2, T2.4 | `src/aisre/remediation/sandbox.py` | Security lead | `system`: launch flags work under gVisor | WR-18, WR-19 |
-| T2.6 | `run_sandbox_test`: reproduce first, kill on cancel, cleanup, 3 at once | T2.3, T2.5 | `src/aisre/remediation/sandbox.py`, `src/aisre/workflow/activities.py` | Security lead | `system`: all six outcomes; FR-21, FR-23 | WR-12, WR-15, WR-20 |
+| T2.6 | `run_sandbox_test`: reproduce first, kill on cancel, cleanup, 3 at once. The cap holds across Test Runner processes, or one Test Runner is enforced, and a queued run's wait is allowed for in the 900 s timeout | T2.3, T2.5 | `src/aisre/remediation/sandbox.py`, `src/aisre/workflow/activities.py` | Security lead | `system`: all six outcomes; FR-21, FR-23 | WR-12, WR-15, WR-20 |
 | T2.7 | Schedule the 5-minute reaper, set `aisre_sandboxes_leftover` | T2.6 | `src/aisre/workflow/`, `src/aisre/remediation/sandbox.py` | Security lead | Nothing left after 60 minutes | WR-28 |
 | T2.8 | `draft_patch` body, draft pull request through the review system | T1.23 | `src/aisre/agent/skills/`, `src/aisre/remediation/patch.py` | SRE lead | FR-17 to FR-20, FR-40, FR-47, FR-48 | WR-12 |
 | T2.9 | Live attacks on the host | T2.6 | `tests/security/test_sandbox.py`, `tests/security/test_credentials.py` | Security lead | ST-16, ST-25 to ST-28, FR-22 | WR-21 |
@@ -533,19 +556,23 @@ A task with no dependency can start now. Tasks are tracked in GitHub Issues (pro
 
 | ID | Task | Depends on | Files or modules | Owner | Test | Closes |
 | --- | --- | --- | --- | --- | --- | --- |
-| T3.1 | Confirm the real release process: apply, undo, lookup by key | None | Release process | Platform owner | Scenario revert done through it, or an adapter agreed | — |
-| T3.2 | Approval Service: routes, signed decisions, requests, escalation, expiry | T2.12 | `src/aisre/api/`, `src/aisre/remediation/action.py`, `src/aisre/workflow/activities.py` | Security lead | FR-24 to FR-26, FR-49, NFR-34, NFR-35, ST-06 to ST-12, ST-14 | WR-11, WR-12 |
+| T3.1 | Confirm the real release process: apply, undo, lookup by key. Done during M2, as an M2 exit condition (ADR-69: before M3) | None | Release process | Platform owner | Scenario revert done through it, or an adapter agreed | — |
+| T3.2 | Approval Service: routes, signed decisions, requests, escalation, expiry | T2.12 | `src/aisre/api/`, `src/aisre/remediation/action.py`, `src/aisre/workflow/activities.py` | Security lead | FR-24 to FR-26, FR-49, FR-52, FR-54, NFR-34, NFR-35, ST-06 to ST-12, ST-14 | WR-11, WR-12 |
 | T3.3 | Signing key in the secrets manager, identity groups per service | T3.2 | `src/aisre/api/`, `src/aisre/remediation/action.py` | Security lead | Approve rights resolve through the groups | — |
 | T3.4 | Real ledger, attempts, fence state and dispatcher transaction, as `aisre_dispatcher` | T2.12 | `src/aisre/remediation/dispatcher.py`, `src/aisre/record/`, `src/aisre/reliability/fence.py` | Security lead | FR-27 to FR-29, ST-03 to ST-05, ST-37 | WR-01, WR-02, WR-06 |
-| T3.5 | Dispatcher process, `dispatch_change` and `reconcile_execution` bodies | T3.2, T3.4 | `compose.yaml`, `src/aisre/workflow/activities.py`, `src/aisre/remediation/dispatcher.py` | Security lead | FR-34, FR-35 | WR-12 |
-| T3.6 | Void the approval and alert security and the approver on a mismatch | T3.5 | `src/aisre/remediation/dispatcher.py` | Security lead | ST-01, ST-02, ST-13 | WR-34 |
-| T3.7 | Late apply: propose how the block returns after `not_applied`, then migrate | T3.5 | `db/migrations/`, `src/aisre/remediation/dispatcher.py` | Security lead | A change landing after `not_applied` blocks the deployment | WR-33 |
+| T3.5 | Dispatcher process, `dispatch_change` and `reconcile_execution` bodies. The cancellation route writes a `stop_requests` row through `action.request_stop`, and the dispatcher reads it | T3.2, T3.4 | `compose.yaml`, `src/aisre/workflow/activities.py`, `src/aisre/remediation/dispatcher.py`, `src/aisre/api/` | Security lead | FR-34, FR-35, FR-56 | WR-12 |
+| T3.6 | The void on a running system. The void-required result and the workflow's voided close exist. What this task adds: the `close_approval_request` body writes `aisre.approval.voided.v1`, the Notifier alerts security and the approver, and an alert rule reads the event | T3.5 | `src/aisre/workflow/activities.py`, `ops/alerts.yml`, Notifier | Security lead | ST-01, ST-02, ST-13 | WR-34 |
+| T3.7 | Late apply: the `deployment_blocks` table (ADR-69) is in the schema. This task has the real dispatcher write the `late_apply` row and its resolution, so the block returns after `not_applied` | T3.5 | `db/migrations/`, `src/aisre/remediation/dispatcher.py` | Security lead | A change landing after `not_applied` blocks the deployment; FR-55 | WR-33 |
 | T3.8 | `verify_recovery` body, publish `aisre_verification_outcomes_total` | T2.12 | `src/aisre/verification/verification.py`, `src/aisre/workflow/activities.py` | SRE lead | FR-30, FR-31, FR-50 | WR-12, WR-32 |
 | T3.9 | Rollback on the running stack, all routes refused | T3.5, T3.8 | `src/aisre/workflow/workflow.py`, `src/aisre/api/` | Security lead | FR-32, ST-39 | — |
 | T3.10 | `reconcile_workflows` body, `aisre-reconciliation` schedule, gauge write | T3.5 | `src/aisre/workflow/activities.py` | Platform owner | Mismatch raises `AisreWorkflowStalled` | WR-29 |
 | T3.11 | Daily release reconciliation job and its security alert | T3.5 | `src/aisre/workflow/`, `src/aisre/remediation/dispatcher.py` | Platform owner | ST-40 | — |
 | T3.12 | Review lock, and live checks on review, secrets and database roles | T3.3, T3.5 | `tests/security/test_patch_integrity.py`, `tests/security/test_credentials.py` | Security lead | ST-15, ST-18 | — |
-| T3.13 | M3 demo, evidence record | T3.1–T3.12 | `docs/layers/layer-13-implementation-planning/milestones/` | Security lead | The M3 criteria in 13.8 | — |
+| T3.13 | M3 demo, evidence record | T3.1–T3.12, T3.14–T3.17 | `docs/layers/layer-13-implementation-planning/milestones/` | Security lead | The M3 criteria in 13.8 | — |
+| T3.14 | Finish labelling the suite: 400 cases, each labelled by two SREs and redacted | T2.11 | Case store, key store | SRE lead | ADR-65 case counts: 400 total, at least 280 held-out, at least 20 per category | — |
+| T3.15 | Runbook RB-14, signing key theft: fill in the commands, and rehearse key retirement and the global fence once | T3.3, T3.4 | `ops/`, Artifact 12.4 | Security lead | ST-05; the rehearsal is written up | — |
+| T3.16 | `POST /v1/actions/{id}/outcome-resolutions` route, and `fence.lift()` wired to the recorded state it needs | T3.5 | `src/aisre/api/`, `src/aisre/remediation/dispatcher.py`, `src/aisre/reliability/fence.py` | Security lead | FR-53; the deployment block clears only on an Incident lead's resolution | — |
+| T3.17 | Post-change watch: for 60 minutes after the hold period (provisional), flag new error groups or alert breaches and link them to the action | T3.8 | `src/aisre/verification/verification.py`, `src/aisre/workflow/` | SRE lead | A regression planted after the hold period is flagged and linked; nothing is rolled back (Artifact 11.12) | — |
 
 ### M4 tasks
 
@@ -554,15 +581,15 @@ A task with no dependency can start now. Tasks are tracked in GitHub Issues (pro
 | T4.1 | Kill worker and dispatcher at each step; same-key retry while `applying` | T3.13 | `tests/integration/`, `src/aisre/remediation/dispatcher.py` | Platform owner | NFR-02 to NFR-04, NFR-40, ST-38 | — |
 | T4.2 | Database, Temporal and provider outages; dependency bounds; 24-hour limit | T3.13 | `tests/integration/`, `src/aisre/workflow/` | Platform owner | NFR-05 to NFR-07, NFR-12, NFR-25, NFR-28, NFR-41, NFR-47 | — |
 | T4.3 | Queue by severity, slots, per-service limit, queue row delete | T3.13 | `src/aisre/workflow/activities.py`, `src/aisre/record/` | Platform owner | NFR-16, NFR-17, NFR-38, NFR-39, NFR-44 | WR-13 |
-| T4.4 | Backups, point-in-time recovery, manual fence, restore drill | T3.13 | `src/aisre/reliability/fence.py`, `src/aisre/api/` | Platform owner | NFR-21 to NFR-24, NFR-46 | — |
+| T4.4 | Backups, point-in-time recovery, manual fence and restore through the CLI (ADR-69), restore drill | T3.13 | `src/aisre/reliability/fence.py`, `src/aisre/cli.py` | Platform owner | NFR-21 to NFR-24, NFR-46 | — |
 | T4.5 | `/livez`, `/readyz`, dependency probes | T3.13 | `src/aisre/api/`, `src/aisre/reliability/telemetry.py` | Platform owner | `aisre_process_ready`, `aisre_dependency_up` published | WR-22, WR-23 |
 | T4.6 | Alertmanager, paging path avoiding the Notifier and PostgreSQL | T4.5 | `ops/`, `compose.yaml` | Platform owner | Each alert fired in a fault test, and a page reaches a person | WR-25 |
-| T4.7 | Runbooks RB-01 to RB-13 exercised, dashboards | T4.6 | `ops/`, Grafana | Platform owner | NFR-27 | — |
+| T4.7 | Runbooks RB-01 to RB-14 exercised, dashboards | T4.6 | `ops/`, Grafana | Platform owner | NFR-27 | — |
 | T4.8 | Retention job, encryption audit | T3.13 | `src/aisre/record/`, `src/aisre/workflow/` | Platform owner | NFR-19, NFR-20, NFR-45 | — |
 | T4.9 | Daily and monthly spend behaviour at each threshold | T3.13 | `src/aisre/gateway/gateway.py`, `ops/alerts.yml` | SRE lead | NFR-14, NFR-43 | — |
 | T4.10 | Load tests at 10× expected peak | T4.3 | `tests/integration/` | Platform owner | NFR-01, NFR-30, NFR-31 | — |
 | T4.11 | Decide and build legal deletion of runbook text | T3.13 | `src/aisre/retrieval/retrieval.py`, `db/migrations/` | Security lead | Body text gone from PostgreSQL after a purge | WR-36 |
-| T4.12 | Freeze `suite-1.0`, run baseline-1 three times, recalibrate the threshold | T2.11, T3.13 | `src/aisre/evaluation/`, case store, key store | SRE lead | Every ADR-65 gate on the held-out split | — |
+| T4.12 | Freeze `suite-1.0`, run baseline-1 three times, recalibrate the threshold | T3.13, T3.14 | `src/aisre/evaluation/`, case store, key store | SRE lead | Every ADR-65 gate on the held-out split; FR-57 to FR-59, NFR-48 | — |
 | T4.13 | All 40 on a running system, no skip left | T4.1–T4.11 | `tests/security/` | Security lead | `uv run pytest -q tests/security` shows 0 skipped | — |
 | T4.14 | M4 demos, runbooks, go-live pack, evidence record | T4.12, T4.13 | `docs/layers/layer-13-implementation-planning/milestones/` | Platform owner | The M4 criteria in 13.8 | — |
 
@@ -578,11 +605,11 @@ A task with no dependency can start now. Tasks are tracked in GitHub Issues (pro
 | T5.6 | Final report | T5.3, T5.4, T5.5 | `docs/layers/layer-13-implementation-planning/` | Engineering manager | An outside engineer can run it and name its limits | — |
 | T5.7 | Recorded decision on Release B | T5.6 | `docs/decisions.md` | Engineering manager | Decision recorded | — |
 
-**Skipped security tests, and the task that removes each.** 21 today; a new skip fails the build.
+**Skipped security tests, and the task that removes each.** 21 on 2026-11-17; a new skip fails the build. The audit round replaced two skips with tests and added two narrower ones, the first and the ST-33 rows below.
 
 | Skipped test | Task |
 | --- | --- |
-| `test_st01_st02_st13_voiding_the_approval_and_alerting_are_not_implemented` | T3.6 |
+| `test_st01_st02_st13_alerting_security_and_the_approver_needs_the_notifier` | T3.6 |
 | `test_st15_review_lock_needs_a_review_system` | T3.12 |
 | `test_st16_real_read_of_env_files_and_mounts_needs_a_sandbox` | T2.9 |
 | `test_st17_prompts_across_a_real_investigation_need_the_evidence_adapters` | T1.10 |
@@ -599,7 +626,7 @@ A task with no dependency can start now. Tasks are tracked in GitHub Issues (pro
 | `test_st30_adapter_making_no_call_needs_the_evidence_adapters` | T1.10 |
 | `test_st31_update_or_delete_needs_postgresql` | T1.20 |
 | `test_st32_privileged_edit_needs_postgresql_and_the_write_once_store` | T1.20 |
-| `test_st33_flagging_instruction_like_text_is_not_implemented` | T1.12 |
+| `test_st33_the_collector_that_calls_the_flagger_and_shows_the_flag_does_not_exist` | T1.12 |
 | `test_st38_retry_with_the_same_key_while_applying_is_not_implemented` | T4.1 |
 | `test_st39_api_route_needs_the_api` | T3.9 |
 | `test_st40_release_reconciliation_job_is_not_implemented` | T3.11 |
@@ -659,22 +686,22 @@ The sandbox configuration and signing keys are held by the Security lead role, n
 
 ### Commands that work today
 
-All of these were run on 2026-11-02 from the repository root.
+All of these were run on 2026-11-17 from the repository root.
 
 | Command | Result |
 | --- | --- |
 | `uv lock --check` | Passes |
 | `uv sync --python 3.12` | 26 packages, Python 3.12.14 |
 | `uv sync --python 3.12 --locked` | Passes |
-| `uv run pytest -q` | 1,183 passed, 21 skipped, 0 failed, about 60 s |
+| `uv run pytest -q` | 1,251 passed, 21 skipped, 0 failed, about 70 s |
 | `uv run pytest -q -rs` | The same, and names each skip |
-| `uv run pytest -q tests/security` | 507 passed, 21 skipped |
-| `uv run pytest -q tests/security -k st13` | 7 passed, 1 skipped |
-| `uv run pytest -q tests/unit/test_workflow.py` | 104 passed |
+| `uv run pytest -q tests/security` | 531 passed, 21 skipped |
+| `uv run pytest -q tests/security -k st13` | 9 passed, 1 skipped |
+| `uv run pytest -q tests/unit/test_workflow.py` | 126 passed |
 
 The first run downloads Temporal's test server, unless `TEMPORAL_TEST_SERVER` gives a path to one. A green run doesn't mean all 40 pass (`tests/security/README.md`).
 
-**Schema tests.** The README's steps, on PostgreSQL 16 or later:
+**Schema tests.** The README's steps. They are tested on PostgreSQL 17.11 only; 16 is the Spec's version, and T0.7 runs both:
 
 ```sh
 psql -U postgres -c "CREATE ROLE aisre_owner LOGIN CREATEROLE"
@@ -683,7 +710,7 @@ psql -U aisre_owner -d aisre -v ON_ERROR_STOP=1 -f db/schema.sql
 psql -U postgres -d aisre -v ON_ERROR_STOP=1 -f db/schema-tests.sql
 ```
 
-**On this Mac,** use a throwaway cluster over TCP. This exact block ran on 2026-11-02: 34 tables, then `182 passed, 0 failed, on PostgreSQL 17.11`.
+**On this Mac,** use a throwaway cluster over TCP. This exact block ran on 2026-11-17: 37 tables, then `223 passed, 0 failed, on PostgreSQL 17.11`.
 
 ```sh
 export PATH=/opt/homebrew/opt/postgresql@17/bin:$PATH
@@ -763,15 +790,15 @@ pg_ctl -D "$PGD" -m fast -w stop
 
 Criteria are observable outcomes, written before work starts. Each has what's observed, a threshold, how it's measured, and who confirms. A task can be finished while its milestone fails ([Q13.54](conversation.md)). A milestone passes only when every Must due passes, every Should passes or has a recorded decision (ADR-55), and the evidence record exists. This section reuses Artifact 4 and Spec section 12 unchanged, and adds rows for M0 and M5.
 
-**Coverage.** Artifact 4 holds 97 IDs: 96 active (89 Must, 7 Should) and NFR-08, retired by ADR-55 and due nowhere. Artifact 5.8 holds 40 cases. A script run on 2026-11-02 confirmed that every ID here sits in the milestone Artifact 4 or 5.8 gives it, and in a 13.5 task of that milestone.
+**Coverage.** Artifact 4 holds 107 IDs: 106 active (99 Must, 7 Should) and NFR-08, retired by ADR-55 and due nowhere. FR-51 to FR-59 and NFR-48 were added on 2026-11-17. Artifact 5.8 holds 40 cases. A script run on 2026-11-17 confirmed that every ID here sits in the milestone Artifact 4 or 5.8 gives it, and in a 13.5 task of that milestone.
 
 | Milestone | Requirements due | Count | Should among them | ST first due | ST count | Cumulative ST |
 | --- | --- | --- | --- | --- | --- | --- |
 | M0 | None: Artifact 4 has no M0 rows | 0 | — | None | 0 | 0 |
-| M1 | FR-01 to FR-16, FR-33, FR-36 to FR-39, FR-41 to FR-46, NFR-09 to NFR-11, NFR-13, NFR-15, NFR-18, NFR-26, NFR-29, NFR-32, NFR-33, NFR-36, NFR-37, NFR-42 | 40 | FR-09, FR-15 | ST-17, ST-19 to ST-24, ST-29 to ST-36 | 15 | 15 |
+| M1 | FR-01 to FR-16, FR-33, FR-36 to FR-39, FR-41 to FR-46, FR-51, NFR-09 to NFR-11, NFR-13, NFR-15, NFR-18, NFR-26, NFR-29, NFR-32, NFR-33, NFR-36, NFR-37, NFR-42 | 41 | FR-09, FR-15 | ST-17, ST-19 to ST-24, ST-29 to ST-36 | 15 | 15 |
 | M2 | FR-17 to FR-23, FR-40, FR-47, FR-48 | 10 | — | ST-16, ST-25 to ST-28 | 5 | 20 |
-| M3 | FR-24 to FR-32, FR-34, FR-35, FR-49, FR-50, NFR-34, NFR-35 | 15 | — | ST-01 to ST-15, ST-18, ST-37, ST-39, ST-40 | 19 | 39 |
-| M4 | NFR-01 to NFR-07, NFR-12, NFR-14, NFR-16, NFR-17, NFR-19 to NFR-25, NFR-27, NFR-28, NFR-30, NFR-31, NFR-38 to NFR-41, NFR-43 to NFR-47 | 31 | NFR-17, NFR-20, NFR-27, NFR-44, NFR-45 | ST-38 | 1 | 40 |
+| M3 | FR-24 to FR-32, FR-34, FR-35, FR-49, FR-50, FR-52 to FR-56, NFR-34, NFR-35 | 20 | — | ST-01 to ST-15, ST-18, ST-37, ST-39, ST-40 | 19 | 39 |
+| M4 | FR-57 to FR-59, NFR-01 to NFR-07, NFR-12, NFR-14, NFR-16, NFR-17, NFR-19 to NFR-25, NFR-27, NFR-28, NFR-30, NFR-31, NFR-38 to NFR-41, NFR-43 to NFR-48 | 35 | NFR-17, NFR-20, NFR-27, NFR-44, NFR-45 | ST-38 | 1 | 40 |
 | M5 | None: Artifact 4 has no M5 rows | 0 | — | None; all 40 stay passing | 0 | 40 |
 
 **M0 criteria** ([Q13.39](conversation.md)). New: Artifact 4 has no M0 requirements. From a fresh clone:
@@ -784,14 +811,14 @@ Criteria are observable outcomes, written before work starts. Each has what's ob
 | `GET /v1/incidents/{id}/timeline` shows every step in order, ending in `handed_over` | 100% of steps | API response | Platform owner |
 | `SIGKILL` the worker during a second run | It still finishes | Demo | Platform owner |
 | Post the same alert again | No second incident | Row and workflow counts | Platform owner |
-| CI green; `uv run alembic upgrade head` builds the 34 tables from empty | All checks | Tagged CI run | Platform owner |
+| CI green; `uv run alembic upgrade head` builds the 37 tables from empty | All checks | Tagged CI run | Platform owner |
 
 **M1 to M4 criteria** are Spec section 12's, mapped to their IDs:
 
 | Milestone | Criterion | IDs | How it's measured | Who confirms |
 | --- | --- | --- | --- | --- |
 | M1 | Scenario passes | FR-02, FR-36 | Scenario suite | SRE lead |
-| M1 | Accuracy ≥ 80% | FR-13 | Evaluation run, development split | SRE lead |
+| M1 | Accuracy measured on the development seed. The ≥ 80% gate binds at M4, on the frozen suite (ADR-65, Artifact 4) | FR-13 | Evaluation run, development split | SRE lead |
 | M1 | Honesty 100% | FR-16 | Honesty suite, one command | SRE lead |
 | M1 | Injection 0 unsafe | FR-39, ST-33, ST-36 | Injection suite | Security lead |
 | M1 | First summary ≤ 5 min p95 | NFR-10 | Scenario timing | SRE lead |
@@ -808,12 +835,15 @@ Criteria are observable outcomes, written before work starts. Each has what's ob
 | M3 | Each change at most once | FR-29, ST-37 | Retry and replay test | Security lead |
 | M3 | Failed fix undone and escalated | FR-32, ST-39 | Ineffective patch, with and without a conditional approval | SRE lead |
 | M3 | Recovery criteria recorded before execution | FR-30 | Test suite | SRE lead |
+| M3 | A rejection, a revocation or a stop request prevents execution | FR-52, FR-54, FR-56 | Negative tests, before intent | Security lead |
+| M3 | An unknown outcome blocks the deployment until the incident lead resolves it | FR-53, FR-55 | Fault-injection test with a late apply | Security lead |
 | M4 | Intake ≥ 99.9% | NFR-01 | Load test; monitoring in the pilot | Platform owner |
 | M4 | Resume ≤ 2 min | NFR-03 | Kill-worker test | Platform owner |
 | M4 | No duplicates after crashes | NFR-04, ST-38 | Kill-worker test at each step | Platform owner |
 | M4 | Restore drill within targets | NFR-21 to NFR-24 | Restore drill | Platform owner |
 | M4 | Burst of 60 queued by severity with none dropped | NFR-16, NFR-39 | Burst test with 60 incidents | Platform owner |
 | M4 | All 40 security tests pass | ST-01 to ST-40 | Running system, no xfail or skip | Security lead |
+| M4 | ADR-65 gates on the frozen suite: false-established ≤ 2%, under-escalation \< 2%, citations ≥ 99% supported, cost ≤ 1.2× baseline | FR-57 to FR-59, NFR-48 | Held-out run on `suite-1.0` | SRE lead |
 
 **M5 criteria** ([Q13.54](conversation.md)). New: Artifact 4 has no M5 rows.
 
@@ -834,10 +864,10 @@ Criteria are observable outcomes, written before work starts. Each has what's ob
 | Injection followed | 0 | Seed (FR-39) | Seed | Gate | Gate |
 | Unauthorised attempts | 0 | — | From M3 | Gate | Gate |
 | Security suite | All due by that milestone; all 40 by M4 | 15 | 20, then 39 | 40 | 40 |
-| False-established rate | ≤ 2% | Seed | Seed | Gate | Gate |
-| Under-escalation | \< 2% | Seed | Seed | Gate | Gate |
-| Citations | 100% exist; ≥ 99% support their claim | Seed (FR-12) | Seed | Gate | Gate |
-| Cost per incident | ≤ 1.2× baseline | Recorded (NFR-15) | Recorded | Gate, fixed values only | Gate |
+| False-established rate | ≤ 2% | Seed | Seed | Gate (FR-57) | Gate |
+| Under-escalation | \< 2% | Seed | Seed | Gate (FR-58) | Gate |
+| Citations | 100% exist; ≥ 99% support their claim | Seed (FR-12) | Seed | Gate (FR-59) | Gate |
+| Cost per incident | ≤ 1.2× baseline | Recorded (NFR-15) | Recorded | Gate, fixed values only (NFR-48) | Gate |
 | First summary | p95 ≤ 300 s | Seed (NFR-10) | Seed | Gate | Gate |
 | Investigation | ≤ 900 s, every case | Seed (NFR-11) | Seed | Gate | Gate |
 | Unsafe proposals | 0 | Seed | Seed | Gate | Gate |
@@ -894,7 +924,7 @@ Each is written up: who, when, what was seen, and what changed.
 
 | Milestone | Deliverable | Where | Owner |
 | --- | --- | --- | --- |
-| M0 | `uv.lock` and code committed; CI; Compose stack; `0001_baseline` | Repository | Platform owner |
+| M0 | CI; Compose stack; `0001_baseline`. `uv.lock` and the code are already committed | Repository | Platform owner |
 | M0 | M0 evidence record | `docs/layers/layer-13-implementation-planning/milestones/` | Engineering manager |
 | M1 | Investigation on real skills; first prompts; corpus; evaluation seed | Repository, case store, key store | SRE lead |
 | M1 | M1 evidence record, including the first cost per incident | `milestones/` | Engineering manager |
@@ -915,7 +945,7 @@ Each is written up: who, when, what was seen, and what changed.
 2. **How to run it:** commands, environments, runbooks.
 3. **Architecture as built:** any difference from Artifacts 6 to 12.
 4. **Decisions:** the register's final state, including what was overturned and why.
-5. **Requirements:** each ID and its result. 96 active.
+5. **Requirements:** each ID and its result. 106 active.
 6. **Security:** all 40 cases, with evidence.
 7. **Evaluation:** suite version, baseline, every ADR-65 gate result, and the two accuracy measures reported separately.
 8. **Pilot:** accuracy, approvals, time to cause, cost, hand-overs.
@@ -949,7 +979,7 @@ Mitigation is the Spec's. The deadline is proposed here: when the mitigation mus
 | Release process can't apply or look up one change by key | Medium | M3 blocked | Confirm before M3; an adapter if needed | Platform owner | M3 entry |
 | Running Temporal is too heavy for the team | Low | Slower delivery | Fallback to a PostgreSQL job queue behind the same interface | Platform owner | M0 exit |
 | Alerts lack stable service labels | Medium | Duplicates; failed intake | Check alert samples before M1; mapping in Intake | Platform owner | M1 entry |
-| Approvers unreachable at night | Medium | Expired requests | Escalation at 15 min; rota coverage confirmed | Engineering manager | M5 entry |
+| Approvers unreachable at night | Medium | Expired requests | Escalation at 15 min; rota coverage confirmed | Engineering manager | M4 entry (ADR-69) |
 | Provider outages | Low | Evidence-only mode | Accepted; second provider only if frequent | SRE lead | Accepted; M4 exit for the outage test |
 | Isolation escape | Low | Test host compromised | Separate host, no secrets inside, kept up to date; virtual machines if escape tests fail | Security lead | M2 exit |
 
@@ -957,8 +987,8 @@ Mitigation is the Spec's. The deadline is proposed here: when the mitigation mus
 
 | Risk | What happens | Owner | Deadline | Task |
 | --- | --- | --- | --- | --- |
-| Late apply | The change lands after `not_applied`. The call returns `unknown` and tells a person to check, but the deployment block isn't put back, because the schema allows no further row after `not_applied` | Security lead | M3 exit, before ADR-47's reversal rises | T3.7 |
-| Refused patch response | A mismatched patch is refused and the event written, but nothing voids the approval or alerts the approver | Security lead | M3 exit | T3.6 |
+| Late apply | The change lands after `not_applied`. The call returns `unknown` and tells a person to check. ADR-69 holds the block per deployment in its own table, `deployment_blocks`, so it is put back and only an outcome resolution clears it. The schema and the in-memory ledger do this and are tested. Until the real dispatcher writes the row, nothing running puts the block back | Security lead | M3 exit, before ADR-47's reversal rises | T3.7 |
+| Refused patch response | A mismatched patch is refused and the event written. The void-required result and the workflow's voided close are built and tested. The activity body that writes `aisre.approval.voided.v1` isn't, and alerting the approver needs the Notifier | Security lead | M3 exit | T3.6 |
 | Provisional patterns can reject real text | A patch naming `registry.internal/app` fails, and `10.2.1.3` is refused in `release` | Security lead | M2 exit | T2.10 |
 | Legal deletion | `documents` and `chunks` have no delete path, so runbook text stays in PostgreSQL after a purge | Security lead | M4 exit: before real runbooks are ingested | T4.11 |
 
@@ -991,15 +1021,15 @@ Every row of the register's "What no decision can settle" table is here, then th
 
 **Needs the team:** before M3, whether the release process supports apply, undo and lookup by key, Owner: Platform owner, settled when: a scenario revert is done through it.
 
-**Needs the team:** before M5, on-call rotas and night coverage, Owner: Engineering manager, settled when: rotas are confirmed.
+**Needs the team:** before M4 (ADR-69), on-call rotas and night coverage, Owner: Engineering manager, settled when: rotas are confirmed.
 
-**Needs the team:** before the first sanitised replay reaches a provider, and at the latest before M5, provider terms on retention and training, Owner: Security lead, settled when: terms are confirmed.
+**Needs the team:** before the first real incident data is sent to a provider (ADR-69), which a sanitised replay counts as, and at the latest before M5, provider terms on retention and training, Owner: Security lead, settled when: terms are confirmed.
 
 **Needs the team:** before M5, actual monthly budget and hourly cost, Owner: Engineering manager, settled when: finance confirms (ADR-56).
 
 **Needs the team:** by M4 exit, the frozen suite and its baseline run, Owner: SRE lead, settled when: built from the specification in Artifact 12, then run once.
 
-**Needs the team:** by M4 exit, whether the amended behaviour works in a running system, Owner: Platform owner, settled when: every WR item in 13.5 is done and the 21 skipped security tests run.
+**Needs the team:** by M4 exit, whether the amended behaviour works in a running system, Owner: Platform owner, settled when: every WR item and every ADR-69 item in 13.5 is done and the skipped security tests run.
 
 **Needs the team:** by M4 exit, legal deletion of runbook text, Owner: Security lead, settled when: a deletion path is decided.
 
@@ -1011,7 +1041,7 @@ Every row of the register's "What no decision can settle" table is here, then th
 
 **Needs the team:** before M1, where the case store and key store sit, Owner: SRE lead, settled when: the runner reads cases and can't read keys with its own credential ([Q13.9](conversation.md)).
 
-**Needs the team:** by M1 exit, how to detect planted text, Owner: Security lead, settled when: the Evidence Collector sets `flagged_injection` and that skip is removed ([Q13.29](conversation.md)).
+**Needs the team:** by M1 exit, whether the provisional patterns of `validation.flag_injection` detect planted text well enough, Owner: Security lead, settled when: the Evidence Collector calls the flagger, sets `flagged_injection` and that skip is removed ([Q13.29](conversation.md)).
 
 **Needs the team:** before M1, our account's rate-limit tier, Owner: SRE lead, settled when: it's read from the Console ([Q13.27](conversation.md)).
 
@@ -1050,7 +1080,7 @@ A named role decides, always a person, and a coding agent's review doesn't count
 | HG-05 | Milestone M1 accepted | Role owners in the evidence record | Evidence record | M2 |
 | HG-06 | Milestone M2 accepted | Role owners in the evidence record | Evidence record | M3 |
 | HG-07 | Milestone M3 accepted | Role owners in the evidence record | Evidence record | M4 |
-| HG-08 | Sign-off before the pilot: ADR-65 gates and the frozen suite; threshold recalibrated (ADR-53); provider terms; legal deletion; rotas; actual budget and hourly cost; baselines recorded; named identities and data-owner approval for each production read (Artifact 2.7) | SRE lead; Security lead; Engineering manager | T4.12, T4.13 | HG-09 |
+| HG-08 | Sign-off before the pilot: ADR-65 gates and the frozen suite; threshold recalibrated (ADR-53); provider terms; legal deletion; rotas, confirmed before M4 (ADR-69); actual budget and hourly cost; baselines recorded; named identities and data-owner approval for each production read (Artifact 2.7) | SRE lead; Security lead; Engineering manager | T4.12, T4.13 | HG-09 |
 | HG-09 | **Release A go-live:** M4 accepted, all ADR-65 gates pass, demos D1 to D7 written up, no blocking failure open | Engineering manager, with the role owners' sign-off (ADR-44, ADR-68) | HG-08, M4 evidence record | M5 |
 | HG-10 | **Release B:** the production write credential is provisioned by a recorded decision after the pilot accuracy and approval review. Demo D3 live and D8 done. Until then the credential doesn't exist | Engineering manager (ADR-44) | M5 evidence, final report | Production write |
 
@@ -1166,21 +1196,28 @@ Each path maps to a required reviewer in `.github/CODEOWNERS`. Anything with "Re
 | Conflict | Resolution here | Decided by |
 | --- | --- | --- |
 | [Q13.39](conversation.md) step 6 needs no second incident at M0, but deduplication (FR-03) is an M1 requirement and ADR-68 keeps full intake at M1 | Kept. At M0 the existing index `uq_incidents_open_dedup` is what refuses a second open incident. FR-03's 10 timeline entries, grouping and idempotency stay at M1 (T1.2) | Proposed |
-| Artifact 2.7 deadlines against [Q13.51](conversation.md). Named people: before M1 vs before M0. Release process: before M1 vs before M3. Rotas and provider terms: before M1 vs before the pilot | Q13.51's used, as Artifact 2.7 labels its deadlines provisional, Spec section 13 says "Confirm before M3", and Q13.40 explains why M1 can run on synthetic data. The order of documents favours Artifact 2.7, so the team must confirm this and update it | Needs team review |
-| Test host owner: Artifact 2.7 says Platform owner, [Q13.28](conversation.md) says Security lead | Security lead, matching Artifact 6.6's owner of the isolated environment | Needs team review |
+| Artifact 2.7 deadlines against [Q13.51](conversation.md). Named people: before M1 vs before M0. Release process: before M1 vs before M3. Rotas and provider terms: before M1 vs before the pilot | Q13.51's stand, and Artifact 2.7 is updated: named people before M0, release process before M3, rotas before M4, provider terms before the first real incident data is sent | ADR-69 |
+| Test host owner: Artifact 2.7 says Platform owner, [Q13.28](conversation.md) says Security lead | Security lead owns it, matching Artifact 6.6's owner of the isolated environment. The Platform owner provisions it. Artifact 2.7 is updated | ADR-69 |
 | Release process: settled by "scenario revert done through it" (register), due before M3, but [Q13.30](conversation.md) places that demonstration before Release B | Both stand. T3.1 confirms the capability before M3. D8 is the witnessed run against the real process before Release B | Proposed |
-| FR-13, FR-14, FR-16 and FR-39 are due at M1 "on the synthetic suite", but held-out runs are for promotion only and the suite is frozen at M4 (ADR-65, ADR-68) | M1 measures them on the development split. The binding ADR-65 gate is at M4. A small seed proves less than the frozen suite, and the evidence record says so | Proposed |
+| FR-13, FR-14, FR-16 and FR-39 are due at M1 "on the synthetic suite", but held-out runs are for promotion only and the suite is frozen at M4 (ADR-65, ADR-68) | M1 measures them on the development split. The binding ADR-65 gate is at M4. A small seed proves less than the frozen suite, and the evidence record says so. Artifact 4's FR-13 row and 4.7 now say the same | ADR-65, ADR-68 |
 | ST-15 and ST-18 are due at M3 on synthetic targets, but their skips need a real review system and secrets manager | T3.12 needs both in the reference environment by M3. The release process stays a fake | Proposed |
 | ST-32 is due at M1, and alert delivery arrives at M4 | The chain check and write-once copy are built at M1 (T1.20), and the alert is shown firing in Prometheus. Delivery to a person is T4.6 | Proposed |
 | ST-19 is due at M1, and the API exists from M0 | The M0 intake has no authentication, and runs only on the local stack until T1.3 | Proposed |
 | Spec section 11 runs every suite but load and restore on each change. [Q13.22](conversation.md) runs `system` tests nightly and before a milestone | Q13.22 used: worker kills and gVisor runs can't run on every pull request. Fakes run on each change, as the Spec says | Proposed |
 | Spec section 11 runs accuracy nightly on the real model; ADR-56 stops a nightly run at $10 | The register wins. A nightly run may cover only part of the development split, and full runs are on demand | ADR-56 |
-| `tests/security/README.md` still says ADR-59 retries secret output, and Artifact 5's ST-23 says "up to 3 attempts" where `checked_result` fails commands at once | Not edited here. ADR-59 and the code agree on secrets. T1.16 corrects the README note and checks ST-23's wording | Proposed |
+| `tests/security/README.md` still says ADR-59 retries secret output, and Artifact 5's ST-23 says "up to 3 attempts" where `checked_result` fails commands at once | Resolved: the README and ST-23 both say unsafe output fails at once, with no retry, as ADR-59 and `checked_result` do. T1.16 has nothing left to correct there | ADR-59 |
 | PostgreSQL: Spec section 4 says tested on 16, Artifact 7 and this run say 17.11 | 17.11 tested, 16 targeted. T0.7 runs both | Artifact 7 |
-| ADR-68's rationale says 97 requirements; [Q13.56](conversation.md) says 96 active | Both true: 97 IDs, 96 active, NFR-08 retired | ADR-55 |
+| ADR-68's rationale says 97 requirements; [Q13.56](conversation.md) says 96 active | Both were true when written: 97 IDs, 96 active, NFR-08 retired. Artifact 4 now holds 107 IDs, 106 active, and still nothing was renumbered | ADR-55 |
+| M2 and M3 entry conditions named work that is a task inside the same milestone: the test host (T2.1) and the release process (T3.1) | Both tasks have no dependency. Each is done during the milestone before and is that milestone's exit condition | ADR-69, Proposed |
+| No M3 task finished the suite's labelling, though 13.4 places it in M2 and M3 | T3.14, which T4.12 depends on | Proposed |
+| Work with no task: the key-theft runbook, the outcome-resolutions route and `lift()` wiring, restricted-runbook display, the 60-minute post-change watch | T3.15, T3.16, T1.24, T3.17 | Proposed |
+| New requirement IDs FR-51 to FR-59 and NFR-48 | Each sits in its milestone in 13.8 and in a task: T1.6, T3.2, T3.5, T3.7, T3.16, T4.12 | ADR-69, ADR-65 |
+| On-call rotas: [Q13.51](conversation.md) lists them before the pilot, and ADR-69 reads that as by the end of M4 | This plan asks for them at M4 entry, which is inside the register's deadline. HG-08 still checks them | ADR-69 |
+| Fence and restore: T4.4 placed them in `src/aisre/api/` | CLI only in the first version | ADR-69 |
+| `uv.lock` "untracked" | Committed, with `src/` and `tests/`. T0.1 is done apart from the fresh-clone check | Proposed |
 | Milestone counts: System Design section 12 has four milestones and says fixes may apply after M3 | ADR-68 and ADR-44 win: six milestones, and production write only in Release B | ADR-44, ADR-68 |
 
-**Diagrams.** Both Mermaid graphs in 13.2 were rendered with `npx @mermaid-js/mermaid-cli` 12.0.0 on 2026-11-02.
+**Diagrams.** Both Mermaid graphs in 13.2 were rendered with `npx @mermaid-js/mermaid-cli` 12.0.0 on 2026-11-02. The first was changed on 2026-11-17, to move rotas to M4, and rendered again with `npx @mermaid-js/mermaid-cli`.
 
 ## Acceptance checks
 

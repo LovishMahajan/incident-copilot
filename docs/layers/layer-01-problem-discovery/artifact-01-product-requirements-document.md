@@ -155,7 +155,7 @@ Labels that later layers cite:
 6. Run free-form, unreviewed commands in production.
 7. Contact customers or anyone outside the company.
 8. Take any action involving money: billing, payments or contracts.
-9. Close an incident without independent verification and a person's acceptance.
+9. Close an incident without a person's acceptance, or, where the platform applied the change, without independent verification. In Release A a person applied the change, so the incident lead's acceptance closes it (ADR-69).
 
 **Where the platform stops and waits for a person ([Q1.22](conversation.md)):**
 
@@ -309,6 +309,7 @@ The actions the platform must never take are in 1.5.
 | Adoption target: "majority" vs "to be set with on-call teams" (Q1.18 vs System Design 10) | One pilot survey covers both questions, with a majority target on each (provisional) | Layer decision (proposed) |
 | Former gap in 1.7: list assembled from later citations | List made definitive by merging Q1.16 and later citations with System Design 10 | Layer decision (proposed) |
 | Run 1 shows a revert, which Release A can't do in production | Both demonstration runs use a test target | Layer decision (proposed) |
+| "Never close without independent verification" (1.5) vs Release A closing without it (1.3) | The rule applies where the platform applied the change. In Release A a person applied it, and the incident lead's acceptance closes it | ADR-69 |
 
 ## Acceptance checks
 

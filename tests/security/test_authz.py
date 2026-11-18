@@ -93,8 +93,16 @@ def test_st22_time_outside_the_window_is_refused(code, start, end):
 
 def test_st22_refused_request_stays_with_the_activity_not_silently_dropped():
     allowed, refusals = precheck_requests(gate(), [{"tool": "get_logs", "params": window(service="payments")},
-                                                   {"tool": "get_logs", "params": window()}])
+                                                   {"tool": "get_logs", "params": window()}], "hypothesise")
     assert len(allowed) == 1 and refusals[0]["refused"] == "out_of_scope"
+
+
+def test_st22_a_request_is_checked_under_the_skill_that_made_it():
+    """`diagnose` has no tools (9.2), so a request it slips in is refused; the critic's own is not."""
+    ask = [{"tool": "get_logs", "params": window()}]
+    assert precheck_requests(gate(), ask, "diagnose")[1][0]["refused"] == "tool_not_allowed"
+    assert precheck_requests(gate(), ask, "retrieve_knowledge")[1][0]["refused"] == "tool_not_allowed"
+    assert precheck_requests(gate(), ask, "critique") == (ask, [])
 
 
 def doc(doc_id, services, groups, text):

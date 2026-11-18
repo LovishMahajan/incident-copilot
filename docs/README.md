@@ -18,15 +18,15 @@ Answers are complete for Layers 1–12. Artifacts have had their gaps and confli
 | 4 | Functional and Non-Functional Requirements | What must the system do, and how well must it do it? | 34 | [conversation](layers/layer-04-requirements/conversation.md) | [Requirements Specification](layers/layer-04-requirements/artifact-04-requirements-specification.md) | 6 of 7 | — |
 | 5 | Threat Modeling | What can go wrong? | 28 | [conversation](layers/layer-05-threat-modeling/conversation.md) | [Threat Model](layers/layer-05-threat-modeling/artifact-05-threat-model.md) | 7 of 8 | — |
 | 6 | System Architecture | What components do we need? | 39 | [conversation](layers/layer-06-system-architecture/conversation.md) | [System Architecture Document](layers/layer-06-system-architecture/artifact-06-system-architecture-document.md) | 8 of 8 | — |
-| 7 | Data Architecture, APIs and Event Design | How is the incident lifecycle represented as data? | 64 | [conversation](layers/layer-07-data-apis-events/conversation.md) | [Data and Interface Specification](layers/layer-07-data-apis-events/artifact-07-data-and-interface-specification.md) | 9 of 9 | 5 |
+| 7 | Data Architecture, APIs and Event Design | How is the incident lifecycle represented as data? | 64 | [conversation](layers/layer-07-data-apis-events/conversation.md) | [Data and Interface Specification](layers/layer-07-data-apis-events/artifact-07-data-and-interface-specification.md) | 8 of 9 | 5 |
 | 8 | Distributed Workflows and State Machines | How does long-running work survive failure? | 48 | [conversation](layers/layer-08-workflows-state-machines/conversation.md) | [Workflow Specification](layers/layer-08-workflows-state-machines/artifact-08-workflow-specification.md) | 10 of 10 | 4 |
 | 9 | Agent Architecture and Engineering Reasoning | How does the system investigate like an engineer? | 53 | [conversation](layers/layer-09-agent-architecture/conversation.md) | [Agent Design Specification](layers/layer-09-agent-architecture/artifact-09-agent-design-specification.md) | 10 of 11 | 5 |
-| 10 | Inference Engineering and Knowledge Retrieval | How do we run models reliably and give them the right information? | 64 | [conversation](layers/layer-10-inference-retrieval/conversation.md) | [Inference and Retrieval Specification](layers/layer-10-inference-retrieval/artifact-10-inference-and-retrieval-specification.md) | 9 of 13 | 6 |
-| 11 | Patch Generation, Sandboxing, Approval and Execution | How does a recommendation become a controlled, verified change? | 92 | [conversation](layers/layer-11-safe-remediation/conversation.md) | [Safe Remediation Specification](layers/layer-11-safe-remediation/artifact-11-safe-remediation-specification.md) | 12 of 13 | 6 |
+| 10 | Inference Engineering and Knowledge Retrieval | How do we run models reliably and give them the right information? | 64 | [conversation](layers/layer-10-inference-retrieval/conversation.md) | [Inference and Retrieval Specification](layers/layer-10-inference-retrieval/artifact-10-inference-and-retrieval-specification.md) | 8 of 13 | 6 |
+| 11 | Patch Generation, Sandboxing, Approval and Execution | How does a recommendation become a controlled, verified change? | 92 | [conversation](layers/layer-11-safe-remediation/conversation.md) | [Safe Remediation Specification](layers/layer-11-safe-remediation/artifact-11-safe-remediation-specification.md) | 11 of 13 | 6 |
 | 12 | Reliability, Observability and Evaluation | How do we establish that it works under realistic failure? | 83 | [conversation](layers/layer-12-reliability-evaluation/conversation.md) | [Reliability and Evaluation Specification](layers/layer-12-reliability-evaluation/artifact-12-reliability-and-evaluation-specification.md) | 9 of 11 | 5 |
 | 13 | Implementation Planning and Delivery | How do we build it? | 58 | [conversation](layers/layer-13-implementation-planning/conversation.md) | [Complete Implementation Plan](layers/layer-13-implementation-planning/artifact-13-complete-implementation-plan.md) | 10 of 12 | — |
 
-**Layers 1–12: 99 of 114 sections are complete.** The other 15 are marked `**Needs the team:**` or `**Needs measurement:**`, because each depends on something only the team can supply. Every former gap and conflict appears in its artifact's "Decisions and conflicts" table, with how it was resolved.
+**Layers 1–12: 96 of 114 sections are complete.** The other 18 are Partial: each holds at least one `**Needs the team:**` or `**Needs measurement:**` marker, because it depends on something only the team can supply. Layers 1–12 hold 36 of these markers in all, some outside the required sections, and Artifact 13 holds 27 more. Every former gap and conflict appears in its artifact's "Decisions and conflicts" table, with how it was resolved.
 
 ## Start here for decisions
 
@@ -48,11 +48,11 @@ Both are the original documents, with a note at the top listing what is amended.
 | `conversation.md` headers | Layer map and method pages of `AI_SRE_Engineering_Worksheet_1.pdf` |
 | `conversation.md` questions and answers | Main tab of `worksheet - room 7.docx`, unchanged |
 | `artifact-*.md` | Compiled from the answers, the code tabs and the reference docs. Sections 6.4–6.6 and 7.4–7.9 and ADR-19 to ADR-24 are the team's own artifact text |
-| `files/` | One code tab each from Room 7, since changed to implement the decisions. Originals are in git commit `013bcf4` |
+| `files/` | One code tab each from Room 7, since changed to implement the decisions. These are the filed copies; the code the team builds on is in `src/`, `db/`, `ops/` and `tests/` at the repo root (ADR-67). Originals are in git commit `013bcf4` |
 | `layer-06`, `layer-07`, `layer-09` `assets/` | Images from Room 7 |
 | `layer-07` `files/schema.mmd` | `schema.mmd`, identical to its Room 7 tab |
 | `reference/` | The two `.docx` specs, identical to their Room 7 tabs apart from one code block, plus the amendment note at the top |
-| `layer-07` `files/schema.sql`, `schema-tests.sql` | New and proposed (ADR-64). Tested on PostgreSQL 17.11: 182 of 182 checks pass. The spec targets 16, which was not tested |
+| `layer-07` `files/schema.sql`, `schema-tests.sql` | New and proposed (ADR-64). The canonical copies are `db/schema.sql` and `db/schema-tests.sql`. `db/schema.sql` has 37 tables, three more than the filed copy's 34 (ADR-69). Tested on PostgreSQL 17.11 on 2026-11-17: 223 of 223 checks passed. The spec targets 16, which was not tested |
 | `layer-03` `files/reference-incident/` | New and proposed: a synthetic `orders-api` incident. No real data |
 
 **File names.** Most come from the code itself: imports, `Run:` lines and `alerts.yml` in `test_layer12.py`. Two are inferred, because nothing names them: `schema-tables.sql` and `contracts.py`.
@@ -78,13 +78,13 @@ ADR-56's money values, including the $500 monthly ceiling and $2.00 per incident
 
 ### Not yet proven
 
-- The code in `files/` implements these decisions and its tests pass, but it is a set of in-memory reference modules. There is no running application, API or database connection yet. See [what remains](code-changes-required.md#what-remains).
+- The code in `src/` implements the decisions, ADR-69 included, at module level, and its tests pass: 1,251 passed and 21 skipped on 2026-11-18, with 223 schema checks. It is still a set of in-memory reference modules. The filed copies in each layer's `files/` are not updated when `src/` changes (ADR-67). ADR-69's changes from the 2026-11-17 audit are listed in [code-changes-required.md](code-changes-required.md#audit-round-2026-11-17): 13 done, and 6 partly done because a real caller is missing. There is no running application, API or database connection yet. See [what remains](code-changes-required.md#what-remains).
 - 21 security test functions are skipped, because they need a running API, gVisor, evidence adapters, or the review or notifier systems.
 - The sandbox has not been proven under gVisor, and `schema.sql` has been tested on PostgreSQL 17.11, not the 16 the spec targets.
 
 ### Layer 13
 
-Drafted, and it needs the most review. Tool choices (ruff, mypy, GitHub Actions), the milestone and task owners, and the M0 and M5 criteria are proposals with little source behind them. No ChatGPT comparison has been done. Artifact 13 has 81 tasks across M0–M5, with every active requirement, security test and remaining code item assigned to one.
+Drafted, and it needs the most review. Tool choices (ruff, mypy, GitHub Actions), the milestone and task owners, and the M0 and M5 criteria are proposals with little source behind them. No ChatGPT comparison has been done. Artifact 13 has 86 tasks across M0–M5, with every active requirement, security test and remaining code item assigned to one.
 
 ### Source quirks kept as written
 

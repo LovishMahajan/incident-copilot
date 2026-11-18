@@ -12,11 +12,17 @@ import re
 from enum import Enum
 from typing import Any, Literal, Optional, Union
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 
 MAX_INPUT_TOKENS_PER_CALL = 16_000             # ADR-61, enforced in the gateway
 MAX_OUTPUT_TOKENS_PER_CALL = 16_000
+
+# ADR-69, provisional: which model each task uses, set here until `prompts/` exists and each
+# prompt file names its own (context.PromptTemplate.model_alias). `default` is the larger model,
+# for the two steps that decide the diagnosis; `standard` drafts.
+TASK_MODEL_ALIAS = {"hypothesise": "standard", "diagnose": "default", "critique": "default",
+                    "draft_patch": "standard"}
 
 
 def estimate_tokens(text: str) -> int:
@@ -74,9 +80,17 @@ class ModelRequest(Strict):
     temperature: Optional[float] = Field(default=None, ge=0.0, le=1.0)   # sent only to a provider that accepts it (10.1)
     deadline_epoch_s: float                    # absolute: the investigation's remaining window
     call_timeout_s: float = Field(default=60.0, gt=0, le=60.0)
-    model_alias: str = "default"               # resolved to a pinned model by configuration
+    model_alias: str                           # TASK_MODEL_ALIAS[task] unless given; resolved to a pinned
+                                               # model by configuration
     step_attempts_used: int = Field(default=0, ge=0, le=2)   # attempts already spent on this step, when a skill
                                                # reassembles after CONTEXT_EXCEEDED (ADR-61)
+
+    @model_validator(mode="before")
+    @classmethod
+    def alias_for_task(cls, data):
+        if isinstance(data, dict) and "model_alias" not in data and data.get("task") in TASK_MODEL_ALIAS:
+            return {**data, "model_alias": TASK_MODEL_ALIAS[data["task"]]}
+        return data
 
 
 # ---------------------------------------------------------------------------

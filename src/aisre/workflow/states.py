@@ -81,7 +81,7 @@ ACTION_TRANSITIONS: dict[ActionState, set[ActionState]] = {
     A.REJECTED: set(),
     A.EXPIRED: set(),
     A.APPLYING: {A.EXECUTED, A.NOT_APPLIED, A.OUTCOME_UNKNOWN},
-    A.OUTCOME_UNKNOWN: {A.EXECUTED, A.NOT_APPLIED},  # only reconciliation leaves this state
+    A.OUTCOME_UNKNOWN: {A.EXECUTED, A.NOT_APPLIED},  # left by reconciliation, or a person's outcome resolution
     A.EXECUTED: {A.VERIFIED, A.UNDONE},
     A.NOT_APPLIED: set(),
     A.VERIFIED: set(),

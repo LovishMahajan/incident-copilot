@@ -20,6 +20,7 @@
 --    6 Actions and tests         13 Retention
 --    7 Approvals, execution,     14 Views
 --      verification              15 Roles
+-- ADR-69 adds tool_calls (5), stop_requests and deployment_blocks (7): 37 tables.
 
 BEGIN;
 
@@ -28,7 +29,7 @@ BEGIN;
 -- ---------------------------------------------------------------------------
 CREATE DOMAIN sha256_hex AS char(64) CHECK (VALUE ~ '^[0-9a-f]{64}$');
 
--- ADR-46: exactly the 14 states of layer-08 files/states.py.
+-- ADR-46: exactly the 14 states of src/aisre/workflow/states.py.
 CREATE TYPE incident_status AS ENUM (
   'open', 'investigating', 'diagnosed', 'inconclusive', 'testing', 'awaiting_approval',
   'executing', 'reconciling', 'verifying', 'recovered', 'not_recovered', 'handed_over',
@@ -285,6 +286,11 @@ CREATE TABLE diagnoses (
   reviewed          boolean NOT NULL DEFAULT false,
   review_notes      text,
   produced_by       text NOT NULL,          -- component and model attempt
+  -- The review's result (ADR-69), written once: the lower of the scored level and the critic's
+  -- cap (ADR-53), and what that makes the diagnosis. The APIs show these, so a diagnosis capped
+  -- to low reads as inconclusive. `outcome` and `confidence` stay as the diagnoser left them.
+  final_outcome     diagnosis_outcome,
+  final_confidence  confidence,
   created_at        timestamptz NOT NULL DEFAULT now(),
   UNIQUE (incident_id, revision),
   UNIQUE (incident_id, diagnosis_id),
@@ -292,7 +298,26 @@ CREATE TABLE diagnoses (
   FOREIGN KEY (incident_id, leading_hypothesis_id)
     REFERENCES hypotheses (incident_id, hypothesis_id),
   CHECK ((outcome = 'established') = (leading_hypothesis_id IS NOT NULL)),
-  CHECK (outcome = 'inconclusive' OR confidence <> 'low')  -- ADR-53: low is never established
+  CHECK (outcome = 'inconclusive' OR confidence <> 'low'),  -- ADR-53: low is never established
+  CHECK ((final_outcome IS NULL) = (final_confidence IS NULL)),
+  CHECK (final_outcome IS NULL OR reviewed),
+  CHECK (final_outcome IS DISTINCT FROM 'established'
+         OR (outcome = 'established' AND final_confidence <> 'low'))
+);
+
+-- Tool call log (Artifact 9.4, ADR-69): one row per call the ToolGate let through. The
+-- per-incident budgets and repeat detection count these rows, so they survive a worker
+-- restart, and a repeated call is answered from `evidence_ids` instead of being run again.
+CREATE TABLE tool_calls (
+  tool_call_id  uuid PRIMARY KEY,
+  incident_id   uuid NOT NULL REFERENCES incidents,
+  tool          text NOT NULL,              -- tool_registry.REGISTRY name
+  skill         text NOT NULL,              -- the skill the call was checked under
+  call_sha256   sha256_hex NOT NULL,        -- the tool and its validated parameters
+  params        jsonb NOT NULL,
+  new_evidence  integer NOT NULL CHECK (new_evidence >= 0),
+  evidence_ids  uuid[] NOT NULL DEFAULT '{}',  -- the stored result
+  called_at     timestamptz NOT NULL DEFAULT now()
 );
 
 -- ---------------------------------------------------------------------------
@@ -300,8 +325,9 @@ CREATE TABLE diagnoses (
 -- ---------------------------------------------------------------------------
 -- An action never changes after creation (ADR-47), apart from status and version.
 -- `action_digest` and `test_bundle_digest` are the one exception: the digest covers the
--- passing test bundle, so both are written once, when testing ends. A rollback carries
--- them from creation (ADR-48).
+-- passing test bundle, so both are written once, when testing ends (ADR-64).
+-- The rollback exception: a rollback is never tested (ADR-48), so both of its digests are
+-- set at creation, while it is still `proposed`. check_action_transition requires that.
 CREATE TABLE actions (
   action_id        uuid PRIMARY KEY,        -- also the execution key (ADR-47)
   incident_id      uuid NOT NULL REFERENCES incidents,
@@ -319,7 +345,7 @@ CREATE TABLE actions (
   undo_plan        text NOT NULL,
   recovery_criteria jsonb NOT NULL,         -- predicates and baseline, set before execution (FR-30, ADR-66)
   recovery_predicates_digest sha256_hex NOT NULL,
-  hold_seconds     integer NOT NULL DEFAULT 600 CHECK (hold_seconds >= 60),  -- ADR-64, ADR-66
+  hold_seconds     integer NOT NULL DEFAULT 600 CHECK (hold_seconds >= 60),  -- ADR-64, ADR-66; never below the service's (ADR-69)
   high_impact      boolean NOT NULL,        -- ADR-49
   policy_version   text NOT NULL,           -- policies in force at creation (Q11.57)
   test_bundle_digest sha256_hex,            -- write-once; copies the parent's for a rollback
@@ -469,6 +495,44 @@ CREATE TABLE verifications (
   CHECK (window_end >= window_start),
   CHECK ((accepted_by IS NULL) = (accepted_at IS NULL)),
   CHECK (accepted_by IS NULL OR result = 'verified')
+);
+
+-- Stop requests (ADR-69). A cancel raised while an action waits for approval, or before the
+-- dispatcher records intent, is a stop: anyone with the cancel permission can raise one, and
+-- it withdraws nobody's approval. check_execution_attempt refuses intent for a fix whose
+-- incident has a stop raised since the action was created. A rollback is never stopped.
+CREATE TABLE stop_requests (
+  stop_request_id uuid PRIMARY KEY,
+  incident_id     uuid NOT NULL REFERENCES incidents,
+  requested_by    text NOT NULL,            -- identity-system subject
+  reason          text NOT NULL CHECK (reason <> ''),
+  requested_at    timestamptz NOT NULL DEFAULT now(),
+  CHECK (requested_by NOT LIKE 'system:%')  -- a person's safety stop
+);
+
+-- The unknown-outcome block (ADR-47, ADR-69): held here, per deployment, not derived from
+-- attempt rows. track_deployment_block opens an `unresolved` row with each intent and clears
+-- it when that attempt settles. A `late_apply` row is the dispatcher's: a call that outlived
+-- its window answered after reconciliation had recorded `not_applied`. No attempt row can
+-- follow `not_applied`, so the block is put back here, and only a person's outcome
+-- resolution clears it.
+CREATE TABLE deployment_blocks (
+  attempt_id        uuid NOT NULL,          -- the attempt that opened it
+  action_id         uuid NOT NULL,
+  reason            text NOT NULL CHECK (reason IN ('unresolved', 'late_apply')),
+  target_deployment text NOT NULL,          -- set from the action
+  opened_at         timestamptz NOT NULL DEFAULT now(),
+  cleared_at        timestamptz,
+  cleared_by        text,                   -- 'system:dispatcher', or the Incident lead
+  observed_revision text,                   -- a person's resolution, as on execution_attempts
+  resolution_reason text,
+  PRIMARY KEY (attempt_id, reason),
+  FOREIGN KEY (attempt_id, action_id) REFERENCES execution_attempts (attempt_id, action_id),
+  CHECK ((cleared_at IS NULL) = (cleared_by IS NULL)),
+  CHECK ((observed_revision IS NULL) = (resolution_reason IS NULL)),
+  CHECK (observed_revision IS NULL OR cleared_by NOT LIKE 'system:%'),
+  CHECK (reason <> 'late_apply' OR cleared_by IS NULL
+         OR (cleared_by NOT LIKE 'system:%' AND observed_revision IS NOT NULL))
 );
 
 -- ---------------------------------------------------------------------------
@@ -670,12 +734,16 @@ CREATE TABLE idempotency_keys (
 );
 
 -- Investigation slots (Artifact 8, 8.1): at most 5 granted at once, the rest wait by severity.
--- A row leaves when the incident leaves `open` or `investigating`.
+-- A row leaves when the incident leaves `investigating`, or goes `open` -> `cancelled`. It
+-- carries the workflow run that queued it (ADR-69): a re-investigation queues while the
+-- incident is still `handed_over`, so reconciliation removes a row only once its run has ended.
 CREATE TABLE investigation_queue (
   incident_id  uuid PRIMARY KEY REFERENCES incidents ON DELETE CASCADE,
+  run_id       text NOT NULL,               -- incident-<id>, then incident-<id>-rN (ADR-46)
   severity     severity,                    -- NULL until proposed; sorts last
   queued_at    timestamptz NOT NULL DEFAULT now(),
-  granted_at   timestamptz
+  granted_at   timestamptz,
+  CHECK (run_id ~ ('^incident-' || incident_id::text || '(-r[0-9]+)?$'))
 );
 
 -- Write fence (Artifact 12, 12.5). One row holds the epoch, which only ever rises.
@@ -767,6 +835,9 @@ CREATE INDEX ix_artifacts_retention ON artifacts (retain_until);
 CREATE INDEX ix_dead_letters_time ON dead_letters (received_at);
 CREATE INDEX ix_dead_letters_retention ON dead_letters (retain_until);
 CREATE INDEX ix_chunks_document ON chunks (document_id, ordinal);
+CREATE INDEX ix_tool_calls_incident ON tool_calls (incident_id, call_sha256);
+CREATE INDEX ix_stop_requests_incident ON stop_requests (incident_id, requested_at);
+CREATE INDEX ix_blocks_open ON deployment_blocks (target_deployment) WHERE cleared_at IS NULL;
 
 -- ---------------------------------------------------------------------------
 -- 12. Rule functions and triggers
@@ -915,6 +986,10 @@ BEGIN
     IF NEW.status <> 'proposed' THEN
       RAISE EXCEPTION 'an action starts as proposed, not %', NEW.status USING ERRCODE = 'check_violation';
     END IF;
+    IF NEW.hold_seconds < (SELECT s.hold_seconds FROM services s WHERE s.service_id = NEW.target_service_id) THEN
+      RAISE EXCEPTION 'an action''s hold_seconds can''t be below its service''s (ADR-69)'
+        USING ERRCODE = 'check_violation';
+    END IF;
     IF NEW.kind = 'rollback' THEN                       -- ADR-48
       SELECT * INTO p FROM actions WHERE action_id = NEW.parent_action_id;
       IF NEW.action_digest IS NULL OR NEW.test_bundle_digest IS DISTINCT FROM p.test_bundle_digest
@@ -949,7 +1024,8 @@ BEGIN
       RAISE EXCEPTION 'only rollback actions skip testing (ADR-48)' USING ERRCODE = 'check_violation';
     END IF;
   END IF;
-  -- The two write-once digests are set when testing ends, not before and not after.
+  -- The two write-once digests are set when testing ends, not before and not after. A rollback
+  -- has had both since creation (see the INSERT branch), so this never applies to one.
   IF OLD.action_digest IS NULL AND NEW.action_digest IS NOT NULL
      AND NOT (OLD.status = 'testing' AND NEW.status = 'awaiting_approval') THEN
     RAISE EXCEPTION 'action_digest is set when testing ends' USING ERRCODE = 'check_violation';
@@ -1121,21 +1197,67 @@ BEGIN
     RAISE EXCEPTION 'approval_id is not a standing approval' USING ERRCODE = 'check_violation';
   END IF;
 
+  -- A stop raised since the action was created refuses a fix (ADR-69). A rollback is never
+  -- stopped: once a change is applied, the verify and rollback path completes.
+  IF a.kind <> 'rollback' AND EXISTS (SELECT 1 FROM stop_requests s
+                                     WHERE s.incident_id = a.incident_id AND s.requested_at >= a.created_at) THEN
+    RAISE EXCEPTION 'a stop was requested for this incident' USING ERRCODE = 'check_violation';
+  END IF;
+
   -- An unknown outcome blocks every further change on that deployment (ADR-47), and only
-  -- one change runs on a deployment at a time. The action's status clears when a person or
-  -- reconciliation settles it.
-  IF EXISTS (
-    SELECT 1 FROM actions o
-    WHERE o.target_deployment = a.target_deployment AND o.action_id <> a.action_id
-      AND (o.status = 'outcome_unknown'
-           OR (o.status = 'applying' AND EXISTS (
-                 SELECT 1 FROM execution_attempts e
-                 WHERE e.action_id = o.action_id AND e.outcome IN ('started', 'unknown')
-                   AND NOT EXISTS (SELECT 1 FROM execution_attempts l
-                                   WHERE l.action_id = e.action_id AND l.attempt_no > e.attempt_no))))
-  ) THEN
+  -- one change runs on a deployment at a time. The block is a deployment_blocks row (ADR-69):
+  -- it clears when reconciliation or a person settles the attempt, and a late apply's only
+  -- when a person does.
+  IF EXISTS (SELECT 1 FROM deployment_blocks b
+             WHERE b.target_deployment = a.target_deployment AND b.cleared_at IS NULL
+               AND b.action_id <> a.action_id) THEN
     RAISE EXCEPTION 'deployment % is blocked by an unresolved change', a.target_deployment
       USING ERRCODE = 'check_violation';
+  END IF;
+  RETURN NEW;
+END $$;
+
+-- Keeps the `unresolved` block in step with its attempt (ADR-69). SECURITY DEFINER, so no role
+-- needs the right to open or clear one by hand; check_deployment_block refuses anyone who tries.
+CREATE FUNCTION track_deployment_block() RETURNS trigger
+LANGUAGE plpgsql SECURITY DEFINER SET search_path = public, pg_temp AS $$
+BEGIN
+  IF TG_OP = 'INSERT' AND NOT NEW.reconciliation THEN
+    INSERT INTO deployment_blocks (attempt_id, action_id, reason, target_deployment)
+      SELECT NEW.attempt_id, NEW.action_id, 'unresolved', a.target_deployment
+      FROM actions a WHERE a.action_id = NEW.action_id;
+  ELSIF NEW.outcome IN ('applied', 'not_applied') THEN   -- its own answer, or a reconciliation row
+    UPDATE deployment_blocks
+       SET cleared_at = now(), cleared_by = COALESCE(NEW.resolved_by, 'system:dispatcher'),
+           observed_revision = NEW.observed_revision, resolution_reason = NEW.resolution_reason
+     WHERE action_id = NEW.action_id AND reason = 'unresolved' AND cleared_at IS NULL;
+  END IF;
+  RETURN NULL;
+END $$;
+
+-- Direct writes to deployment_blocks: the dispatcher adds a `late_apply` row, and records the
+-- person's resolution that clears one. Everything about an `unresolved` row is the trigger's.
+CREATE FUNCTION check_deployment_block() RETURNS trigger
+LANGUAGE plpgsql AS $$
+DECLARE
+  a actions%ROWTYPE;
+  v_latest execution_attempts%ROWTYPE;
+BEGIN
+  IF pg_trigger_depth() > 1 THEN                        -- track_deployment_block
+    RETURN NEW;
+  END IF;
+  IF NEW.reason <> 'late_apply' THEN
+    RAISE EXCEPTION 'an unresolved block opens and clears with its attempt' USING ERRCODE = 'check_violation';
+  END IF;
+  IF TG_OP = 'INSERT' THEN
+    SELECT * INTO a FROM actions WHERE action_id = NEW.action_id;
+    SELECT * INTO v_latest FROM execution_attempts
+      WHERE action_id = NEW.action_id ORDER BY attempt_no DESC LIMIT 1;
+    IF NOT (v_latest.reconciliation AND v_latest.outcome = 'not_applied') OR NEW.cleared_at IS NOT NULL THEN
+      RAISE EXCEPTION 'a late apply follows a reconciled not_applied, and starts open'
+        USING ERRCODE = 'check_violation';
+    END IF;
+    NEW.target_deployment := a.target_deployment;
   END IF;
   RETURN NEW;
 END $$;
@@ -1315,7 +1437,7 @@ BEGIN
     ('approval_decisions', 'action_id'), ('patches', 'action_id'), ('test_runs', 'action_id'),
     ('dead_letters', 'retain_until'),
     ('documents', NULL), ('chunks', NULL), ('index_revisions', NULL),
-    ('index_revision_documents', NULL)
+    ('index_revision_documents', NULL), ('tool_calls', 'incident_id'), ('stop_requests', 'incident_id')
   ) AS v (tbl, how) LOOP
     EXECUTE format(
       'CREATE TRIGGER t10_append_only BEFORE UPDATE OR DELETE ON %I
@@ -1328,7 +1450,8 @@ BEGIN
     ('evidence', 'incident_id'), ('execution_attempts', 'action_id'),
     ('verifications', 'action_id'), ('approval_requests', 'action_id'), ('actions', 'incident_id'),
     ('hypotheses', 'incident_id'), ('diagnoses', 'incident_id'), ('incidents', 'incident_id'),
-    ('incident_budgets', 'incident_id'), ('budget_reservations', 'incident_id')
+    ('incident_budgets', 'incident_id'), ('budget_reservations', 'incident_id'),
+    ('deployment_blocks', 'action_id')
   ) AS v (tbl, how) LOOP
     EXECUTE format(
       'CREATE TRIGGER t10_no_delete BEFORE DELETE ON %I
@@ -1341,7 +1464,7 @@ BEGIN
     'documents', 'chunks', 'index_revisions', 'index_revision_documents',
     'execution_attempts', 'verifications', 'approval_requests', 'actions', 'hypotheses',
     'diagnoses', 'incidents', 'incident_budgets', 'budget_reservations',
-    'reservation_corrections']) AS tbl LOOP
+    'reservation_corrections', 'tool_calls', 'stop_requests', 'deployment_blocks']) AS tbl LOOP
     EXECUTE format(
       'CREATE TRIGGER t00_no_truncate BEFORE TRUNCATE ON %I
          FOR EACH STATEMENT EXECUTE FUNCTION protect_truncate()', t.tbl);
@@ -1375,7 +1498,7 @@ CREATE TRIGGER t40_version BEFORE UPDATE ON hypotheses FOR EACH ROW
   EXECUTE FUNCTION check_version();
 
 CREATE TRIGGER t20_freeze BEFORE UPDATE ON diagnoses FOR EACH ROW
-  EXECUTE FUNCTION freeze_except('reviewed', 'review_notes?');
+  EXECUTE FUNCTION freeze_except('reviewed', 'review_notes?', 'final_outcome?', 'final_confidence?');
 CREATE TRIGGER t20_freeze BEFORE UPDATE ON verifications FOR EACH ROW
   EXECUTE FUNCTION freeze_except('accepted_by?', 'accepted_at?');
 CREATE TRIGGER t20_freeze BEFORE UPDATE ON approval_requests FOR EACH ROW
@@ -1391,6 +1514,12 @@ CREATE TRIGGER t20_once BEFORE UPDATE ON execution_attempts FOR EACH ROW
   EXECUTE FUNCTION freeze_execution_attempt();
 CREATE TRIGGER t30_freeze BEFORE UPDATE ON execution_attempts FOR EACH ROW
   EXECUTE FUNCTION freeze_except('outcome', 'finished_at', 'external_ref', 'response_artifact_id', 'error');
+CREATE TRIGGER t50_block AFTER INSERT OR UPDATE ON execution_attempts FOR EACH ROW
+  EXECUTE FUNCTION track_deployment_block();
+CREATE TRIGGER t20_guard BEFORE INSERT OR UPDATE ON deployment_blocks FOR EACH ROW
+  EXECUTE FUNCTION check_deployment_block();
+CREATE TRIGGER t30_freeze BEFORE UPDATE ON deployment_blocks FOR EACH ROW
+  EXECUTE FUNCTION freeze_except('cleared_at?', 'cleared_by?', 'observed_revision?', 'resolution_reason?');
 
 CREATE TRIGGER t20_freeze BEFORE UPDATE ON budget_reservations FOR EACH ROW
   EXECUTE FUNCTION freeze_except('status', 'actual_cost_micros', 'actual_input_tokens',
@@ -1421,8 +1550,12 @@ BEGIN
   DELETE FROM reservation_corrections WHERE incident_id = p_incident_id;
   DELETE FROM budget_reservations WHERE incident_id = p_incident_id;
   DELETE FROM incident_budgets WHERE incident_id = p_incident_id;
+  DELETE FROM tool_calls WHERE incident_id = p_incident_id;
+  DELETE FROM stop_requests WHERE incident_id = p_incident_id;
   DELETE FROM verifications v USING actions a
     WHERE v.action_id = a.action_id AND a.incident_id = p_incident_id;
+  DELETE FROM deployment_blocks b USING actions a
+    WHERE b.action_id = a.action_id AND a.incident_id = p_incident_id;
   DELETE FROM execution_attempts e USING actions a
     WHERE e.action_id = a.action_id AND a.incident_id = p_incident_id;
   DELETE FROM approval_decisions d USING actions a
@@ -1502,7 +1635,8 @@ GRANT INSERT ON
   hypotheses, hypothesis_evidence, diagnoses, actions, patches, test_runs,
   approval_requests, approval_decisions, verifications, documents, chunks, index_revisions,
   index_revision_documents, incident_budgets, budget_reservations, reservation_corrections,
-  model_attempts, timeline_events, outbox, idempotency_keys, investigation_queue, fence_reasons
+  model_attempts, timeline_events, outbox, idempotency_keys, investigation_queue, fence_reasons,
+  tool_calls, stop_requests
   TO aisre_app;
 GRANT UPDATE ON
   services, environments, incidents, hypotheses, diagnoses, actions, approval_requests,
@@ -1515,15 +1649,19 @@ GRANT UPDATE (accepted_by, accepted_at) ON verifications TO aisre_app;
 GRANT EXECUTE ON FUNCTION verify_timeline_chain(uuid), timeline_event_hash(timeline_events),
   action_is_high_impact(actions) TO aisre_app;
 
--- Trusted dispatcher (ADR-51): reads actions, patches, approvals and verification results;
--- writes attempts, action status for `applying` and its outcomes, and its own timeline
--- events. It stores the release process's raw response as an artifact (Q7.12).
+-- Trusted dispatcher (ADR-51): reads actions, patches, approvals and verification results,
+-- and what can refuse a write: the fence, stop requests and deployment blocks (ADR-69).
+-- Writes attempts, action status for `applying` and its outcomes, a late-apply block and its
+-- resolution, and its own timeline events. It stores the release process's raw response as
+-- an artifact (Q7.12).
 -- UPDATE on actions covers status and version only; check_action_transition limits which
 -- status changes, and needs action_transitions to do it.
 GRANT SELECT ON actions, patches, approval_requests, approval_decisions, execution_attempts,
-  verifications, action_transitions
+  verifications, action_transitions, fence_state, fence_reasons, stop_requests, deployment_blocks
   TO aisre_dispatcher;
-GRANT INSERT ON execution_attempts, timeline_events, artifacts TO aisre_dispatcher;
+GRANT INSERT ON execution_attempts, timeline_events, artifacts, deployment_blocks TO aisre_dispatcher;
+GRANT UPDATE (cleared_at, cleared_by, observed_revision, resolution_reason)
+  ON deployment_blocks TO aisre_dispatcher;
 GRANT UPDATE (outcome, finished_at, external_ref, response_artifact_id, error)
   ON execution_attempts TO aisre_dispatcher;
 GRANT UPDATE (status, version) ON actions TO aisre_dispatcher;
@@ -1535,7 +1673,8 @@ GRANT DELETE ON
   incidents, incident_alerts, dead_letters, artifacts, artifact_deletions, evidence, hypotheses,
   hypothesis_evidence, diagnoses, actions, patches, test_runs, approval_requests,
   approval_decisions, execution_attempts, verifications, incident_budgets, budget_reservations,
-  reservation_corrections, model_attempts, timeline_events, outbox, idempotency_keys
+  reservation_corrections, model_attempts, timeline_events, outbox, idempotency_keys,
+  tool_calls, stop_requests, deployment_blocks
   TO aisre_retention;
 GRANT INSERT ON artifact_deletions TO aisre_retention;
 GRANT EXECUTE ON FUNCTION incident_retention_due(uuid), purge_incident(uuid) TO aisre_retention;

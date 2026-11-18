@@ -854,6 +854,156 @@ SELECT pg_temp.must_equal('N15 hash chain intact on incident 2',
   format('SELECT count(*) FROM verify_timeline_chain(%L)', :inc2), '0');
 
 -- ---------------------------------------------------------------------------
+-- O. ADR-69: fence reads, queue run, final confidence, hold, tool calls, stop, deployment block
+-- ---------------------------------------------------------------------------
+\set act6 '''00000000-0000-7000-8000-000000000206'''
+\set req6 '''00000000-0000-7000-8000-000000000506'''
+\set apv7 '''00000000-0000-7000-8000-000000000607'''
+\set att6 '''00000000-0000-7000-8000-000000000706'''
+\set dia3 '''00000000-0000-7000-8000-000000000403'''
+
+SELECT pg_temp.must_pass('O1 the dispatcher reads the fence epoch and its reasons',
+  $$SET LOCAL ROLE aisre_dispatcher; SELECT epoch FROM fence_state; SELECT count(*) FROM fence_reasons WHERE cleared_at IS NULL$$);
+SELECT pg_temp.must_fail('O2 the dispatcher still sets no fence reason', $q$SET LOCAL ROLE aisre_dispatcher;
+  INSERT INTO fence_reasons (fence_id, scope, reason, set_by) VALUES (gen_random_uuid(), 'global', 'restore', 'system:dispatcher')$q$,
+  'permission denied');
+
+SELECT pg_temp.must_fail('O3 a queue row names its run', format(
+  $$SET LOCAL ROLE aisre_app; INSERT INTO investigation_queue (incident_id, severity) VALUES (%L, 'sev2')$$, :inc2), 'run_id');
+SELECT pg_temp.must_fail('O4 the run is one of this incident''s', format(
+  $$SET LOCAL ROLE aisre_app; INSERT INTO investigation_queue (incident_id, run_id) VALUES (%L, 'incident-other-r2')$$, :inc2),
+  'investigation_queue_check');
+SELECT pg_temp.must_pass('O5 a re-investigation queues under its own run', format(
+  $$SET LOCAL ROLE aisre_app; INSERT INTO investigation_queue (incident_id, run_id) VALUES (%1$L, 'incident-' || %1$L || '-r2')$$, :inc2));
+
+SELECT pg_temp.must_fail('O6 no final confidence before the review', format(
+  $$UPDATE diagnoses SET final_outcome = 'inconclusive', final_confidence = 'low' WHERE diagnosis_id = %L$$, :dia3), 'diagnoses_check');
+SELECT pg_temp.must_fail('O7 final outcome and confidence come together', format(
+  $$UPDATE diagnoses SET reviewed = true, final_confidence = 'low' WHERE diagnosis_id = %L$$, :dia3), 'diagnoses_check');
+SELECT pg_temp.must_fail('O8 low is never established, after the cap either', format(
+  $$UPDATE diagnoses SET reviewed = true, final_outcome = 'established', final_confidence = 'low' WHERE diagnosis_id = %L$$, :dia3),
+  'diagnoses_check');
+SELECT pg_temp.must_fail('O9 a review can''t establish what the diagnoser left inconclusive',
+  $$UPDATE diagnoses SET reviewed = true, final_outcome = 'established', final_confidence = 'high'
+    WHERE diagnosis_id = '00000000-0000-7000-8000-000000000402'$$, 'diagnoses_check');
+SELECT pg_temp.must_pass('O10 a diagnosis scored high and capped to low is stored as it ended', format(
+  $$SET LOCAL ROLE aisre_app; UPDATE diagnoses SET reviewed = true, final_outcome = 'inconclusive', final_confidence = 'low'
+    WHERE diagnosis_id = %L$$, :dia3));
+SELECT pg_temp.must_equal('O11 the diagnoser''s own values stay beside the final ones', format(
+  $$SELECT concat_ws('/', outcome, confidence, final_outcome, final_confidence) FROM diagnoses WHERE diagnosis_id = %L$$, :dia3),
+  'established/high/inconclusive/low');
+SELECT pg_temp.must_fail('O12 the final values are write-once', format(
+  $$UPDATE diagnoses SET final_confidence = 'medium' WHERE diagnosis_id = %L$$, :dia3), 'write-once');
+
+SELECT pg_temp.must_fail('O13 an action can''t hold for less than its service', format(
+  $$UPDATE services SET hold_seconds = 900 WHERE service_id = %2$L;
+    INSERT INTO actions (action_id, incident_id, diagnosis_id, kind, target_service_id, target_environment_id, target_deployment,
+      base_revision, expected_after_revision, description, expected_effect, risk, undo_plan, recovery_criteria,
+      recovery_predicates_digest, hold_seconds, high_impact, policy_version)
+    VALUES (gen_random_uuid(), %1$L, %4$L, 'config_revert', %2$L, %3$L, 'checkout-prod-ap1', 'r1', 'r2',
+      'd', 'e', 'r', 'u', '[]', %5$L, 600, false, 'p@1')$$, :inc2, :svc, :env, :dia3, :h_b), 'below its service');
+
+-- A sixth action, on the deployment whose earlier change (act5) was resolved as not_applied.
+SET ROLE aisre_app;
+INSERT INTO actions (action_id, incident_id, diagnosis_id, kind, target_service_id, target_environment_id, target_deployment,
+                     base_revision, expected_after_revision, description, expected_effect, risk, undo_plan, recovery_criteria,
+                     recovery_predicates_digest, hold_seconds, high_impact, policy_version)
+  VALUES (:act6, :inc2, :dia3, 'config_revert', :svc, :env, 'checkout-prod-ap1', 'r1', 'r2',
+          'd', 'e', 'r', 'u', '[]', :h_b, 600, false, 'p@1');
+UPDATE actions SET status = 'testing', version = version + 1 WHERE action_id = :act6;
+UPDATE actions SET status = 'awaiting_approval', version = version + 1, action_digest = :h_d, test_bundle_digest = :h_a WHERE action_id = :act6;
+INSERT INTO approval_requests (approval_request_id, action_id, requested_by, escalate_at, expires_at)
+  VALUES (:req6, :act6, 'user:sam', now() + interval '15 minutes', now() + interval '60 minutes');
+INSERT INTO tool_calls (tool_call_id, incident_id, tool, skill, call_sha256, params, new_evidence)
+  VALUES (gen_random_uuid(), :inc2, 'get_logs', 'collect_evidence', :h_a, '{"service": "checkout"}', 2),
+         (gen_random_uuid(), :inc2, 'get_logs', 'collect_evidence', :h_a, '{"service": "checkout"}', 0);
+-- A stop from before the action existed: it stopped an earlier run, not this action.
+INSERT INTO stop_requests (stop_request_id, incident_id, requested_by, reason, requested_at)
+  VALUES (gen_random_uuid(), :inc2, 'user:sam', 'False alarm', now() - interval '1 day');
+RESET ROLE;
+SELECT pg_temp.must_pass('O14 approval on the sixth action', pg_temp.decide(:apv7, :req6, :act6, 'user:a', 'approved', :h_d));
+UPDATE actions SET status = 'approved', version = version + 1 WHERE action_id = :act6;
+SET ROLE aisre_dispatcher;
+UPDATE actions SET status = 'applying', version = version + 1 WHERE action_id = :act6;
+RESET ROLE;
+
+SELECT pg_temp.must_equal('O15 budgets and repeats are counted from the tool call log', format(
+  $$SELECT count(*) || '/' || count(*) FILTER (WHERE call_sha256 = %2$L) FROM tool_calls WHERE incident_id = %1$L$$, :inc2, :h_a), '2/2');
+SELECT pg_temp.must_fail('O16 the tool call log is append-only', 'UPDATE tool_calls SET new_evidence = 9', 'append-only');
+SELECT pg_temp.must_fail('O17 the dispatcher has no business in the tool call log',
+  'SET LOCAL ROLE aisre_dispatcher; SELECT count(*) FROM tool_calls', 'permission denied');
+
+SELECT pg_temp.must_fail('O18 the platform raises no stop', format(
+  $$SET LOCAL ROLE aisre_app; INSERT INTO stop_requests (stop_request_id, incident_id, requested_by, reason)
+    VALUES (gen_random_uuid(), %L, 'system:workflow', 'Stop')$$, :inc2), 'stop_requests_requested_by_check');
+SELECT pg_temp.must_fail('O19 a stop is never edited', 'UPDATE stop_requests SET reason = ''Changed''', 'append-only');
+SELECT pg_temp.must_fail('O20 the dispatcher raises no stop', format(
+  $$SET LOCAL ROLE aisre_dispatcher; INSERT INTO stop_requests (stop_request_id, incident_id, requested_by, reason)
+    VALUES (gen_random_uuid(), %L, 'user:sam', 'Stop')$$, :inc2), 'permission denied');
+SELECT pg_temp.must_fail('O21 a stop raised after approval refuses intent, though the approval stands', format(
+  $$INSERT INTO stop_requests (stop_request_id, incident_id, requested_by, reason) VALUES (gen_random_uuid(), %4$L, 'user:vee', 'Wrong target');
+    SET LOCAL ROLE aisre_dispatcher;
+    INSERT INTO execution_attempts (attempt_id, action_id, approval_id, action_digest, execution_key, attempt_no)
+    VALUES (gen_random_uuid(), %1$L, %2$L, %3$L, %1$L, 1)$$, :act6, :apv7, :h_d, :inc2), 'a stop was requested');
+
+-- The late apply: act5's first call outlived its window and landed after its outcome was settled as not_applied.
+SELECT pg_temp.must_equal('O22 every block so far opened with its attempt and cleared when it settled',
+  $$SELECT count(*) || '/' || count(*) FILTER (WHERE cleared_at IS NULL) || '/' || count(*) FILTER (WHERE cleared_by = 'user:lead')
+    FROM deployment_blocks WHERE reason = 'unresolved'$$, '4/0/1');
+SELECT pg_temp.must_fail('O23 nobody opens an unresolved block by hand', format(
+  $$SET LOCAL ROLE aisre_dispatcher; INSERT INTO deployment_blocks (attempt_id, action_id, reason, target_deployment)
+    VALUES (%L, %L, 'unresolved', 'checkout-prod-us1')$$, :att3, :act3), 'opens and clears with its attempt');
+SELECT pg_temp.must_fail('O24 a late apply follows a reconciled not_applied, nothing else', format(
+  $$SET LOCAL ROLE aisre_dispatcher; INSERT INTO deployment_blocks (attempt_id, action_id, reason, target_deployment)
+    VALUES (%L, %L, 'late_apply', 'checkout-prod-us1')$$, :att3, :act3), 'a late apply follows');
+SELECT pg_temp.must_fail('O25 the app never writes a block', format(
+  $$SET LOCAL ROLE aisre_app; INSERT INTO deployment_blocks (attempt_id, action_id, reason, target_deployment)
+    VALUES (%L, %L, 'late_apply', 'checkout-prod-ap1')$$, :att4, :act5), 'permission denied');
+SELECT pg_temp.must_pass('O26 the dispatcher puts the block back after a late apply', format(
+  $$SET LOCAL ROLE aisre_dispatcher; INSERT INTO deployment_blocks (attempt_id, action_id, reason, target_deployment)
+    VALUES (%L, %L, 'late_apply', 'some-other-deployment')$$, :att4, :act5));
+SELECT pg_temp.must_equal('O27 the block is on the action''s own deployment, whatever was sent', format(
+  $$SELECT target_deployment FROM deployment_blocks WHERE attempt_id = %L AND reason = 'late_apply'$$, :att4), 'checkout-prod-ap1');
+SELECT pg_temp.must_fail('O28 the late apply blocks the deployment, with no attempt row open', format(
+  $$SET LOCAL ROLE aisre_dispatcher;
+    INSERT INTO execution_attempts (attempt_id, action_id, approval_id, action_digest, execution_key, attempt_no)
+    VALUES (gen_random_uuid(), %1$L, %2$L, %3$L, %1$L, 1)$$, :act6, :apv7, :h_d), 'is blocked');
+SELECT pg_temp.must_fail('O29 the platform can''t clear a late apply', format(
+  $$SET LOCAL ROLE aisre_dispatcher; UPDATE deployment_blocks SET cleared_at = now(), cleared_by = 'system:dispatcher'
+    WHERE attempt_id = %L AND reason = 'late_apply'$$, :att4), 'deployment_blocks_check');
+SELECT pg_temp.must_fail('O30 clearing it needs what the person saw', format(
+  $$SET LOCAL ROLE aisre_dispatcher; UPDATE deployment_blocks SET cleared_at = now(), cleared_by = 'user:lead'
+    WHERE attempt_id = %L AND reason = 'late_apply'$$, :att4), 'deployment_blocks_check');
+SELECT pg_temp.must_fail('O31 the app never clears a block', format(
+  $$SET LOCAL ROLE aisre_app; UPDATE deployment_blocks SET cleared_at = now(), cleared_by = 'user:lead', observed_revision = 'r2',
+    resolution_reason = 'Checked' WHERE attempt_id = %L AND reason = 'late_apply'$$, :att4), 'permission denied');
+SELECT pg_temp.must_pass('O32 the Incident lead''s outcome resolution clears it', format(
+  $$SET LOCAL ROLE aisre_dispatcher; UPDATE deployment_blocks SET cleared_at = now(), cleared_by = 'user:lead', observed_revision = 'r2',
+    resolution_reason = 'The change did land; reverted by hand' WHERE attempt_id = %L AND reason = 'late_apply'$$, :att4));
+SELECT pg_temp.must_fail('O33 a resolution is written once', format(
+  $$UPDATE deployment_blocks SET resolution_reason = 'Changed' WHERE attempt_id = %L AND reason = 'late_apply'$$, :att4), 'write-once');
+SELECT pg_temp.must_fail('O34 a block is never deleted', 'DELETE FROM deployment_blocks', 'append-only');
+SELECT pg_temp.must_pass('O35 intent goes ahead once the block is cleared; the day-old stop doesn''t refuse it', format(
+  $$SET LOCAL ROLE aisre_dispatcher;
+    INSERT INTO execution_attempts (attempt_id, action_id, approval_id, action_digest, execution_key, attempt_no)
+    VALUES (%4$L, %1$L, %2$L, %3$L, %1$L, 1)$$, :act6, :apv7, :h_d, :att6));
+SELECT pg_temp.must_fail('O36 nobody clears an unresolved block by hand', format(
+  $$SET LOCAL ROLE aisre_dispatcher; UPDATE deployment_blocks SET cleared_at = now(), cleared_by = 'user:lead', observed_revision = 'r2',
+    resolution_reason = 'Checked' WHERE attempt_id = %L$$, :att6), 'opens and clears with its attempt');
+SELECT pg_temp.must_pass('O37 the attempt ends unknown', format(
+  $$SET LOCAL ROLE aisre_dispatcher; UPDATE execution_attempts SET outcome = 'unknown', finished_at = now() WHERE attempt_id = %L$$, :att6));
+SELECT pg_temp.must_equal('O38 an unknown outcome keeps the block', format(
+  $$SELECT count(*) FROM deployment_blocks WHERE attempt_id = %L AND cleared_at IS NULL$$, :att6), '1');
+SELECT pg_temp.must_pass('O39 reconciliation settles it', format(
+  $$SET LOCAL ROLE aisre_dispatcher;
+    INSERT INTO execution_attempts (attempt_id, action_id, approval_id, action_digest, execution_key, attempt_no, reconciliation, outcome)
+    VALUES (gen_random_uuid(), %1$L, %2$L, %3$L, %1$L, 2, true, 'applied')$$, :act6, :apv7, :h_d));
+SELECT pg_temp.must_equal('O40 and the block clears with it', format(
+  $$SELECT cleared_by FROM deployment_blocks WHERE attempt_id = %L$$, :att6), 'system:dispatcher');
+SELECT pg_temp.must_equal('O41 hash chain intact on incident 2',
+  format('SELECT count(*) FROM verify_timeline_chain(%L)', :inc2), '0');
+
+-- ---------------------------------------------------------------------------
 -- Results
 -- ---------------------------------------------------------------------------
 

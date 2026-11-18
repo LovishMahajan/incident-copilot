@@ -35,6 +35,7 @@ def test_st13_bytes_swapped_in_the_artifact_store_stop_execution():
     r = rig(store=store)
     res = r.run(a.action_id)
     assert res.outcome == Outcome.REFUSED and r.release.calls == []
+    assert res.void_approval                                   # what was approved isn't what is stored
 
 
 def test_st13_control_the_stored_bytes_that_hash_to_the_approval_run():
@@ -52,6 +53,7 @@ def test_st13_unreadable_patch_content_stops_execution(failure):
     r = rig(store=Broken().add(a, [decide(a, "priya")]))
     res = r.run(a.action_id)
     assert res.outcome == Outcome.REFUSED and r.release.calls == [] and "can't be read" in res.reason
+    assert not res.void_approval                               # an outage proves nothing about the bytes
 
 
 def test_st13_a_fix_with_no_patch_at_all_stops_execution():

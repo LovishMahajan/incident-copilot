@@ -139,6 +139,39 @@ def test_st37_a_first_call_that_outlives_the_window_never_raises_and_a_conflict_
     assert first.outcome == Outcome.UNKNOWN and "a person must check" in first.reason  # the change landed: said aloud
 
 
+def test_st37_a_late_apply_puts_the_block_back_and_only_a_person_clears_it():
+    """ADR-69: reconciliation settled the key as not_applied, then the first call landed. No attempt row can
+    follow not_applied, so the block is its own record."""
+    async def late_look(r, a):
+        return await restarted(r).execute(a.action_id)
+    r, a, _, _, _, _ = repeat_during_apply(late_look)
+    assert r.ledger.get(a.action_id).state == LedgerState.NOT_APPLIED                  # the attempt rows can't say it
+    assert [(b.execution_key, b.reason) for b in r.ledger.unresolved(a.target.deployment)] == [(a.action_id, "late_apply")]
+    other = make_action(base_revision=AFTER, expected_after_revision="0badf00d")
+    r.store.add(other, [decide(other, "priya")])
+    d = restarted(r)
+    refused = asyncio.run(d.execute(other.action_id))
+    assert refused.outcome == Outcome.REFUSED and "unresolved change" in refused.reason and len(r.release.calls) == 1
+    asyncio.run(d.reconcile(a.action_id))                                              # no later look lifts it
+    assert r.ledger.unresolved(a.target.deployment)
+    with pytest.raises(ApprovalError) as e:
+        d.resolve_outcome(a.action_id, subject="priya", outcome="applied", observed_revision=AFTER,
+                          reason="Checked the target by hand", auth_time=SOON, mfa=True)
+    assert e.value.code == "forbidden" and r.ledger.unresolved(a.target.deployment)
+    resolved = d.resolve_outcome(a.action_id, subject="sam", outcome="applied", observed_revision=AFTER,
+                                 reason="Checked the target by hand", auth_time=SOON, mfa=True)
+    assert resolved.outcome == Outcome.APPLIED and r.ledger.unresolved(a.target.deployment) == []
+    assert r.ledger.blocks[-1].resolution.subject == "sam" and len(r.ledger.rows[a.action_id]) == 2   # rows stay final
+    assert asyncio.run(d.execute(other.action_id)).outcome == Outcome.APPLIED
+
+
+def test_st37_control_a_call_that_lands_in_time_leaves_no_block():
+    a, ds = approved()
+    r = rig((a, ds))
+    assert r.run(a.action_id).outcome == Outcome.APPLIED and r.ledger.unresolved(a.target.deployment) == []
+    assert [b.reason for b in r.ledger.blocks] == ["unresolved"] and r.ledger.blocks[0].cleared
+
+
 def test_st37_a_first_call_overtaken_by_reconciliation_reports_what_stands():
     async def late_unknown(r, a):
         r.release.in_progress_key = a.action_id

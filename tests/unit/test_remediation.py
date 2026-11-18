@@ -10,18 +10,21 @@ import dataclasses
 import hashlib
 import json
 import subprocess
+import threading
 import uuid
 from datetime import datetime, timedelta, timezone
 
 import pytest
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 
-from aisre.remediation.action import (ApprovalError, ApprovalPolicy, Directory, ImmutableAction, ImpactFacts, MATRIX, Perm, Role, Signer, Standing,
+from aisre.remediation.action import (SECURITY_ALERT_CODES, ApprovalError, ApprovalPolicy, Directory, ImmutableAction, ImpactFacts, MATRIX, Perm, Role, Signer, Standing,
+                    check_hold, request_stop,
                     Target, evaluate, record_decision)
 from aisre.remediation.dispatcher import (Dispatcher, Ledger, LedgerEntry, LedgerState, Outcome, ReleaseInProgress, TargetState)
 from aisre.reliability.fence import FenceState
 from aisre.remediation.patch import DEFAULT_POLICY, EditPolicy, PatchRejected, build_patch_from_contents, check_boundaries
-from aisre.remediation.sandbox import (REQUIRED_SUITES, ResultBundle, SandboxSpec, SpecRejected, SuiteResult, TestOutcome, classify,
+from aisre.remediation.sandbox import (MAX_SANDBOXES, REQUIRED_SUITES, ResultBundle, SandboxBusy, SandboxLimiter, SandboxSpec, SpecRejected,
+                     SuiteResult, TestOutcome, classify,
                      launch_args, read_bundle, reap, run_sandbox, validate_args, volume_args)
 from aisre.verification.verification import (Predicate, Sample, Verdict, VerificationPlan, baseline, reference_plan, resolution_allowed,
                           rollback_action_fields, verify)
@@ -314,6 +317,42 @@ def test_cleanup_runs_when_the_run_fails():
     with pytest.raises(OSError):
         run_sandbox(SandboxSpec(), "r1", "0" * 64, "a1b2c3d4", popen=popen, run=run)
     assert ["docker", "volume", "rm", "--force", "aisre-ws-r1"] in calls
+
+
+def test_a_fourth_sandbox_is_never_started():
+    """ADR-56: three at once on the test host. The fourth waits for a slot, then gives up before creating anything."""
+    p, limiter = patch(), SandboxLimiter()
+    assert MAX_SANDBOXES == 3 and limiter.limit == 3
+    assert all(limiter.acquire(0) for _ in range(3))
+    calls, run = docker_recorder()
+    with pytest.raises(SandboxBusy):
+        run_sandbox(SandboxSpec(), "r4", p.digest, "a1b2c3d4", popen=lambda *a, **k: FakeProc(), run=run, limiter=limiter)
+    assert calls == []
+    limiter.release()
+    b = run_sandbox(SandboxSpec(), "r4", p.digest, "a1b2c3d4", popen=lambda *a, **k: FakeProc(bundle_line(p)), run=run,
+                    limiter=limiter)
+    assert classify(b, p.digest) == TestOutcome.PASSED
+
+
+def test_a_sandbox_gives_its_slot_back_however_it_ends():
+    p, limiter = patch(), SandboxLimiter(1)
+    _, run = docker_recorder()
+
+    def popen(*a, **k):
+        raise OSError("docker is gone")
+    for _ in range(2):                                                  # a leaked slot would make the second one busy
+        with pytest.raises(OSError):
+            run_sandbox(SandboxSpec(), "r1", p.digest, "a1b2c3d4", popen=popen, run=run, limiter=limiter)
+    run_sandbox(SandboxSpec(), "r1", p.digest, "a1b2c3d4", popen=lambda *a, **k: FakeProc(returncode=137, hang=True), run=run,
+                limiter=limiter)
+    assert limiter.acquire(0)
+
+
+def test_a_waiting_run_takes_the_slot_when_one_frees():
+    limiter = SandboxLimiter(1)
+    assert limiter.acquire(0) and not limiter.acquire(0.01)
+    threading.Timer(0.05, limiter.release).start()
+    assert limiter.acquire(2)
 
 
 def test_reaper_removes_only_what_is_old_and_counts_it():
@@ -706,10 +745,13 @@ class Store:
     def __init__(self, a, ds, others=(), verdicts=None):
         self.a, self.ds, self.verdicts = a, ds, verdicts or {}
         self.actions = {x.action_id: x for x in (a, *others)}
-        self.by_action = {}
+        self.by_action, self.stopped_by = {}, None
 
     def action(self, action_id):
         return self.actions.get(action_id, self.a)
+
+    def stop(self, _):
+        return self.stopped_by
 
     def decisions(self, action_id):
         return self.by_action.get(action_id, self.ds)
@@ -787,6 +829,67 @@ def test_dispatch_refuses_without_approval_and_on_revision_drift():
     assert asyncio.run(disp(a, [], FakeRelease()).execute(a.action_id)).outcome == Outcome.REFUSED
     r = asyncio.run(disp(a, [decide(a, "priya")], FakeRelease(revision="99999999")).execute(a.action_id))
     assert r.outcome == Outcome.REFUSED and "approved for a1b2c3d4" in r.reason
+
+
+def test_a_stop_refuses_the_fix_and_withdraws_no_approval():
+    """ADR-69: a stop isn't a revocation. The approval still stands; the dispatcher just won't act on it."""
+    a = action()
+    rel, led = FakeRelease(), Ledger()
+    d = disp(a, [decide(a, "priya")], rel, led)
+    d.store.stopped_by = "vee"
+    r = asyncio.run(d.execute(a.action_id))
+    assert r.outcome == Outcome.REFUSED and "stop requested by vee" in r.reason and not r.void_approval
+    assert rel.apply_calls == 0 and led.get(a.action_id) is None
+    assert led.events[0]["type"] == "aisre.execution.refused.v1"
+    d.store.stopped_by = None                                           # control: the same approval, no stop
+    assert asyncio.run(d.execute(a.action_id)).outcome == Outcome.APPLIED
+
+
+def test_a_stop_never_stops_a_rollback():
+    fix, back = with_rollback()
+    _, cond = sign_both(fix, back, "priya")
+    rel = FakeRelease(revision="e5f6a7b8")
+    store = Store(back, [cond], verdicts={fix.action_id: "failed"})
+    store.stopped_by = "vee"
+    d = Dispatcher(store, rel, Ledger(), KEYS, directory(), POLICY, fence=FenceState(), clock=lambda: T0 + timedelta(minutes=20))
+    assert asyncio.run(d.execute(back.action_id)).outcome == Outcome.APPLIED and rel.revision == "a1b2c3d4"
+
+
+def test_anyone_who_may_cancel_may_raise_a_stop_until_intent():
+    a = action()
+    ask = dict(action=a, reason="wrong target", now=T0, directory=directory(), intent_recorded=False)
+    for who in ("vee", "priya", "sam"):                                 # responder, approver, incident lead
+        stop = request_stop(subject=who, **ask)
+        assert (stop.incident_id, stop.requested_by, stop.reason) == (a.incident_id, who, "wrong target")
+    for who, change, code in [("ravi", {}, "not_found"), ("admin", {}, "forbidden"), ("system:workflow", {}, "forbidden"),
+                              ("vee", {"reason": ""}, "reason_required"), ("vee", {"intent_recorded": True}, "execution_started")]:
+        with pytest.raises(ApprovalError) as e:
+            request_stop(subject=who, **{**ask, **change})
+        assert e.value.code == code
+    refused("forbidden", a, "vee", decision="revoked", reason="stop", revokes="x")   # why a stop is its own thing
+
+
+def test_a_refusal_voids_the_approval_only_when_what_was_approved_no_longer_holds():
+    a = action()
+    drift = asyncio.run(disp(a, [decide(a, "priya")], FakeRelease(revision="99999999")).execute(a.action_id))
+    assert drift.outcome == Outcome.REFUSED and drift.void_approval                 # the service changed (Q11.73)
+    tampered = dataclasses.replace(decide(a, "priya"), valid_until=(T0 + timedelta(days=1)).isoformat())
+    assert asyncio.run(disp(a, [tampered], FakeRelease()).execute(a.action_id)).void_approval
+    assert not asyncio.run(disp(a, [], FakeRelease()).execute(a.action_id)).void_approval
+    d = disp(a, [decide(a, "priya")], FakeRelease())
+    d.policy = ApprovalPolicy(edit_version="edit-policy@2")
+    assert not asyncio.run(d.execute(a.action_id)).void_approval
+
+
+def test_an_action_never_holds_for_less_than_its_service():
+    check_hold(action(), 600)
+    check_hold(action(hold_seconds=1200), 900)
+    with pytest.raises(ValueError):
+        check_hold(action(), 900)
+
+
+def test_an_unauthenticated_attempt_is_a_security_alert_code():
+    assert "unauthenticated" in SECURITY_ALERT_CODES and "duplicate" not in SECURITY_ALERT_CODES
 
 
 def test_lost_response_is_reconciled_not_retried():

@@ -287,22 +287,25 @@ Each needs an early test and a fallback plan.
 
 These follow from the Layer 2 answers and the consolidated design ([System Design, 10 and 12](../../reference/system-design.md)). Every open entry here traces back to [decisions.md](../../decisions.md), the decision log.
 
-Deadlines are milestone gates, and are provisional (A16). **Before M*n*** means settled before work on that milestone starts. **Before the pilot** means after the M4 gate and before the pilot starts. **Pilot review** is the accuracy and approval review that precedes Release B (ADR-44). System Design section 10 lists its unknowns as "to settle before build", so those are Before M1.
+Deadlines are milestone gates, and are provisional (A16). **Before M*n*** means settled before work on that milestone starts. **Before the pilot** means after the M4 gate and before the pilot starts. **Pilot review** is the accuracy and approval review that precedes Release B (ADR-44). System Design section 10 lists its unknowns as "to settle before build", so those are Before M1. Where this table and [Q13.51](../layer-13-implementation-planning/conversation.md) differed, Q13.51's deadline is used (ADR-69).
 
 | Dependency | From | Owner (role) | Deadline | Settled when |
 | --- | --- | --- | --- | --- |
-| Named people for each role | [Q2.23](conversation.md) | Engineering manager | Before M1 | Names entered in [decisions.md](../../decisions.md) |
-| Release process can apply, undo and look up one change by key | [Q2.6](conversation.md), ADR-47 | Platform owner | Before M1 | Scenario revert done through it |
-| On-call rotas cover every in-scope service, including nights | A8 | Engineering manager | Before M1 | Rotas confirmed |
-| Historical peak concurrency | [Q2.17](conversation.md), A6 | SRE lead | Before M1 | Past incident records checked |
-| Provider agreement on data retention and training | A2 | Security lead | Before M1 | Terms confirmed |
+| Named people for each role | [Q2.23](conversation.md) | Engineering manager | Before M0 | Names entered in [decisions.md](../../decisions.md) |
+| Sign-off of the layout, milestones, topology and release boundaries (ADR-67, ADR-68, ADR-51, ADR-44) | [Q13.51](../layer-13-implementation-planning/conversation.md) | Platform owner, Engineering manager | Before M0 | Sign-off recorded in [decisions.md](../../decisions.md) |
+| The new paths and tools marked provisional in [Artifact 13](../layer-13-implementation-planning/artifact-13-complete-implementation-plan.md) | [Q13.51](../layer-13-implementation-planning/conversation.md) | Platform owner | Before M0 | Each is accepted or replaced |
+| Temporal server version | [decisions.md](../../decisions.md) | Platform owner | Before M0 | A version is pinned in the Compose file |
+| Release process can apply, undo and look up one change by key | [Q2.6](conversation.md), ADR-47 | Platform owner | Before M3 | Scenario revert done through it |
+| On-call rotas cover every in-scope service, including nights | A8 | Engineering manager | Before M4 | Rotas confirmed |
+| Historical peak concurrency | [Q2.17](conversation.md), A6 | Platform owner | Before M1 | Past incident records checked |
+| Provider agreement on data retention and training | A2 | Security lead | Before the first real incident data is sent to the provider | Terms confirmed |
 | In-scope alerts carry a stable service label and identifier | [System Design, 10](../../reference/system-design.md) | Platform owner | Before M1 | Alert samples inspected |
 | How often real logs contain personal data or secrets | [System Design, 10](../../reference/system-design.md) | Security lead | Before M1 | Seeded and sampled corpus reviewed |
-| Test host that runs containers under gVisor, separate from the platform host | [System Design, 12](../../reference/system-design.md), ADR-51 | Platform owner | Before M2 | A container runs there under gVisor with no network |
+| Test host that runs containers under gVisor, separate from the platform host | [System Design, 12](../../reference/system-design.md), ADR-51 | Security lead owns it; Platform owner provisions it (ADR-69) | Before M2 | A container runs there under gVisor with no network |
 | Named identities and data-owner approval for each access in 2.3 | [Q2.5](conversation.md) | Security lead | Before M3 | Each access has its own identity, its data owner's approval and a log. Due before Release A's first production read; M1 and M2 have no production access |
 | The organisation accepts the approval rules in ADR-49 | A8 | Engineering manager | Before M3 | Rules written down and accepted |
 | Identity system with groups per service | [System Design, 12](../../reference/system-design.md) | Security lead | Before M3 | Approve rights resolve per service through the groups |
-| Managed PostgreSQL with point-in-time recovery | [System Design, 12](../../reference/system-design.md) | Platform owner | Before M4 | A restore is tested |
+| PostgreSQL with point-in-time recovery. Development and the reference environment run it under Docker Compose on the reference host (ADR-51); the pilot uses a managed instance | [System Design, 12](../../reference/system-design.md) | Platform owner | Before M4 | A restore is tested |
 | Actual monthly budget and hourly cost | A14 | Engineering manager | Before the pilot | Finance confirms (ADR-56) |
 | Recorded decision to switch on Release B | ADR-44 | Engineering manager | Pilot review | Decision recorded and the write credential provisioned |
 
@@ -314,7 +317,7 @@ Deadlines are milestone gates, and are provisional (A16). **Before M*n*** means 
 
 **Needs the team:** provider terms on retention and training, Owner: Security lead, settled when: terms are confirmed.
 
-**Needs measurement:** real alert samples, Owner: Platform owner, settled when: samples are inspected. Peak concurrency, Owner: SRE lead, settled when: past records are checked. Personal data in logs, Owner: Security lead, settled when: samples are inspected.
+**Needs measurement:** real alert samples, Owner: SRE lead, settled when: samples are inspected. Peak concurrency, Owner: Platform owner, settled when: past records are checked. Personal data in logs, Owner: Security lead, settled when: samples are inspected.
 
 ### Decision log format ([Q2.23](conversation.md))
 
@@ -355,13 +358,13 @@ These IDs are separate from the shared-known labels. **A1** is an assumption; **
 | Assumption | Status | Owner | Validated when | Deadline |
 | --- | --- | --- | --- | --- |
 | **A1:** A capable model is available and affordable | Provisional | SRE lead | The M1 gate passes: accuracy ≥ 80% and budget caps hold ([Technical specification, 12](../../reference/technical-specification.md)) | Before M2 |
-| **A2:** Incident data may be sent to an outside provider | Provisional | Security lead ([System Design, 10](../../reference/system-design.md)) | Provider terms on data retention are confirmed | Before M1 |
+| **A2:** Incident data may be sent to an outside provider | Provisional | Security lead ([System Design, 10](../../reference/system-design.md)) | Provider terms on data retention are confirmed | Before the first real incident data is sent to the provider |
 | **A3:** Evidence sources are accessible read-only | Provisional | Security lead ([Q1.22](../layer-01-problem-discovery/conversation.md)) | The platform's access is confirmed to be read-only | Before M3 |
 | **A4:** Releases and configuration changes are recorded with times and authors | Provisional | Platform owner ([Q3.7](../layer-03-sre-fundamentals/conversation.md), [Q3.26](../layer-03-sre-fundamentals/conversation.md)) | The release record shows configuration differences per release, and the release process emits a record for each deployment | Before M1 |
-| **A5:** A disposable copy can reproduce the failure | Provisional | Platform owner ([Q4.10](../layer-04-requirements/conversation.md)) | The HTTP 500 errors reproduce there | Before M3 |
-| **A6:** Incident volume and concurrency stay small | Provisional | SRE lead ([Q4.34](../layer-04-requirements/conversation.md)) | Past records are checked | Before M1 |
+| **A5:** A disposable copy can reproduce the failure | Provisional | Platform owner ([Q4.10](../layer-04-requirements/conversation.md)) | The HTTP 500 errors reproduce there | Before M2 |
+| **A6:** Incident volume and concurrency stay small | Provisional | Platform owner, as in the register ([Q4.34](../layer-04-requirements/conversation.md)) | Past records are checked | Before M1 |
 | **A7:** One organisation only | Provisional | Engineering manager | No second organisation is planned through the pilot | Before M1 |
-| **A8:** An approver can be reached at night | Provisional | Engineering manager ([Q1.22](../layer-01-problem-discovery/conversation.md)) | The on-call rota covers every service in scope | Before M1 |
+| **A8:** An approver can be reached at night | Provisional | Engineering manager ([Q1.22](../layer-01-problem-discovery/conversation.md)) | The on-call rota covers every service in scope | Before M4 |
 | **A9:** Data volume stays within what one database handles comfortably | Provisional | Platform owner | Volume is measured during the pilot | Pilot review |
 | **A10:** Recent changes cause most incidents | Provisional | SRE lead | Past incident records show that most incidents followed a release or configuration change | Before M1 |
 | **A11:** Model spend at 10% of the value of engineer time saved is the right starting fraction | Provisional | Engineering manager | The actual cost of every incident is recorded, and the budget is adjusted after the pilot | Pilot review |
@@ -401,7 +404,12 @@ These IDs are separate from the shared-known labels. **A1** is an assumption; **
 | Gap 2.7: the Q2.23 reasoning stops mid-sentence | The log feeds 2.7. The source sentence stays as it is, and 2.7 notes that it stops mid-way | Layer decision (proposed) |
 | Register entries lack Q2.23's assumption-link and validation-condition fields | Q2.23's field list stays the format. Until entries gain those fields, this layer's Assumptions table holds that link | Layer decision (proposed) |
 | Q2.13 tags every record; ADR-64 places `org_id` on top-level records only | Top-level records, reached by join elsewhere | ADR-64 |
-| Code only: monthly ceiling, daily limit and copy cap | The ceiling and daily limit are in `gateway.py`, with totals in memory until the database ledger is built. The copy cap belongs to the Test Runner, which has no reference file yet | ADR-56 |
+| Code only: monthly ceiling, daily limit and copy cap | The ceiling and daily limit are in `gateway.py`, with totals in memory until the database ledger is built. The copy cap belongs to the Test Runner (`src/aisre/remediation/sandbox.py`). The cap of 3 is set by ADR-56 and coded as `MAX_SANDBOXES` with a `SandboxLimiter` on `run_sandbox`, tested. The limiter is per process, so it holds while one Test Runner runs, and a run beyond the cap is refused, not queued, until T2.6 | ADR-56 |
+| 2.7 deadlines vs Q13.51 | Q13.51's stand: named people before M0, release process before M3, rotas before M4, provider terms before the first real incident data is sent. M1 and M2 run on synthetic data, so nothing earlier depends on them | ADR-69 |
+| Test host owner: Platform owner (2.7) vs Security lead (Q13.28) | Security lead owns it; Platform owner provisions it | ADR-69 |
+| Managed PostgreSQL (System Design 12) vs PostgreSQL on the Compose host (ADR-51) | Compose for development and the reference environment; managed, with point-in-time recovery, for the pilot | Layer decision (proposed) |
+| A5 deadline | The reproduction assumption is due before M2, where sandbox testing is built, not before M3 | Layer decision (proposed) |
+| Owner of real alert samples | SRE lead, as in the register. Peak concurrency is the Platform owner's, as in the register, and personal data in logs stays with the Security lead | [decisions.md](../../decisions.md) |
 
 ## Acceptance checks
 

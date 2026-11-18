@@ -73,7 +73,9 @@ class Fakes:
     """Configurable fake platform. `script` decides each activity's answer.
 
     raises: activity names, or notify:<kind>, that fail with no retry. skill_failures: activity
-    name to (code, detail). delays: real seconds. sleeps: virtual seconds, once."""
+    name to (code, detail). delays: real seconds. sleeps: virtual seconds, once. test: one outcome, or
+    a list with one per patch candidate. severity_confirmed_before: a person changes the incident, so
+    its version moves on, just before the transition to that state."""
 
     def __init__(self, **script):
         self.script = {"diagnosis": "established", "critic": ["accept"], "test": "passed", "dispatch": "applied",
@@ -83,7 +85,8 @@ class Fakes:
                        "remediation": True, "sandbox_available": True, "evidence_only": False,
                        "hypotheses": HYPOTHESES, "usage": {}, "skill_failures": {}, "raises": set(),
                        "delays": {}, "sleeps": {}, "blocks": set(), "lost_once": set(), "db_down_attempts": 0,
-                       "reconcile_in_progress": 0, **script}
+                       "reconcile_in_progress": 0, "severity_confirmed_before": None, "void_approval": False,
+                       **script}
         self.calls: Counter = Counter()
         self.steps: list[str] = []
         self.inputs: dict[str, list] = {}
@@ -137,11 +140,11 @@ class Fakes:
         @activity.defn(name="load_incident")
         async def load_incident(inp: act.IncidentIn) -> act.IncidentSnapshot:
             await f.enter("load_incident", inp)
-            return act.IncidentSnapshot(inp.incident_id, "checkout", "production", 1, f.script["status"],
-                                        remediation_enabled=f.script["remediation"])
+            return act.IncidentSnapshot(inp.incident_id, "checkout", "production", 1 + f.versions[inp.incident_id],
+                                        f.script["status"], remediation_enabled=f.script["remediation"])
 
         @activity.defn(name="acquire_investigation_slot")
-        async def acquire_investigation_slot(inp: act.IncidentIn) -> None:
+        async def acquire_investigation_slot(inp: act.SlotIn) -> None:
             await f.enter("acquire_investigation_slot", inp)
             if "no_slot" in f.script["raises"]:
                 raise act.NoSlot("queued")
@@ -166,7 +169,12 @@ class Fakes:
             if f.script.get("refuse_transition_to") == inp.to_state:
                 raise InvalidTransition("a conflicting writer got there first")
             await asyncio.sleep(f.script["delays"].get("record:" + inp.to_state, 0))
-            assert inp.expected_version == 1 + f.versions[inp.incident_id], "stale version"
+            if f.script["severity_confirmed_before"] == inp.to_state:
+                f.script["severity_confirmed_before"] = None
+                f.versions[inp.incident_id] += 1          # the API's write, in its own transaction
+            if inp.expected_version != 1 + f.versions[inp.incident_id] or inp.to_state in (f.script.get("always_stale") or ()):
+                f.calls["stale"] += 1
+                raise act.StaleVersion(f"expected {inp.expected_version}")
             f.versions[inp.incident_id] += 1
             f.transitions.append((inp.from_state, inp.to_state, inp.action_to))
             f.records.append(inp)
@@ -212,13 +220,15 @@ class Fakes:
         @activity.defn(name="draft_patch")
         async def draft_patch(inp: act.SkillIn) -> SkillResult:
             await f.enter("draft_patch", inp)
-            return f.skill("draft_patch", act.PatchOut("a1", "f" * 64, "config_revert", 900,
+            return f.skill("draft_patch", act.PatchOut(f"a{f.calls['draft_patch']}", "f" * 64, "config_revert", 900,
                                                        f.script["sandbox_available"]), inp)
 
         @activity.defn(name="run_sandbox_test")
         async def run_sandbox_test(inp: act.TestIn) -> act.TestOut:
             await f.enter("run_sandbox_test", inp)
             o = f.script["test"]
+            if isinstance(o, list):
+                o = o[min(f.calls["run_sandbox_test"], len(o)) - 1]
             return act.TestOut("t1", o != "not_reproduced", o, FIX_DIGEST)
 
         @activity.defn(name="request_approval")
@@ -241,7 +251,8 @@ class Fakes:
             await f.enter("dispatch_change", inp)
             f.calls["dispatch:" + inp.action_id] += 1
             outcome = f.script["rollback_dispatch" if inp.action_id == "r1" else "dispatch"]
-            return act.DispatchOut("x1", outcome, "rel-1", f.script["refusal_reason"], outcome != "refused")
+            return act.DispatchOut("x1", outcome, "rel-1", f.script["refusal_reason"], outcome != "refused",
+                                   void_approval=outcome == "refused" and f.script["void_approval"])
 
         @activity.defn(name="reconcile_execution")
         async def reconcile_execution(inp: act.DispatchIn) -> act.DispatchOut:
@@ -625,6 +636,7 @@ async def test_unanswered_approval_escalates_then_expires():
 
     await run_case(f, drive)
     assert f.calls["escalate_approval"] == 1 and f.calls["close_approval_request"] == 1
+    assert f.inputs["close_approval_request"][0].close_reason == "expired"
     assert f.calls["dispatch_change"] == 0
     assert ("awaiting_approval", "handed_over", "expired") in f.transitions
 
@@ -969,18 +981,222 @@ async def test_refused_rollback_hands_over_with_its_own_state():
     assert ("r1", "approved", "expired") in f.second and f.calls["verify_recovery"] == 1
 
 
+@pytest.mark.parametrize("via_signal", [True, False])
 @pytest.mark.asyncio
-async def test_cancel_during_rollback_wait_withdraws_it_and_hands_over():
+async def test_cancel_during_rollback_wait_never_skips_the_rollback(via_signal):
+    """ADR-69. Until then a cancel here withdrew the rollback, and the failed fix stayed in production."""
+    f = Fakes(verify="failed", conditional=False)
+
+    async def drive(env, h):
+        await to_approval(h)
+        await wait_state(h, "not_recovered")
+        while not f.calls["notify:approval_needed"] == 2:
+            await asyncio.sleep(0.05)
+        await (cancel(h) if via_signal else h.cancel())
+        await asyncio.sleep(0.5)
+        assert (await h.query(IncidentWorkflow.current_state))["incident"] == "not_recovered"   # still waiting
+        await rollback_decision(h)
+        await hand_over_then_close(env, h)
+
+    assert await run_case(f, drive) == "closed"       # never `cancelled`: the fix was applied
+    assert ("r1", "awaiting_approval", "withdrawn") not in f.second
+    assert ("r1", "awaiting_approval", "approved") in f.second and f.calls["dispatch:r1"] == 1
+    assert ("not_recovered", "not_recovered", "undone") in f.transitions
+
+
+@pytest.mark.asyncio
+async def test_cancel_while_the_fix_is_verified_takes_effect_after_the_rollback():
+    f = Fakes(verify="failed", conditional=False, delays={"verify_recovery": 1})
+
+    async def drive(env, h):
+        await to_approval(h)
+        await wait_state(h, "verifying")
+        await cancel(h)
+        await wait_state(h, "not_recovered")
+        await rollback_decision(h)
+        await hand_over_then_close(env, h)
+
+    assert await run_case(f, drive) == "closed"
+    assert f.calls["dispatch:r1"] == 1 and "cancelled" not in [t[1] for t in f.transitions]
+
+
+@pytest.mark.asyncio
+async def test_a_cancelled_rollback_wait_still_expires_on_its_own_clock():
     f = Fakes(verify="failed", conditional=False)
 
     async def drive(env, h):
         await to_approval(h)
         await wait_state(h, "not_recovered")
         await cancel(h)
+        await env.sleep(61 * 60)
         await hand_over_then_close(env, h)
 
-    assert await run_case(f, drive) == "closed"       # never `cancelled`: the fix was applied
-    assert ("r1", "awaiting_approval", "withdrawn") in f.second
+    await run_case(f, drive)
+    assert ("r1", "awaiting_approval", "expired") in f.second and f.calls["dispatch:r1"] == 0
+    assert f.inputs["close_approval_request"][-1].close_reason == "expired"
+
+
+# ---------------------------------------------------------------------------
+# ADR-69: the incident version, patch candidates, the stop, the voided approval
+# ---------------------------------------------------------------------------
+@pytest.mark.asyncio
+async def test_a_severity_confirmation_mid_run_is_reloaded_not_fatal():
+    """The API confirms severity in its own transaction, which moves the incident's version on."""
+    f = Fakes(severity_confirmed_before="diagnosed")
+
+    async def drive(env, h):
+        await to_approval(h)
+        await wait_state(h, "recovered")
+        await close(h)
+
+    assert await run_case(f, drive) == "closed"
+    assert f.calls["stale"] == 1 and f.calls["load_incident"] == 2 and f.calls["attempt:diagnosed"] == 2
+    diagnosed = [r for r in f.records if r.to_state == "diagnosed"]
+    assert len(diagnosed) == 1 and diagnosed[0].expected_version == 3      # open 1, investigating 2, the person's 3
+
+
+@pytest.mark.asyncio
+async def test_a_record_that_stays_stale_is_handed_over_not_retried_forever():
+    f = Fakes(always_stale=("diagnosed",))
+    assert await run_case(f, hand_over_then_close) == "closed"
+    assert f.calls["attempt:diagnosed"] == wf.STALE_RETRIES + 1
+    assert [t[:2] for t in f.transitions][-2:] == [("investigating", "inconclusive"), ("inconclusive", "handed_over")]
+    assert f.handovers == ["incident record kept changing: diagnosed not recorded"]
+
+
+@pytest.mark.asyncio
+async def test_a_hand_over_that_stays_stale_fails_the_run():
+    f = Fakes(always_stale=("diagnosed", "inconclusive"))
+    with pytest.raises(WorkflowFailureError):
+        await run_case(f, no_driver)
+
+
+def test_a_stale_version_is_its_own_non_retryable_error():
+    assert "StaleVersion" in wf.DB_RETRY.non_retryable_error_types and not issubclass(act.StaleVersion, InvalidTransition)
+
+
+@pytest.mark.asyncio
+async def test_a_failed_test_drafts_the_next_candidate_as_its_own_action():
+    f = Fakes(test=["failed", "passed"])
+
+    async def drive(env, h):
+        await wait_state(h, "awaiting_approval")
+        await approve(h, action="a2")
+        await wait_state(h, "recovered")
+        await close(h)
+
+    assert await run_case(f, drive) == "closed"
+    assert [i.candidate_no for i in f.inputs["draft_patch"]] == [1, 2]
+    assert [i.action_id for i in f.inputs["run_sandbox_test"]] == ["a1", "a2"]
+    actions = [(r.action_id, r.action_from, r.action_to) for r in f.records if r.action_to]
+    assert actions[:4] == [("a1", "proposed", "testing"), ("a1", "testing", "test_failed"),
+                           ("a2", "proposed", "testing"), ("a2", "testing", "awaiting_approval")]
+    assert [t[:2] for t in f.transitions].count(("diagnosed", "testing")) == 1     # the incident tests once
+    assert f.inputs["request_approval"][0].action_id == "a2" and f.calls["dispatch:a2"] == 1 and f.calls["dispatch:a1"] == 0
+
+
+@pytest.mark.asyncio
+async def test_three_failed_candidates_end_the_attempt():
+    f = Fakes(test="failed")
+    assert await run_case(f, hand_over_then_close) == "closed"
+    assert [i.candidate_no for i in f.inputs["draft_patch"]] == [1, 2, 3] and f.calls["run_sandbox_test"] == 3
+    assert act.MAX_PATCH_CANDIDATES == 3 and f.calls["request_approval"] == 0
+    assert f.transitions[-1] == ("testing", "handed_over", "test_failed") and f.records[-1].action_id == "a3"
+    assert f.handovers == ["fix not proven: failed"]
+
+
+@pytest.mark.parametrize("outcome", ["not_reproduced", "inconclusive", "crashed", "timeout"])
+@pytest.mark.asyncio
+async def test_only_a_fix_that_ran_and_failed_earns_another_candidate(outcome):
+    f = Fakes(test=outcome)
+    await run_case(f, hand_over_then_close)
+    assert f.calls["draft_patch"] == 1 and f.handovers == [f"fix not proven: {outcome}"]
+
+
+@pytest.mark.asyncio
+async def test_no_second_candidate_hands_over_with_the_first_marked_failed():
+    f = Fakes(test="failed")
+    real = f.skill
+
+    def skill(name, output, inp):
+        if name == "draft_patch" and inp.candidate_no == 2:
+            return SkillResult(failure=SkillFailure(skill=name, code="no_allowed_fix", detail="nothing else on the list"),
+                               usage=SkillUsage(model_calls=1))
+        return real(name, output, inp)
+    f.skill = skill
+    await run_case(f, hand_over_then_close)
+    assert f.calls["run_sandbox_test"] == 1 and ("testing", "testing", "test_failed") in f.transitions
+    assert f.transitions[-1] == ("testing", "handed_over", None)
+    assert f.handovers == ["fix not proven: failed; no candidate 2: nothing else on the list"]
+
+
+@pytest.mark.asyncio
+async def test_cancel_after_approval_before_intent_is_a_stop_not_a_revocation():
+    """ADR-69: whoever may cancel may stop it. Nothing is dispatched, and no approval is withdrawn."""
+    f = Fakes(delays={"record:executing": 1})
+
+    async def drive(env, h):
+        await to_approval(h)
+        while not f.calls["attempt:executing"]:
+            await asyncio.sleep(0.05)
+        await cancel(h)
+        await hand_over_then_close(env, h)
+
+    assert await run_case(f, drive) == "closed"       # `executing` never goes to `cancelled` (ADR-46)
+    assert f.calls["dispatch_change"] == 0 and ("executing", "handed_over", "withdrawn") in f.transitions
+    assert f.handovers == ["stopped by sam before intent: false alarm"]
+    assert f.calls["close_approval_request"] == 0     # the request was decided; the approvals stand as recorded
+
+
+@pytest.mark.asyncio
+async def test_the_dispatchers_own_stop_refusal_withdraws_the_action():
+    f = Fakes(dispatch="refused", refusal_reason="stop requested by vee; no approval was withdrawn (ADR-69)")
+    await run_case(f, approve_then_close)
+    assert ("executing", "handed_over", "withdrawn") in f.transitions and "stop requested by vee" in f.handovers[0]
+
+
+@pytest.mark.asyncio
+async def test_a_refusal_that_voids_the_approval_closes_the_request_as_voided():
+    """ST-01, ST-02, ST-13: the dispatcher can't write approval events, so the workflow asks."""
+    reason = "patch content is 1f, approved as 2e"
+    f = Fakes(dispatch="refused", refusal_reason=reason, void_approval=True)
+    await run_case(f, approve_then_close)
+    closing = f.inputs["close_approval_request"]
+    assert [(c.action_id, c.action_digest, c.request_key, c.close_reason, c.close_detail) for c in closing] == [
+        ("a1", FIX_DIGEST, "a1:approval:1", "voided", reason)]
+    assert ("executing", "handed_over", "withdrawn") in f.transitions and f.calls["reconcile_execution"] == 0
+    assert f.inputs["notify:handed_over"][0].audience == ["on_call", "incident_lead", "approvers", "security"]
+
+
+@pytest.mark.asyncio
+async def test_control_an_ordinary_refusal_voids_nothing():
+    f = Fakes(dispatch="refused", refusal_reason="approval expired: past valid_until")
+    await run_case(f, approve_then_close)
+    assert f.calls["close_approval_request"] == 0
+    assert f.inputs["notify:handed_over"][0].audience == ["on_call", "incident_lead"]
+
+
+@pytest.mark.asyncio
+async def test_a_voided_rollback_approval_is_closed_the_same_way():
+    f = Fakes(verify="failed", rollback_dispatch="refused", refusal_reason="1 decision(s) ignored: bad signature or digest",
+              void_approval=True)
+    await run_case(f, approve_then_close)
+    closing = f.inputs["close_approval_request"][-1]
+    assert (closing.action_id, closing.action_digest, closing.close_reason) == ("r1", ROLLBACK_DIGEST, "voided")
+    assert "security" in f.inputs["notify:handed_over"][0].audience
+
+
+@pytest.mark.asyncio
+async def test_the_slot_request_carries_the_run_that_queued_it():
+    f = Fakes(status="handed_over")
+
+    async def drive(env, h):
+        await wait_state(h, "awaiting_approval")
+        await cancel(h)
+
+    await run_case(f, drive, run=2)
+    slot = f.inputs["acquire_investigation_slot"][0]
+    assert slot.run_id == f"incident-{f.incident_id}-r2" and slot.idempotency_key == f"{f.incident_id}-r2:slot"
 
 
 # ---------------------------------------------------------------------------
@@ -996,6 +1212,7 @@ async def test_cancel_while_awaiting_approval_withdraws_action():
 
     assert await run_case(f, drive) == "cancelled"
     assert f.calls["dispatch_change"] == 0 and f.calls["close_approval_request"] == 1
+    assert f.inputs["close_approval_request"][0].close_reason == "withdrawn"
     assert ("awaiting_approval", "cancelled", "withdrawn") in f.transitions
 
 
@@ -1314,7 +1531,7 @@ def gate():
 
 def test_requests_are_prechecked_and_a_refusal_is_not_a_failure():
     allowed, refused = act.precheck_requests(gate(), [
-        LOG_REQUEST.model_dump(), {"tool": "apply_change", "reason": "write", "params": {}}])
+        LOG_REQUEST.model_dump(), {"tool": "apply_change", "reason": "write", "params": {}}], "hypothesise")
     assert [r["tool"] for r in allowed] == ["get_logs"]
     assert [r["refused"] for r in refused] == ["write_forbidden"]
 
@@ -1351,9 +1568,29 @@ def test_reconciliation_findings_follow_the_8_9_table():
     incidents = {"lost": "testing", "stuck": "open", "queued": "open", "starting": "open", "done": "closed",
                  "differs": "verifying", "fine": "investigating", "owned": "handed_over", "ok": "recovered"}
     running = {"done": "recovered", "differs": "executing", "fine": "investigating"}
-    stalled, orphans = act.reconciliation_findings(incidents, running, {"queued", "fine", "owned"}, {"starting"})
+    queue = {"queued": "incident-queued", "fine": "incident-fine", "owned": "incident-owned"}
+    stalled, orphans = act.reconciliation_findings(incidents, running, queue, {"starting"},
+                                                   live_runs={"incident-queued", "incident-fine"})
     assert stalled == {"testing": 1, "open": 1, "closed": 1, "verifying": 1}
     assert orphans == ["owned"]
+
+
+def test_reconciliation_keeps_the_queue_row_of_a_run_that_is_still_waiting():
+    """ADR-69: a re-investigation queues while its incident is still handed_over. Its row stays until the
+    run ends; the first run's leftover row, on the same status, goes."""
+    incidents = {"again": "handed_over", "left": "handed_over"}
+    running = {"again": "handed_over"}
+    queue = {"again": "incident-again-r2", "left": "incident-left"}
+    stalled, orphans = act.reconciliation_findings(incidents, running, queue, set(), live_runs={"incident-again-r2"})
+    assert stalled == {} and orphans == ["left"]
+
+
+def test_may_grant_sorts_an_unset_severity_last_as_the_table_does():
+    t = datetime(2026, 11, 2, tzinfo=timezone.utc)
+    rows = [act.QueueRow("unset", "a", None, t), act.QueueRow("minor", "b", "sev4", t + timedelta(seconds=1)),
+            act.QueueRow("unset-later", "c", None, t + timedelta(seconds=2))]
+    assert act.may_grant("minor", rows) and not act.may_grant("unset", rows)
+    assert act.may_grant("unset", rows[:1] + rows[2:])               # among the unset, oldest first
 
 
 def test_reconciliation_schedule_runs_every_five_minutes_on_the_worker_queue():
