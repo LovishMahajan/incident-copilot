@@ -59,7 +59,7 @@ def as_(org, groups: str, caller: str = "lena") -> dict[str, str]:
 
 
 @pytest.fixture
-def incident(api, catalogue):
+def incident(api, catalogue, quiet):
     org, service, _ = catalogue
     r = api.post(
         "/v1/incidents",
@@ -68,6 +68,7 @@ def incident(api, catalogue):
     )
     assert r.status_code == 201, r.text
     incident_id = r.json()["incident_id"]
+    quiet(incident_id)  # its timeline is the two events below, nothing from the Compose worker
     note = api.post(
         f"/v1/incidents/{incident_id}/notes",
         json={"note": "looking"},
@@ -88,7 +89,8 @@ def test_the_copy_holds_every_event_and_the_check_finds_nothing(app_engine, stor
         event_key(incident_id, 1),
         event_key(incident_id, 2),
     ]
-    assert copy_timelines(app_engine, store) == 0  # nothing new
+    copy_timelines(app_engine, store)  # other incidents may have moved on; this one hasn't
+    assert len(store.keys(f"timeline/{incident_id}/")) == 2
     copied = json.loads(store.get(event_key(incident_id, 2)))
     assert copied["type"] == "aisre.incident.note_added.v1" and copied["data"] == {
         "note": "looking"
