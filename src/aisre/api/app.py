@@ -3,6 +3,14 @@
     POST /v1/incidents                         IncidentCreate + Idempotency-Key -> 201 / 200
     GET  /v1/incidents/{id}                    IncidentView, ETag = version
     GET  /v1/incidents/{id}/timeline?after_seq Page[CloudEvent]
+    GET  /v1/incidents/{id}/evidence?kind&cursor Page[EvidenceRecord]          (T1.5)
+    GET  /v1/incidents/{id}/diagnoses/current  Diagnosis
+    GET  /v1/incidents/{id}/actions            list[ActionView]; GET /v1/actions/{id}
+    GET  /v1/incidents/{id}/timeline/stream    SSE (aisre.api.stream)
+    GET  /v1/incidents/{id}/timeline/export    signed JSON (aisre.api.export)
+    GET  /v1/incidents/{id}/audit/export       signed JSON, from the write-once copy (T1.20)
+    POST /v1/incidents/{id}/notes, /cancellation, /severity-confirmation, /closure,
+         /reinvestigations                     aisre.api.commands (T1.6)
     GET  /livez, /readyz
 
 Intake (aisre.api.intake) is one transaction (Artifact 7.7): the idempotency key, then the
@@ -23,6 +31,7 @@ record's work to the same pool. Errors are RFC 9457 problem details (aisre.api.p
 
 from __future__ import annotations
 
+import os
 from collections.abc import AsyncIterator, Awaitable, Callable
 from contextlib import asynccontextmanager
 from typing import Annotated
@@ -31,43 +40,80 @@ from uuid import UUID
 from fastapi import Depends, FastAPI, Header, Query, Request, Response
 from fastapi.concurrency import run_in_threadpool
 from fastapi.exceptions import RequestValidationError
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, StreamingResponse
 from sqlalchemy import Engine, text
 from starlette.exceptions import HTTPException
 
-from aisre.api import audit
+from aisre.api import audit, observe
 from aisre.api.auth import Authenticator, Caller, current_caller
+from aisre.api.commands import Commands, parse_if_match
+from aisre.api.export import ExportSigner, audit_document, timeline_document
 from aisre.api.intake import Intake
 from aisre.api.permissions import check_service, content_read, requires
 from aisre.api.problems import ApiError, field_errors, problem_response
+from aisre.api.stream import MEDIA_TYPE, Streams, Timing, starting_point
 from aisre.config import Settings
-from aisre.contracts import CloudEvent, IncidentAccepted, IncidentView, Page
-from aisre.record import load_incident, make_engine, timeline, uuid7
+from aisre.contracts import (
+    ActionView,
+    CancellationCreate,
+    ClosureCreate,
+    CloudEvent,
+    Diagnosis,
+    EvidenceKind,
+    EvidenceRecord,
+    IncidentAccepted,
+    IncidentView,
+    NoteCreate,
+    Page,
+    ReinvestigationCreate,
+    SeverityConfirmationCreate,
+)
+from aisre.record import commands as cmd
+from aisre.record import load_incident, make_engine, reads, timeline, uuid7
+from aisre.record.audit_copy import WriteOnceStore, store_from_env
+from aisre.reliability import telemetry
 from aisre.remediation.action import Perm
 
 REQUEST_ID_HEADER = "X-Request-ID"
 TIMELINE_PAGE_MAX = 500
+EVIDENCE_PAGE_MAX = 200
 
 CallerDep = Annotated[Caller, Depends(current_caller)]
+KeyDep = Annotated[str | None, Header(alias="Idempotency-Key")]
+IfMatchDep = Annotated[str | None, Header(alias="If-Match")]
 
 
-def create_app(settings: Settings | None = None, engine: Engine | None = None) -> FastAPI:
+def create_app(
+    settings: Settings | None = None,
+    engine: Engine | None = None,
+    *,
+    stream_timing: Timing | None = None,
+    audit_store: WriteOnceStore | None = None,
+) -> FastAPI:
     """The API. Without a token verifier, refuses to build outside development and test
-    (aisre.api.auth)."""
+    (aisre.api.auth). The audit copy's store defaults to the AISRE_AUDIT_STORE_* variables."""
     settings = settings or Settings.from_env()
     authenticator = Authenticator(settings)
+    signer = ExportSigner.from_env(settings.env)
+    store = audit_store if audit_store is not None else store_from_env(os.environ)
     audit.install_handler()
+    copy = audit.install_copy(store)
     db = engine or make_engine(settings.database_url)
 
     @asynccontextmanager
     async def lifespan(_: FastAPI) -> AsyncIterator[None]:
+        telemetry.setup_tracing("aisre-api")
+        metrics = telemetry.serve_metrics()  # AISRE_METRICS_PORT, when set (T1.19)
         yield
+        if metrics is not None:
+            metrics.shutdown()
         if engine is None:
             db.dispose()
 
     app = FastAPI(title="AI SRE platform API", version="0.1.0", lifespan=lifespan)
     app.state.authenticator = authenticator
     _install_errors(app)
+    observe.install(app)
 
     intake = Intake(db)
 
@@ -124,6 +170,260 @@ def create_app(settings: Settings | None = None, engine: Engine | None = None) -
         content_read(request, caller, incident_id, "timeline")
         last = items[-1].sequence if len(items) == limit else None
         return Page[CloudEvent](items=items, next_after_seq=last)
+
+    commands = Commands(db)
+
+    @app.post("/v1/incidents/{incident_id}/notes", status_code=201, **requires(Perm.NOTE))
+    def add_note(
+        request: Request,
+        incident_id: UUID,
+        body: NoteCreate,
+        caller: CallerDep,
+        idempotency_key: KeyDep = None,
+    ) -> JSONResponse:
+        return commands.run(
+            request,
+            caller,
+            incident_id,
+            Perm.NOTE,
+            idempotency_key,
+            body,
+            lambda c, inc: cmd.add_note(c, inc, caller.caller_id, body.note),
+            status=201,
+        )
+
+    @app.post("/v1/incidents/{incident_id}/cancellation", status_code=202, **requires(Perm.CANCEL))
+    def cancel(
+        request: Request,
+        incident_id: UUID,
+        body: CancellationCreate,
+        caller: CallerDep,
+        idempotency_key: KeyDep = None,
+    ) -> JSONResponse:
+        """A stop (ADR-69): the dispatcher refuses this incident's existing actions, and the
+        workflow is signalled through the outbox. Accepted is not stopped: 202."""
+        return commands.run(
+            request,
+            caller,
+            incident_id,
+            Perm.CANCEL,
+            idempotency_key,
+            body,
+            lambda c, inc: cmd.cancel(c, inc, caller.caller_id, body.reason),
+            status=202,
+        )
+
+    @app.post(
+        "/v1/incidents/{incident_id}/severity-confirmation",
+        **requires(Perm.CONFIRM_SEVERITY),
+    )
+    def confirm_severity(
+        request: Request,
+        incident_id: UUID,
+        body: SeverityConfirmationCreate,
+        caller: CallerDep,
+        idempotency_key: KeyDep = None,
+        if_match: IfMatchDep = None,
+    ) -> JSONResponse:
+        version = parse_if_match(if_match)
+        return commands.run(
+            request,
+            caller,
+            incident_id,
+            Perm.CONFIRM_SEVERITY,
+            idempotency_key,
+            body,
+            lambda c, inc: cmd.confirm_severity(c, inc, caller.caller_id, body.severity, version),
+            status=200,
+            if_match=version,
+        )
+
+    @app.post("/v1/incidents/{incident_id}/closure", **requires(Perm.CLOSE))
+    def close(
+        request: Request,
+        incident_id: UUID,
+        body: ClosureCreate,
+        caller: CallerDep,
+        idempotency_key: KeyDep = None,
+        if_match: IfMatchDep = None,
+    ) -> JSONResponse:
+        version = parse_if_match(if_match)
+        return commands.run(
+            request,
+            caller,
+            incident_id,
+            Perm.CLOSE,
+            idempotency_key,
+            body,
+            lambda c, inc: cmd.close(c, inc, caller.caller_id, body.note, version),
+            status=200,
+            if_match=version,
+        )
+
+    @app.post(
+        "/v1/incidents/{incident_id}/reinvestigations",
+        status_code=202,
+        **requires(Perm.REINVESTIGATE),
+    )
+    def reinvestigate(
+        request: Request,
+        incident_id: UUID,
+        body: ReinvestigationCreate,
+        caller: CallerDep,
+        idempotency_key: KeyDep = None,
+        if_match: IfMatchDep = None,
+    ) -> JSONResponse:
+        """ADR-46: only from handed_over. Starts `incident-<id>-r<N>` through the outbox."""
+        version = parse_if_match(if_match)
+        return commands.run(
+            request,
+            caller,
+            incident_id,
+            Perm.REINVESTIGATE,
+            idempotency_key,
+            body,
+            lambda c, inc: cmd.reinvestigate(c, inc, caller.caller_id, body.reason, version),
+            status=202,
+            if_match=version,
+        )
+
+    @app.get(
+        "/v1/incidents/{incident_id}/evidence",
+        response_model=Page[EvidenceRecord],
+        **requires(Perm.READ),
+    )
+    def read_evidence(
+        request: Request,
+        incident_id: UUID,
+        caller: CallerDep,
+        kind: EvidenceKind | None = None,
+        cursor: UUID | None = None,
+        limit: Annotated[int, Query(ge=1, le=EVIDENCE_PAGE_MAX)] = 100,
+    ) -> Page[EvidenceRecord]:
+        with db.connect() as conn:
+            readable(request, caller, load_incident(conn, incident_id, caller.org_id), incident_id)
+            items = reads.evidence_page(
+                conn,
+                incident_id,
+                kind=kind.value if kind else None,
+                after=cursor,
+                limit=limit,
+            )
+        content_read(request, caller, incident_id, "evidence")
+        last = str(items[-1].evidence_id) if len(items) == limit else None
+        return Page[EvidenceRecord](items=items, next_cursor=last)
+
+    @app.get(
+        "/v1/incidents/{incident_id}/diagnoses/current",
+        response_model=Diagnosis,
+        **requires(Perm.READ),
+    )
+    def read_diagnosis(request: Request, incident_id: UUID, caller: CallerDep) -> Diagnosis:
+        with db.connect() as conn:
+            readable(request, caller, load_incident(conn, incident_id, caller.org_id), incident_id)
+            diagnosis = reads.current_diagnosis(conn, incident_id)
+        if diagnosis is None:
+            raise ApiError(404, "no_diagnosis", "No diagnosis yet", f"Incident {incident_id}.")
+        content_read(request, caller, incident_id, "diagnosis")
+        return diagnosis
+
+    @app.get(
+        "/v1/incidents/{incident_id}/actions",
+        response_model=list[ActionView],
+        **requires(Perm.READ),
+    )
+    def read_actions(request: Request, incident_id: UUID, caller: CallerDep) -> list[ActionView]:
+        with db.connect() as conn:
+            readable(request, caller, load_incident(conn, incident_id, caller.org_id), incident_id)
+            found = reads.actions(conn, incident_id)
+        content_read(request, caller, incident_id, "actions")
+        return found
+
+    @app.get("/v1/actions/{action_id}", response_model=ActionView, **requires(Perm.READ))
+    def read_action(request: Request, action_id: UUID, caller: CallerDep) -> ActionView:
+        missing = ApiError(404, "not_found", "Action not found", f"No action {action_id}.")
+        with db.connect() as conn:
+            incident_id = reads.incident_of_action(conn, action_id, caller.org_id)
+            if incident_id is None:
+                raise missing
+            view = load_incident(conn, incident_id, caller.org_id)
+            if view is None or not check_service(
+                request, caller, Perm.READ, view.service, incident_id=incident_id
+            ):
+                raise missing
+            (action,) = reads.actions(conn, incident_id, action_id)
+        content_read(request, caller, incident_id, "action")
+        return action
+
+    streams = Streams(db, stream_timing)
+
+    @app.get("/v1/incidents/{incident_id}/timeline/stream", **requires(Perm.READ))
+    async def stream_timeline(
+        request: Request,
+        incident_id: UUID,
+        caller: CallerDep,
+        last_event_id: Annotated[str | None, Header(alias="Last-Event-ID")] = None,
+        after_seq: Annotated[int | None, Query(ge=0)] = None,
+    ) -> StreamingResponse:
+        """Artifact 7.9: replay after the starting point, then follow, until closed or
+        cancelled (aisre.api.stream)."""
+        start = starting_point(last_event_id, after_seq)
+
+        def check() -> IncidentView:
+            with db.connect() as conn:
+                found = load_incident(conn, incident_id, caller.org_id)
+            return readable(request, caller, found, incident_id)
+
+        view = await run_in_threadpool(check)
+        streams.reserve(caller)
+        content_read(request, caller, incident_id, "timeline_stream")
+        return StreamingResponse(
+            streams.events(request, caller, incident_id, view.service, start),
+            media_type=MEDIA_TYPE,
+            headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+        )
+
+    @app.get("/v1/incidents/{incident_id}/timeline/export", **requires(Perm.READ))
+    def export_timeline(request: Request, incident_id: UUID, caller: CallerDep) -> JSONResponse:
+        with db.connect() as conn:
+            readable(request, caller, load_incident(conn, incident_id, caller.org_id), incident_id)
+            doc = timeline_document(conn, incident_id, caller.org_id, caller.caller_id)
+        content_read(request, caller, incident_id, "timeline_export")
+        name = f"incident-{incident_id}-timeline.json"
+        return JSONResponse(
+            signer.sign(doc),
+            headers={
+                "Content-Disposition": f'attachment; filename="{name}"',
+                "X-Content-Type-Options": "nosniff",
+            },
+        )
+
+    @app.get("/v1/incidents/{incident_id}/audit/export", **requires(Perm.AUDIT_EXPORT))
+    def export_audit(request: Request, incident_id: UUID, caller: CallerDep) -> JSONResponse:
+        """ADR-50: the full audit export, read back from the write-once copy (T1.20)."""
+        with db.connect() as conn:
+            view = readable(
+                request, caller, load_incident(conn, incident_id, caller.org_id), incident_id
+            )
+        if not check_service(
+            request, caller, Perm.AUDIT_EXPORT, view.service, incident_id=incident_id
+        ):
+            raise ApiError(403, "forbidden", "Forbidden", "Your roles don't grant audit:export.")
+        if store is None or copy is None:
+            raise ApiError(
+                503, "audit_copy_unavailable", "Audit copy unavailable", "No store configured."
+            )
+        content_read(request, caller, incident_id, "audit_export")
+        copy.flush()  # this process's lines so far, the read just logged included
+        doc = audit_document(store, view, caller.caller_id)
+        name = f"incident-{incident_id}-audit.json"
+        return JSONResponse(
+            signer.sign(doc),
+            headers={
+                "Content-Disposition": f'attachment; filename="{name}"',
+                "X-Content-Type-Options": "nosniff",
+            },
+        )
 
     @app.get("/livez")
     def livez() -> dict[str, str]:

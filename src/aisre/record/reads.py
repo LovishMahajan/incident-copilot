@@ -1,0 +1,182 @@
+"""Artifact 7.4 (T1.5, FR-36): evidence, the current diagnosis and actions, as the API shows them.
+
+Plain SQL over the schema's own column names (ADR-04), turned into the contracts: EvidenceRecord,
+Diagnosis and ActionView. Every query is scoped to one incident, and the caller has already
+checked that the incident belongs to its organisation and service (aisre.api).
+
+Evidence is paged in `evidence_id` order (UUIDv7, so collection order); the cursor is the last
+ID returned. The current diagnosis is the highest revision. A diagnosis row names no hypotheses
+of its own, so it shows the incident's hypotheses recorded up to it, the latest five by
+ordinal (Diagnosis allows 2 to 5), always keeping the leading one. Actions come in creation
+order, each with its patch and its latest test run.
+"""
+
+from __future__ import annotations
+
+from collections.abc import Mapping
+from typing import Any
+from uuid import UUID
+
+from sqlalchemy import Connection, text
+
+from aisre.contracts import (
+    ActionView,
+    Diagnosis,
+    EvidenceLink,
+    EvidenceRecord,
+    Hypothesis,
+    PatchView,
+    TestRunView,
+)
+
+EVIDENCE_COLUMNS = (
+    "evidence_id, incident_id, kind, source_system, tool, collected_by, query, window_start, "
+    "window_end, collected_at, source_as_of, source_link, summary, attributes, artifact_id, "
+    "content_sha256, is_partial, flagged_injection, gap_reason, strength_tier, "
+    "content_removed_at, content_removed_reason"
+)
+HYPOTHESES_SHOWN = 5
+
+
+def evidence_page(
+    conn: Connection,
+    incident_id: UUID,
+    *,
+    kind: str | None = None,
+    after: UUID | None = None,
+    limit: int = 100,
+) -> list[EvidenceRecord]:
+    rows = conn.execute(
+        text(
+            f"SELECT {EVIDENCE_COLUMNS} FROM evidence WHERE incident_id = :i "
+            "AND (CAST(:kind AS evidence_kind) IS NULL OR kind = CAST(:kind AS evidence_kind)) "
+            "AND (CAST(:after AS uuid) IS NULL OR evidence_id > CAST(:after AS uuid)) "
+            "ORDER BY evidence_id LIMIT :limit"
+        ),
+        {"i": incident_id, "kind": kind, "after": after, "limit": limit},
+    ).mappings()
+    return [EvidenceRecord.model_validate(dict(r)) for r in rows]
+
+
+def current_diagnosis(conn: Connection, incident_id: UUID) -> Diagnosis | None:
+    d = (
+        conn.execute(
+            text(
+                "SELECT diagnosis_id, incident_id, revision, outcome, leading_hypothesis_id, "
+                "category, confidence, summary, claims, ruled_out, missing_evidence, stop_reason, "
+                "reviewed, review_notes, produced_by, final_outcome, final_confidence, created_at "
+                "FROM diagnoses WHERE incident_id = :i ORDER BY revision DESC LIMIT 1"
+            ),
+            {"i": incident_id},
+        )
+        .mappings()
+        .first()
+    )
+    if d is None:
+        return None
+    rows = conn.execute(
+        text(
+            "SELECT hypothesis_id, ordinal, statement, category, claims, confirm_test, "
+            "refute_test, status, confidence, status_reason FROM hypotheses "
+            "WHERE incident_id = :i AND created_at <= :at ORDER BY ordinal"
+        ),
+        {"i": incident_id, "at": d["created_at"]},
+    ).mappings()
+    hyps = [dict(r) for r in rows]
+    shown = hyps[-HYPOTHESES_SHOWN:]
+    lead = d["leading_hypothesis_id"]
+    if lead is not None and lead not in {h["hypothesis_id"] for h in shown}:
+        shown = [h for h in hyps if h["hypothesis_id"] == lead] + shown[1:]
+    links = _evidence_links(conn, [h["hypothesis_id"] for h in shown])
+    fields = {k: v for k, v in d.items() if k != "created_at"}
+    return Diagnosis.model_validate(
+        fields
+        | {
+            "hypotheses": [
+                Hypothesis.model_validate(h | {"evidence": links.get(h["hypothesis_id"], [])})
+                for h in sorted(shown, key=lambda h: int(h["ordinal"]))
+            ]
+        }
+    )
+
+
+def actions(conn: Connection, incident_id: UUID, action_id: UUID | None = None) -> list[ActionView]:
+    """The incident's actions, oldest first; or just `action_id`, if given and the incident's."""
+    rows = conn.execute(
+        text(
+            "SELECT a.action_id, a.incident_id, a.diagnosis_id, a.parent_action_id, a.kind, "
+            "s.slug AS target_service, e.slug AS target_environment, a.target_deployment, "
+            "a.base_revision, a.expected_after_revision, a.description, a.expected_effect, "
+            "a.risk, a.undo_plan, a.recovery_criteria, a.hold_seconds, a.action_digest, "
+            "a.status, a.version FROM actions a "
+            "JOIN services s ON s.service_id = a.target_service_id "
+            "JOIN environments e ON e.environment_id = a.target_environment_id "
+            "WHERE a.incident_id = :i AND (CAST(:a AS uuid) IS NULL OR a.action_id = CAST(:a AS uuid)) "
+            "ORDER BY a.created_at, a.action_id"
+        ),
+        {"i": incident_id, "a": action_id},
+    ).mappings()
+    out = []
+    for r in rows:
+        patch = (
+            conn.execute(
+                text(
+                    "SELECT patch_id, base_revision, patch_sha256, files_changed, lines_added, "
+                    "lines_removed, diff_artifact_id, review_ref "
+                    "FROM patches WHERE action_id = :a"
+                ),
+                {"a": r["action_id"]},
+            )
+            .mappings()
+            .first()
+        )
+        test = (
+            conn.execute(
+                text(
+                    "SELECT test_run_id, patch_sha256, reproduced, outcome, output_artifact_id, "
+                    "started_at, finished_at FROM test_runs WHERE action_id = :a "
+                    "ORDER BY started_at DESC, test_run_id DESC LIMIT 1"
+                ),
+                {"a": r["action_id"]},
+            )
+            .mappings()
+            .first()
+        )
+        out.append(
+            ActionView.model_validate(
+                dict(r)
+                | {
+                    "patch": PatchView.model_validate(dict(patch)) if patch else None,
+                    "latest_test": TestRunView.model_validate(dict(test)) if test else None,
+                }
+            )
+        )
+    return out
+
+
+def incident_of_action(conn: Connection, action_id: UUID, org_id: UUID) -> UUID | None:
+    found = conn.execute(
+        text(
+            "SELECT a.incident_id FROM actions a JOIN incidents i USING (incident_id) "
+            "WHERE a.action_id = :a AND i.org_id = :o"
+        ),
+        {"a": action_id, "o": org_id},
+    ).scalar()
+    return found if isinstance(found, UUID) else None
+
+
+def _evidence_links(conn: Connection, ids: list[Any]) -> dict[Any, list[EvidenceLink]]:
+    if not ids:
+        return {}
+    rows = conn.execute(
+        text(
+            "SELECT hypothesis_id, evidence_id, relation, note FROM hypothesis_evidence "
+            "WHERE hypothesis_id = ANY(:ids) ORDER BY evidence_id, relation"
+        ),
+        {"ids": ids},
+    ).mappings()
+    links: dict[Any, list[EvidenceLink]] = {}
+    for r in rows:
+        link: Mapping[str, Any] = {k: r[k] for k in ("evidence_id", "relation", "note")}
+        links.setdefault(r["hypothesis_id"], []).append(EvidenceLink.model_validate(link))
+    return links

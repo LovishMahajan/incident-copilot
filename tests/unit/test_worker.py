@@ -39,7 +39,7 @@ def _activities(environ, scripted=True):
 
     settings = Settings(env="test", scripted_skills=scripted)
     engine = create_engine("postgresql+psycopg://aisre_app@127.0.0.1:1/aisre")  # never connects
-    return worker.investigation_activities(settings, engine, environ)
+    return worker.investigation_activities(settings, engine, environ=environ)
 
 
 def test_the_real_collector_replaces_the_script_once_sources_are_configured():
