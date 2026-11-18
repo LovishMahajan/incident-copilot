@@ -53,6 +53,13 @@ LOW_NOT_ESTABLISHED = f"{NOT_ESTABLISHED}: scored low from the cited observation
 UNDECIDED = f"{NOT_ESTABLISHED}: the evidence did not decide between the hypotheses"
 
 
+def not_established(missing_sources: Sequence[str]) -> str:
+    """The stop reason of an inconclusive diagnosis: a missing required source first (ADR-54)."""
+    if missing_sources:
+        return f"{NOT_ESTABLISHED}: required source missing ({', '.join(missing_sources)})"
+    return UNDECIDED
+
+
 def skill_inputs(
     conn: Connection, incident_id: UUID, ids: Sequence[str]
 ) -> tuple[IncidentScope, list[Evidence], dict[UUID, list[str]]] | None:
@@ -93,8 +100,10 @@ def store_diagnosis(
     hypothesis_confidence: Sequence[Confidence],
     produced_by: str,
     now: datetime,
+    missing_sources: Sequence[str] = (),
 ) -> int:
-    """Stores one revision; returns its number (the existing one on a repeat)."""
+    """Stores one revision; returns its number (the existing one on a repeat). `missing_sources`
+    are the required sources not collected (validation.missing_required_sources)."""
     _lock(conn, incident_id)
     found = conn.execute(
         text("SELECT revision FROM diagnoses WHERE diagnosis_id = :d"), {"d": diagnosis_id}
@@ -163,7 +172,7 @@ def store_diagnosis(
             now,
         )
     fields: dict[str, Any] = draft.stored_fields()
-    stop_reason = None if established else UNDECIDED
+    stop_reason = None if established else not_established(missing_sources)
     if draft.outcome == "established" and not established:
         fields["outcome"], stop_reason = "inconclusive", LOW_NOT_ESTABLISHED
     lead_id = hypothesis_id(diagnosis_id, lead) if lead is not None else None
