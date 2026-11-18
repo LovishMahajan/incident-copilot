@@ -13,7 +13,7 @@ from typing import Any
 
 import pytest
 from monitoring_scenarios import copy_reference
-from pydantic import SecretStr
+from pydantic import SecretStr, ValidationError
 from skill_rig import (
     SCRIPTS,
     ScriptedTransport,
@@ -25,7 +25,12 @@ from skill_rig import (
     skills,
 )
 
-from aisre.agent.agent_contracts import Confidence, EvidenceKind, HypothesesOut
+from aisre.agent.agent_contracts import (
+    Confidence,
+    EvidenceKind,
+    HypothesesOut,
+    evidence_request,
+)
 from aisre.agent.validation import check_output
 from aisre.gateway.adapters import HttpResponse
 from aisre.gateway.gateway_contracts import TASK_MODEL_ALIAS
@@ -144,16 +149,22 @@ def test_a_retried_step_reuses_the_recorded_answer_and_counts_no_call():
     assert (first.usage.model_calls, again.usage.model_calls) == (1, 0)
 
 
-def test_hypothesis_requests_outside_the_skills_tools_are_dropped():
+def test_hypothesis_requests_the_gate_refuses_are_dropped():
+    """The shape admits only READ tools (agent_contracts.EvidenceRequest); the ToolGate still
+    checks each request under the skill's name, and a refused one is dropped, not run."""
     inputs = collected()
 
-    def ask_for_apply(body: dict[str, Any]) -> HttpResponse | None:
+    def ask(body: dict[str, Any]) -> HttpResponse | None:
         good = {
             "tool": "get_logs",
             "reason": "error logs by version",
             "params": {"service": "orders-api"},
         }
-        bad = {"tool": "apply_change", "reason": "fix it", "params": {}}
+        elsewhere = {
+            "tool": "get_logs",
+            "reason": "other service",
+            "params": {"service": "payments"},
+        }
         ev = str(inputs.evidence[1].evidence_id)
         h = {
             "statement": "s",
@@ -161,16 +172,24 @@ def test_hypothesis_requests_outside_the_skills_tools_are_dropped():
             "claims": [{"text": "t", "evidence_ids": [ev]}],
             "confirm_test": "c",
             "refute_test": "r",
-            "evidence_needed": [good, bad],
+            "evidence_needed": [good, elsewhere],
         }
         text = json.dumps({"hypotheses": [h, h]})
         msg = {"model": body["model"], "content": [{"type": "text", "text": text}]}
         return HttpResponse(200, msg | {"stop_reason": "end_turn", "usage": {}}, {})
 
-    sk, _, _ = skills(inputs, ScriptedTransport(override=ask_for_apply))
+    sk, _, _ = skills(inputs, ScriptedTransport(override=ask))
     out = run(sk.hypothesise(skill_in(inputs, "k:s1"))).output
     assert isinstance(out, HypothesesOut)
-    assert [r.tool for h in out.hypotheses for r in h.evidence_needed] == ["get_logs", "get_logs"]
+    assert [r.params.service for h in out.hypotheses for r in h.evidence_needed] == [
+        "orders-api",
+        "orders-api",
+    ]
+
+
+def test_a_write_tool_cannot_be_expressed_as_a_request():
+    with pytest.raises(ValidationError):
+        evidence_request(tool="apply_change", reason="fix it", params={"service": "orders-api"})
 
 
 def test_scripts_answers_pass_the_output_check():

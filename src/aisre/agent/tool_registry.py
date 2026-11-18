@@ -357,8 +357,8 @@ class ToolGate:
         if name not in SKILL_TOOLS.get(skill, frozenset()):
             raise ToolRefused("tool_not_allowed", f"{name} is not on the {skill} skill's list")
         raw = dict(raw_params)
-        if "start" in tool.params.model_fields and "start" not in raw:
-            raw["start"] = (self.incident_start - DEFAULT_LOOKBACK).isoformat()
+        if "start" in tool.params.model_fields:  # either end of the window may be left out
+            raw.setdefault("start", (self.incident_start - DEFAULT_LOOKBACK).isoformat())
             raw.setdefault("end", self.now.isoformat())
         try:
             params = tool.params.model_validate(raw)

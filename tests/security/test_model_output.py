@@ -140,15 +140,24 @@ def test_st23_command_in_a_nested_field_is_found():
     unsafe("command", DiagnosisDraft.model_validate(d))
 
 
-@pytest.mark.parametrize("key", ["rm -rf /", "http://canary.example/x", "password=hunter2"])
-def test_st23_st24_st29_text_in_a_dict_key_is_found(key):
-    for value in ("x", 1):
-        d = draft_json()
-        d["hypotheses"][0]["evidence_needed"] = [
-            {"tool": "get_logs", "reason": "check it", "params": {key: value}}
-        ]
-        with pytest.raises(UnsafeOutput):
-            check_output(DiagnosisDraft.model_validate(d))
+@pytest.mark.parametrize("text", ["rm -rf /", "http://canary.example/x", "password=hunter2"])
+def test_st23_st24_st29_text_in_a_request_parameter_is_found(text):
+    d = draft_json()
+    d["hypotheses"][0]["evidence_needed"] = [
+        {"tool": "get_logs", "reason": "check it", "params": {"service": "s", "contains": text}}
+    ]
+    with pytest.raises(UnsafeOutput):
+        check_output(DiagnosisDraft.model_validate(d))
+
+
+@pytest.mark.parametrize("key", ["rm -rf /", "http://canary.example/x", "password"])
+def test_st23_st24_st29_a_request_parameter_has_no_free_form_keys(key):
+    d = draft_json()
+    d["hypotheses"][0]["evidence_needed"] = [
+        {"tool": "get_logs", "reason": "check it", "params": {"service": "s", key: "x"}}
+    ]
+    with pytest.raises(ValidationError):
+        DiagnosisDraft.model_validate(d)
 
 
 @pytest.mark.parametrize(
@@ -239,14 +248,6 @@ def test_st24_common_secret_forms_fail_validation(secret):
 )
 def test_st24_control_ordinary_text_is_not_a_secret(text):
     check_output(with_summary(text))
-
-
-def test_st24_a_secret_split_across_a_key_and_its_value_is_found():
-    d = draft_json()
-    d["hypotheses"][0]["evidence_needed"] = [
-        {"tool": "get_logs", "reason": "check it", "params": {"password": "hunter2"}}
-    ]
-    unsafe("secret", DiagnosisDraft.model_validate(d))
 
 
 def test_st24_secret_in_a_patch_fails_validation():

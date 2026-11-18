@@ -36,7 +36,6 @@ from aisre.agent.agent_contracts import (
     CriticVerdict,
     DiagnosisDraft,
     DiagnosisResult,
-    EvidenceRequest,
     HypothesesOut,
     HypothesisDraft,
     KnowledgeOut,
@@ -44,6 +43,7 @@ from aisre.agent.agent_contracts import (
     SkillFailure,
     SkillResult,
     SkillUsage,
+    evidence_request,
 )
 from aisre.agent.coordinator import Limits, Step
 from aisre.agent.tool_registry import ToolGate
@@ -68,7 +68,7 @@ from aisre.workflow.workflow import (
 EVIDENCE = uuid.UUID("11111111-1111-4111-8111-111111111111")
 FIX_DIGEST = "d" * 64
 ROLLBACK_DIGEST = "e" * 64
-LOG_REQUEST = EvidenceRequest(
+LOG_REQUEST = evidence_request(
     tool="get_logs", reason="check the error", params={"service": "checkout"}
 )
 
