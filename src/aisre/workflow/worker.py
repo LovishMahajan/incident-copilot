@@ -26,7 +26,9 @@ Skills (T1.14, T1.18): with `AISRE_PROVIDER_API_KEY` set, `hypothesise`, `diagno
 `review_diagnosis` are the real skills (aisre.agent.skills), ahead of any script: the Model
 Gateway over the Anthropic transport (to `AISRE_PROVIDER_URL` when set, which locally is
 Compose's fake provider), the durable ledger, the prompts in `AISRE_PROMPTS_DIR`, and
-PgSkillStore. `draft_patch` stays scripted until M2. Without a key, tests that ask for scripted
+PgSkillStore. `draft_patch` stays scripted until M2. `run_sandbox_test` is not registered here: it runs
+in the Test Runner, on its own queue, the only process with Docker (ADR-71,
+aisre.remediation.test_runner). Without a key, tests that ask for scripted
 skills get them.
 
 Budget jobs (T1.21): the worker registers BudgetJobWorkflow with the ledger's expiry and

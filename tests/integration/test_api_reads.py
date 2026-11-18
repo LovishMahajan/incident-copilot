@@ -113,8 +113,8 @@ def seed(engine, org, incident_id: str) -> dict[str, UUID]:
            VALUES (gen_random_uuid(), :act, 'r42', :diff, :hc, 1, 1, 1)""",
         "UPDATE actions SET status = 'testing', version = version + 1 WHERE action_id = :act",
         """INSERT INTO test_runs (test_run_id, action_id, patch_sha256, reproduced, outcome,
-             started_at, finished_at)
-           VALUES (gen_random_uuid(), :act, :hc, true, 'passed', now(), now())""",
+             started_at, finished_at, isolation)
+           VALUES (gen_random_uuid(), :act, :hc, true, 'passed', now(), now(), 'development-runc')""",
     ]
     with engine.begin() as conn:
         for s in statements:
