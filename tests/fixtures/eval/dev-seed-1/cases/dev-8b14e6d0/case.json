@@ -1,0 +1,11 @@
+{
+  "case_id": "dev-8b14e6d0",
+  "category": "conflicting_evidence",
+  "difficulty": "medium",
+  "evidence_as_of": "2026-10-20T14:20:00Z",
+  "fixture_sha256": "82ec5fe269121cfafdf01099b13cc1611890a535022e2ef64eca83b35ed86de5",
+  "service": "cart-api",
+  "source": "synthetic",
+  "split": "dev",
+  "withheld_sources": []
+}

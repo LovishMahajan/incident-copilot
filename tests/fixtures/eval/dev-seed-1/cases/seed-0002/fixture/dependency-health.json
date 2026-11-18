@@ -1,0 +1,20 @@
+{
+  "service": "orders-api",
+  "environment": "production",
+  "dependencies": [
+    {
+      "name": "orders-db",
+      "kind": "postgresql",
+      "status": "healthy",
+      "observed_at": "2026-10-20T14:07:00Z",
+      "detail": "probe p95 4 ms; one connection reset at 14:04:11 on orders-api-b, recovered on retry"
+    },
+    {
+      "name": "payment-gateway",
+      "kind": "third_party_http",
+      "status": "healthy",
+      "observed_at": "2026-10-20T14:07:00Z",
+      "detail": "timeouts at the usual rate, about 1 in 2,000 requests"
+    }
+  ]
+}

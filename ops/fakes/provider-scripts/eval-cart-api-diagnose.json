@@ -1,0 +1,99 @@
+{
+  "match": [
+    "You are the diagnosis step",
+    "required sources missing: none",
+    "cart-api"
+  ],
+  "note": "SYNTHETIC answer from the fake model provider (local use only), for the T1.22 development seed case dev-8b14e6d0: two supported causes at once, so root cause not established.",
+  "answer": {
+    "outcome": "inconclusive",
+    "leading_index": null,
+    "hypotheses": [
+      {
+        "statement": "Release 2.14.1 changed ORDER_TAX_RATE_BPS from 825 to 8.25, and the order handler fails parsing it",
+        "category": "deployment_config",
+        "claims": [
+          {
+            "text": "Release 2.14.1 changed one setting, ORDER_TAX_RATE_BPS, from 825 to 8.25 (config revision cfg-42); no code changed.",
+            "evidence_ids": [
+              "{{ref:(?s)^\\[change }}"
+            ]
+          },
+          {
+            "text": "Every new error is ValueError: invalid literal for int() with base 10: '8.25' in compute_totals (orders/pricing.py line 37), first seen at 14:02:04 on 2.14.1 only.",
+            "evidence_ids": [
+              "{{ref:(?s)^\\[log .*ValueError}}",
+              "{{ref:(?s)^\\[error_group .*ValueError}}"
+            ]
+          },
+          {
+            "text": "The failing trace reads ORDER_TAX_RATE_BPS at the failing frame, compute_totals, on config revision cfg-42.",
+            "evidence_ids": [
+              "{{ref:(?s)^\\[trace .*ORDER_TAX_RATE_BPS}}"
+            ]
+          },
+          {
+            "text": "The overall HTTP 500 rate rose with each rollout step: 5% at 14:02, 25% at 14:07, 50% at 14:12.",
+            "evidence_ids": [
+              "{{ref:(?s)^\\[metric .*Metric http_5xx_rate}}"
+            ]
+          }
+        ],
+        "contradicting_evidence_ids": [
+          "{{ref:(?s)^\\[metric .*Metric error_rate_by_version}}"
+        ],
+        "confirm_test": "Error rate by version: only 2.14.1 fails; restoring 825 on a 2.14.1 instance clears the ValueError.",
+        "refute_test": "Old-version instances failing at the same rate, with errors other than ValueError.",
+        "evidence_needed": []
+      },
+      {
+        "statement": "The orders-db failover causes the HTTP 500 responses",
+        "category": "dependency",
+        "claims": [
+          {
+            "text": "Dependency health shows orders-db degraded: the primary failed over at 14:01:50 and refused writes until 14:03.",
+            "evidence_ids": [
+              "{{ref:(?s)^\\[dependency .*orders-db}}"
+            ]
+          },
+          {
+            "text": "OperationalError: connection to orders-db lost appears on version 2.14.0 from 14:02:10.",
+            "evidence_ids": [
+              "{{ref:(?s)^\\[error_group .*OperationalError}}"
+            ]
+          }
+        ],
+        "contradicting_evidence_ids": [],
+        "confirm_test": "Database errors on failing requests on both versions, ending when the old primary is back.",
+        "refute_test": "No database errors on failing requests after 14:03.",
+        "evidence_needed": []
+      },
+      {
+        "statement": "Payment gateway timeouts cause the HTTP 500 responses",
+        "category": "dependency",
+        "claims": [
+          {
+            "text": "TimeoutError from the payment gateway appears in the logs on POST /v1/orders.",
+            "evidence_ids": [
+              "{{ref:(?s)^\\[log .*TimeoutError}}"
+            ]
+          }
+        ],
+        "contradicting_evidence_ids": [
+          "{{ref:(?s)^\\[metric .*Metric error_rate_by_version}}"
+        ],
+        "confirm_test": "Timeouts rising with the failures, on both versions.",
+        "refute_test": "Timeouts at their usual rate, on 2.14.0 only.",
+        "evidence_needed": []
+      }
+    ],
+    "summary": "Root cause not established. Two causes are supported at once: release 2.14.1 changed ORDER_TAX_RATE_BPS to 8.25 and its instances fail with ValueError, while orders-db failed over at 14:01:50 and 2.14.0 instances fail with OperationalError from 14:02:10. The error rate by version no longer separates them, since both versions fail. Deciding test: restore ORDER_TAX_RATE_BPS=825 on one 2.14.1 instance and compare its error rate with a 2.14.0 instance once orders-db has recovered.",
+    "ruled_out": [
+      "Payment gateway: timeouts at the usual rate, on 2.14.0 only and before the release."
+    ],
+    "missing_evidence": [
+      "Deciding test: error rate on a 2.14.1 instance with ORDER_TAX_RATE_BPS restored to 825, against a 2.14.0 instance, after orders-db recovered."
+    ],
+    "proposed_action": null
+  }
+}

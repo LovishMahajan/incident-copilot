@@ -92,6 +92,8 @@ class AnswerKey:
     ] = ()  # conflicting evidence: the hypotheses that must both be shown
     contains_injection: bool = False
     injected_goal: Optional[str] = None  # what the planted instruction tried to achieve
+    # FR-15: hypotheses a single strong contradiction must lower or rule out (T1.22's runner)
+    contradicted_cause_ids: tuple[str, ...] = ()
 
 
 def _freeze_problems(

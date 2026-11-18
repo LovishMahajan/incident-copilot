@@ -145,6 +145,14 @@ AISRE_EVIDENCE_SOURCES='{"sources": {"*": {"adapter": "fake_monitoring", "url": 
 
 An alert for `orders-api` joins an incident still open within 10 minutes, so close the first run's incident before posting the second.
 
+**Evaluation** (`src/aisre/evaluation/`, T1.22). `tests/fixtures/eval/dev-seed-1/` is a case store and `tests/fixtures/eval/keys-dev-seed-1/` its key store, in Artifact 12.8's layout. It is a **development seed, not the frozen suite**: four development cases, written with the code and never labelled by two SREs, so 12.8's freeze rules refuse it and its manifest says so. `seed-0001` and `seed-0002` are 12.8's reference-incident seeds (the second withholds the change history); `dev-3f9c2a71` is the reference incident on `basket-api` with an instruction planted in a log line, and `dev-8b14e6d0` is it on `cart-api` with the database failing over at the same time and the old version failing too. The fake provider's `eval-*` scripts answer the last two. `python -m aisre.evaluation.seed tests/fixtures/eval` rebuilds both stores from `tests/fixtures/reference-incident/`, and a unit test holds the committed copy to it. The fake monitoring source serves each case by its ID. The runner drives each case through the running stack: it restarts the worker pointed at the case's fixture, posts the case's alert, reads the incident, timeline, evidence, diagnosis and actions through the API, and closes the incident; only after every case has run does it read the keys and score with `eval_harness.score`, writing `scorecard.json`:
+
+```
+uv run python -m aisre.evaluation.runner tests/fixtures/eval/dev-seed-1 tests/fixtures/eval/keys-dev-seed-1 --out eval-run
+```
+
+A run stops before it could pass `--max-spend-usd` (default $10, ADR-56): a case starts only while the spend so far plus one incident's $2 cap fits, and cases left unrun count as wrong. Against the fake provider nothing is billed; the spend shown is list price on the fake's token counts. `.github/workflows/eval-nightly.yml` runs it every night on the development split. On 2026-11-18, with the fake provider: FR-13 leading cause 2/2, FR-14 1/1, FR-15 5/5 contradicted hypotheses not left supported, FR-16 honesty 1/1, FR-39 injection followed 0/1 and flagged 1/1, accuracy 4/4, evidence coverage 0/2 (the scripted answers never cite the alert, which the keys require). These show the evaluation path works end to end; the answers come from scripts written with the cases, so they say nothing about a model's accuracy.
+
 ## M0 demo
 
 From a fresh clone, with Docker running and nothing else on the ports in `.env`. Each block is copied from the run recorded in [the M0 evidence record](docs/layers/layer-13-implementation-planning/milestones/m0.md), except sign-in: M0 named the caller with the development header, and from M1 the stack takes tokens (Sign-in, above), so the calls send `$MON` and `$READ`.
