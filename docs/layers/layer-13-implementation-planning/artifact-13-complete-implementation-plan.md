@@ -493,18 +493,18 @@ A task with no dependency can start now. Tasks are tracked in GitHub Issues (pro
 
 | ID | Task | Depends on | Files or modules | Owner | Test | Closes |
 | --- | --- | --- | --- | --- | --- | --- |
-| T0.1 | Done: `src/`, `tests/`, `pyproject.toml` and `uv.lock` are committed. What remains is the check on a fresh clone | None | Repository root | Platform owner | `uv lock --check` on a fresh clone | — |
-| T0.2 | Add Ruff, mypy, markers, FastAPI, SQLAlchemy, Alembic, a driver. Reformat in one pull request | T0.1 | `pyproject.toml`, `uv.lock` | Platform owner | `uv run ruff check .`, `uv run mypy src` | — |
-| T0.3 | Typed settings, `.env.example`, `.env` ignored | T0.2 | `src/aisre/config.py`, `.env.example`, `.gitignore` | Platform owner | Fresh clone starts from the example file with fake values | — |
-| T0.4 | CI, required checks, `CODEOWNERS`, secret scan, skips reported | T0.2 | `.github/` | Platform owner | A failing pull request can't merge; a planted fake key fails | — |
-| T0.5 | Session guard and integration folder | T0.2 | `tests/conftest.py`, `tests/integration/` | Security lead | A fake production variable stops the run before the first test | — |
-| T0.6 | Compose stack: PostgreSQL, Temporal, UI, migration job, API, worker | T0.2 | `compose.yaml` | Platform owner | `docker compose up` healthy from a fresh clone | — |
-| T0.7 | `0001_baseline`; freeze `schema.sql`; move text tests to the migrated catalogue | T0.6 | `db/migrations/`, `tests/unit/test_contracts.py`, `tests/unit/test_workflow.py`, `tests/unit/test_layer10.py` | Platform owner | `uv run alembic upgrade head` builds 37 tables; `db/schema-tests.sql` on 16 and 17 | — |
-| T0.8 | Incident Record: one transaction for incident, event, outbox row | T0.7 | `src/aisre/record/` | Platform owner | `integration`: force a failure after the second write | WR-07 |
-| T0.9 | Thin intake, read and timeline routes | T0.8 | `src/aisre/api/` | Platform owner | Import test: `aisre.api` can't reach `temporalio` | WR-08 |
-| T0.10 | Outbox relay and worker entry point | T0.8 | `src/aisre/workflow/relay.py`, `src/aisre/workflow/worker.py` | Platform owner | `integration`: relay delivers a start and a signal; a repeat is success | WR-24, WR-31 |
-| T0.11 | Real `load_incident`, `record_transition`, `hand_over`; scripted skills. `record_transition` raises `StaleVersion` when its update touches no row (the workflow's hand-over after 5 stale reloads is already built and tested, ADR-69) | T0.10 | `src/aisre/workflow/activities.py`, `src/aisre/workflow/workflow.py`, `src/aisre/record/` | Platform owner | `integration`: reaches `handed_over` on a real Temporal server | WR-12 |
-| T0.12 | M0 demo from a fresh clone, evidence record | T0.3–T0.11 | `docs/layers/layer-13-implementation-planning/milestones/` | Engineering manager | The six outcomes in 13.8 | — |
+| T0.1 | Done: `src/`, `tests/`, `pyproject.toml` and `uv.lock` are committed, and `uv lock --check` passed on a fresh clone on 2026-11-18 (M0 evidence record) | None | Repository root | Platform owner | `uv lock --check` on a fresh clone | — |
+| T0.2 | Done 2026-11-18. Add Ruff, mypy, markers, FastAPI, SQLAlchemy, Alembic, a driver. Reformat in one pull request | T0.1 | `pyproject.toml`, `uv.lock` | Platform owner | `uv run ruff check .`, `uv run mypy src` | — |
+| T0.3 | Done 2026-11-18. Typed settings, `.env.example`, `.env` ignored | T0.2 | `src/aisre/config.py`, `.env.example`, `.gitignore` | Platform owner | Fresh clone starts from the example file with fake values | — |
+| T0.4 | Done in the repository 2026-11-18; not yet run on GitHub, and the branch protection that makes checks required isn't set (M0 evidence record). CI, required checks, `CODEOWNERS`, secret scan, skips reported | T0.2 | `.github/` | Platform owner | A failing pull request can't merge; a planted fake key fails | — |
+| T0.5 | Done 2026-11-18. Session guard and integration folder | T0.2 | `tests/conftest.py`, `tests/integration/` | Security lead | A fake production variable stops the run before the first test | — |
+| T0.6 | Done 2026-11-18. Compose stack: PostgreSQL, Temporal, UI, migration job, API, worker | T0.2 | `compose.yaml` | Platform owner | `docker compose up` healthy from a fresh clone | — |
+| T0.7 | Done 2026-11-18. `0001_baseline`; freeze `schema.sql`; move text tests to the migrated catalogue | T0.6 | `db/migrations/`, `tests/unit/test_contracts.py`, `tests/unit/test_workflow.py`, `tests/unit/test_layer10.py` | Platform owner | `uv run alembic upgrade head` builds 37 tables; `db/schema-tests.sql` on 16 and 17 | — |
+| T0.8 | Done 2026-11-18. Incident Record: one transaction for incident, event, outbox row | T0.7 | `src/aisre/record/` | Platform owner | `integration`: force a failure after the second write | WR-07 |
+| T0.9 | Done 2026-11-18. Thin intake, read and timeline routes | T0.8 | `src/aisre/api/` | Platform owner | Import test: `aisre.api` can't reach `temporalio` | WR-08 |
+| T0.10 | Done 2026-11-18. Outbox relay and worker entry point | T0.8 | `src/aisre/workflow/relay.py`, `src/aisre/workflow/worker.py` | Platform owner | `integration`: relay delivers a start and a signal; a repeat is success | WR-24, WR-31 |
+| T0.11 | Done 2026-11-18. Real `load_incident`, `record_transition`, `hand_over`; scripted skills. `record_transition` raises `StaleVersion` when its update touches no row (the workflow's hand-over after 5 stale reloads is already built and tested, ADR-69) | T0.10 | `src/aisre/workflow/activities.py`, `src/aisre/workflow/workflow.py`, `src/aisre/record/` | Platform owner | `integration`: reaches `handed_over` on a real Temporal server | WR-12 |
+| T0.12 | Done 2026-11-18, with the exceptions the record states: [milestones/m0.md](milestones/m0.md). M0 demo from a fresh clone, evidence record | T0.3–T0.11 | `docs/layers/layer-13-implementation-planning/milestones/` | Engineering manager | The six outcomes in 13.8 | — |
 
 ### M1 tasks
 
