@@ -92,6 +92,19 @@ docker compose exec api python -m aisre.api.dev_seed
 
 **The worker** runs the workflow with the real `load_incident`, `record_transition` and `hand_over`. M0 has no model, so with `AISRE_SCRIPTED_SKILLS=true` (as in `.env.example`) the other activities answer with fixed results from `src/aisre/workflow/scripted.py`, and an incident goes `open` → `investigating` → `diagnosed` → `handed_over`, with every step in its timeline. Scripted results are refused when `AISRE_ENV` is `production`.
 
+**The CLI** (`src/aisre/cli.py`, T1.5) is a thin client of the API, so it can do only what the caller's roles allow. It reads `AISRE_API_URL` (default `http://127.0.0.1:8000`) and a bearer token from `AISRE_TOKEN`:
+
+```
+export AISRE_TOKEN=$(token lena aisre:incident_lead)
+uv run python -m aisre.cli incident submit tests/fixtures/reference-incident/alert.json
+uv run python -m aisre.cli incident show $ID
+uv run python -m aisre.cli incident timeline $ID [--follow]   # --follow streams it (SSE) until closed or cancelled
+uv run python -m aisre.cli incident cancel $ID --reason "false alarm"
+uv run python -m aisre.cli incident close $ID --note "fixed by hand"   # sends the incident's ETag as If-Match
+```
+
+Writes send a fresh `Idempotency-Key` unless `--key` gives one. A refusal prints the API's problem document on standard error and exits 1. The fence and restore commands ADR-69 gives the CLI aren't there yet.
+
 **Integration tests** run from the host against the stack, with test settings:
 
 ```
