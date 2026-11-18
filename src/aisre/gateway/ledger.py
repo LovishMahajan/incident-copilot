@@ -28,7 +28,7 @@ from aisre.gateway.gateway import (
     IncidentBudget,
     Reservation,
 )
-from aisre.gateway.gateway_contracts import ModelResult, Usage
+from aisre.gateway.gateway_contracts import ModelResult, ResultStatus, Usage
 from aisre.record import budget
 from aisre.record.incidents import uuid7
 
@@ -180,7 +180,9 @@ class PgBudgetLedger:
         return out
 
     async def reusable(self, incident_id: str, input_sha256: str) -> Optional[ModelResult]:
-        return None  # result reuse over model_attempts arrives with T1.8
+        """ADR-61, T1.8: the recorded result of this step input, from model_attempts."""
+        found = await self._tx(lambda c: budget.reusable_result(c, UUID(incident_id), input_sha256))
+        return None if found is None else ModelResult.model_validate(found)
 
     async def record(self, a: AttemptRecord) -> None:
         r, req, ident = a.result, a.req, a.result.identity
@@ -214,5 +216,6 @@ class PgBudgetLedger:
             latency_ms=r.latency_ms,
             started_at=_at(a.started_at),
             finished_at=_at(a.finished_at),
+            result=r.model_dump(mode="json") if r.status == ResultStatus.OK else None,
         )
         await self._tx(lambda c: budget.record_attempt(c, row))
