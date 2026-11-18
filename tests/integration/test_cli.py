@@ -53,10 +53,10 @@ def cli(url: str, org, groups: str, *argv: str) -> tuple[int, list[str]]:
 def test_submit_show_timeline_cancel(api_url, add_service, quiet):
     org = uuid7()
     add_service(org, "orders-api")
+    incident_id = quiet(org, "orders-api")  # the relay never starts it (conftest)
     code, out = cli(api_url, org, "aisre:responder", "incident", "submit", str(ALERT))
-    assert code == 0
-    incident_id = json.loads(out[0])["incident_id"]
-    quiet(incident_id)
+    made = json.loads(out[0])  # the same alert again: it joins the open incident
+    assert code == 0 and made["incident_id"] == incident_id and made["deduplicated"]
 
     code, out = cli(api_url, org, "aisre:viewer", "incident", "show", incident_id)
     assert code == 0 and json.loads(out[0])["status"] == "open"
@@ -69,6 +69,7 @@ def test_submit_show_timeline_cancel(api_url, add_service, quiet):
     code, out = cli(api_url, org, "aisre:viewer", "incident", "timeline", incident_id)
     assert [json.loads(line)["type"] for line in out] == [
         "aisre.incident.created.v1",
+        "aisre.incident.alert_attached.v1",
         "aisre.incident.cancellation_requested.v1",
     ]
 
@@ -83,9 +84,7 @@ def test_close_sends_the_etag_and_follow_ends_with_the_incident(
 ):
     org = uuid7()
     add_service(org, "orders-api")
-    _, out = cli(api_url, org, "aisre:responder", "incident", "submit", str(ALERT))
-    incident_id = json.loads(out[0])["incident_id"]
-    quiet(incident_id)
+    incident_id = quiet(org, "orders-api")
     for to in ("investigating", "inconclusive", "handed_over"):
         with app_engine.begin() as conn:
             status, version = conn.execute(
