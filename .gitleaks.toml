@@ -1,0 +1,19 @@
+# Secret scan configuration (Artifact 13.1, Q13.11): gitleaks' default rules, plus an
+# allowlist for the deliberately fake secrets that the redaction and output-check tests feed
+# in (ST-24, test_agent, test_workflow). Allow a value here only if it is fake on sight; never
+# allow a path.
+title = "aisre"
+
+[extend]
+useDefault = true
+
+[[allowlists]]
+description = "Fake secrets used as test inputs"
+regexTarget = "secret"
+regexes = [
+  # The documented AWS example pattern, used as the planted key in redaction tests.
+  '''^AKIAABCDEFGHIJKLMNOP$''',
+  # A PEM header with no key body: a header string, or a truncated stub ending in a quote.
+  '''^-----BEGIN (RSA )?PRIVATE KEY-----"''',
+  '''^-----BEGIN PRIVATE KEY-----\\nMIIEvQIBADANBgkqhkiG9w0BAQEFAASC\\n-----END PRIVATE KEY-----"''',
+]

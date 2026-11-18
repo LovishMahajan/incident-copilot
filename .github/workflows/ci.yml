@@ -1,0 +1,124 @@
+# Artifact 13.7: the checks on every pull request, in order, stopping at the first failure.
+# Actions are pinned by commit SHA; the comment names the release.
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+defaults:
+  run:
+    shell: bash # -eo pipefail, so a piped command still fails the step
+
+env:
+  UV_VERSION: "0.12.6"
+  PYTHON_VERSION: "3.12"
+  # tests/security skips on 2026-11-18. A new skip there fails the build (Artifact 13.4, M0
+  # security gate); lower this when a skip is removed.
+  SECURITY_SKIPS_ALLOWED: "21"
+
+jobs:
+  checks:
+    name: Lint, types, tests
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      # No path filter: tests read the Artifact 7 and 12 markdown under docs/.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2 # v10.3.3
+        with:
+          version: ${{ env.UV_VERSION }}
+      - name: Lockfile is current
+        run: uv lock --check
+      - name: Install
+        run: uv sync --python "$PYTHON_VERSION" --locked
+      - name: Format
+        run: uv run ruff format --check .
+      - name: Lint
+        run: uv run ruff check .
+      - name: Types, strict and blocking on the M0 modules
+        # The M0 modules named in pyproject.toml's strict override. Each joins the list when
+        # its task creates it; imports are followed for types but not reported.
+        run: |
+          paths=()
+          for p in src/aisre/config.py src/aisre/record src/aisre/api \
+                   src/aisre/workflow/relay.py src/aisre/workflow/worker.py; do
+            [ -e "$p" ] && paths+=("$p")
+          done
+          uv run mypy --follow-imports=silent "${paths[@]}"
+      - name: Types, report-only on src
+        run: |
+          set +e
+          uv run mypy src | tee mypy.log
+          { echo "### mypy src (report-only)"; echo; echo '```'; tail -n 1 mypy.log; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
+          exit 0
+      - name: Tests
+        run: uv run pytest -q -rs | tee pytest.log
+      - name: Report skips
+        if: always()
+        run: |
+          [ -f pytest.log ] || exit 0
+          {
+            echo "### Skipped tests"
+            echo
+            grep '^SKIPPED' pytest.log | sed 's/^/- /' || echo "None."
+          } >> "$GITHUB_STEP_SUMMARY"
+          n=$(awk -F'[][]' '/^SKIPPED \[[0-9]+\] tests\/security\// {s += $2} END {print s + 0}' pytest.log)
+          echo "tests/security skips: $n (allowed $SECURITY_SKIPS_ALLOWED)" | tee -a "$GITHUB_STEP_SUMMARY"
+          [ "$n" -le "$SECURITY_SKIPS_ALLOWED" ]
+
+  schema:
+    name: Schema tests on PostgreSQL ${{ matrix.postgres }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    strategy:
+      fail-fast: false
+      matrix:
+        # 16 is the Technical specification's target; 17 is what Compose runs.
+        postgres: ["16.16", "17.12"]
+    services:
+      postgres:
+        image: postgres:${{ matrix.postgres }}
+        env:
+          # Throwaway CI database on the runner's private network: no password to keep.
+          POSTGRES_HOST_AUTH_METHOD: trust
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 2s --health-timeout 5s --health-retries 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Use the server's own psql
+        run: echo "PSQL=docker exec -i ${{ job.services.postgres.id }} psql -v ON_ERROR_STOP=1 -q" >> "$GITHUB_ENV"
+      - name: Create the owner role and database (schema.sql header)
+        run: |
+          $PSQL -U postgres -c "CREATE ROLE aisre_owner LOGIN CREATEROLE"
+          $PSQL -U postgres -c "CREATE DATABASE aisre OWNER aisre_owner"
+      - name: Load schema.sql as aisre_owner
+        run: $PSQL -U aisre_owner -d aisre < db/schema.sql
+      - name: Run schema-tests.sql
+        run: |
+          $PSQL -U postgres -d aisre < db/schema-tests.sql | tee schema-tests.log
+          { echo "### PostgreSQL ${{ matrix.postgres }}"; echo; tail -n 1 schema-tests.log; } >> "$GITHUB_STEP_SUMMARY"
+
+  secrets:
+    name: Secret scan
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0 # scan the whole history of the pushed commits
+      - uses: gitleaks/gitleaks-action@ff98106e4c7b2bc287b24eaf42907196329070c7 # v2.3.9
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITLEAKS_VERSION: "8.30.1"
+          # An organisation account also needs GITLEAKS_LICENSE as a repository secret.

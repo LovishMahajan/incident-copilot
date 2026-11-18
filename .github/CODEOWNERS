@@ -1,0 +1,60 @@
+# Required reviewers (Artifact 13.6 file ownership, 13.12 review on change).
+#
+# PLACEHOLDERS: every owner below is a role written as a team handle (@ORG/<role>).
+# Naming the people and creating the teams is a team item (HG-01); until then these
+# handles resolve to nothing. Replace ORG with the GitHub organisation and make
+# "Require review from Code Owners" a required check on main.
+#
+# Roles: platform-owner, sre-lead, security-lead, engineering-manager.
+# The last matching pattern wins, so specific paths come after their directories.
+# "Also reviews" in 13.6 is a second owner on the same line: GitHub needs one of the
+# listed owners, so a branch rule must require the second where 13.12 makes it mandatory.
+
+# Default: the Platform owner.
+*                                       @ORG/platform-owner
+
+# Platform owner (13.6)
+/pyproject.toml                         @ORG/platform-owner
+/uv.lock                                @ORG/platform-owner
+/compose.yaml                           @ORG/platform-owner
+/.env.example                           @ORG/platform-owner
+/.github/workflows/                     @ORG/platform-owner
+/src/aisre/contracts.py                 @ORG/platform-owner
+/src/aisre/config.py                    @ORG/platform-owner
+/src/aisre/api/                         @ORG/platform-owner @ORG/security-lead
+/src/aisre/cli.py                       @ORG/platform-owner
+/src/aisre/record/                      @ORG/platform-owner
+/src/aisre/workflow/                    @ORG/platform-owner
+/src/aisre/reliability/                 @ORG/platform-owner
+/db/schema.sql                          @ORG/platform-owner
+/db/schema-tests.sql                    @ORG/platform-owner
+# Security lead also reviews migrations touching audit, approvals, attempts or roles (ADR-64).
+/db/migrations/                         @ORG/platform-owner @ORG/security-lead
+/ops/alerts.yml                         @ORG/platform-owner
+/ops/reference-app/                     @ORG/platform-owner
+
+# SRE lead (13.6)
+/src/aisre/evidence/                    @ORG/sre-lead
+/src/aisre/agent/                       @ORG/sre-lead
+/src/aisre/agent/validation.py          @ORG/sre-lead @ORG/security-lead
+/src/aisre/gateway/                     @ORG/sre-lead
+/src/aisre/retrieval/                   @ORG/sre-lead
+/src/aisre/verification/                @ORG/sre-lead
+/src/aisre/evaluation/                  @ORG/sre-lead
+/src/aisre/remediation/patch.py         @ORG/sre-lead
+/prompts/                               @ORG/sre-lead
+/tests/fixtures/reference-incident/     @ORG/sre-lead
+
+# Security lead (13.6, 13.12: ADR-47, ADR-49, ADR-50, ADR-59, ADR-60)
+/src/aisre/remediation/sandbox.py       @ORG/security-lead
+/src/aisre/remediation/action.py        @ORG/security-lead @ORG/engineering-manager
+/src/aisre/remediation/dispatcher.py    @ORG/security-lead
+/ops/sandbox/                           @ORG/security-lead
+/tests/security/                        @ORG/security-lead
+/tests/conftest.py                      @ORG/security-lead
+/.gitleaks.toml                         @ORG/security-lead
+/.github/CODEOWNERS                     @ORG/security-lead
+
+# tests/unit/ and tests/integration/ belong to the owner of the code tested: the default
+# above applies until a team splits them. docs/decisions.md belongs to each ADR's owner.
+/docs/layers/layer-13-implementation-planning/milestones/  @ORG/engineering-manager
