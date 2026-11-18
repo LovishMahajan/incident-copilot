@@ -299,6 +299,9 @@ class BudgetLedger:
                 done.append(r.reservation_id)
             return done
 
+    async def pending_reconciliation(self) -> list[str]:
+        return list(self.unreconciled)
+
     async def reconcile(self, records: dict[str, tuple[Usage, int]]) -> list[str]:
         """The daily job (Q10.35): `records` maps reservation ID to the usage and cost in the provider's
         records. Corrects the ledger, in the period charged, and returns what is still unmatched."""

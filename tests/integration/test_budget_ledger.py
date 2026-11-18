@@ -218,7 +218,7 @@ def test_expiry_charges_a_sent_reservation_and_releases_an_unsent_one(app_engine
     assert set(done) == {sent.reservation_id, unsent.reservation_id} and not late
     u = row(app_engine, inc)
     assert (u.calls, u.spent_cost_micros, u.reserved_cost_micros) == (1, 5_000, 0)
-    assert sent.reservation_id in asyncio.run(led.unreconciled())
+    assert sent.reservation_id in asyncio.run(led.pending_reconciliation())
 
 
 def test_reconciliation_corrects_the_charge_in_the_period_it_was_charged(app_engine, catalogue):
