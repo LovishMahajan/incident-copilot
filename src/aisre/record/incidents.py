@@ -127,7 +127,7 @@ def create_incident(
     ).first()
     if existing is not None:
         alert_id = _insert_alert(conn, existing.incident_id, body, key, payload, now)
-        _append_event(
+        append_event(
             conn,
             existing.incident_id,
             "aisre.incident.alert_attached.v1",
@@ -160,7 +160,7 @@ def create_incident(
             created_by=caller_id,
         )
     )
-    _append_event(
+    append_event(
         conn,
         incident_id,
         "aisre.incident.created.v1",
@@ -336,7 +336,7 @@ def _insert_alert(
     return alert_id
 
 
-def _append_event(
+def append_event(
     conn: Connection,
     incident_id: UUID,
     event_type: str,
@@ -346,12 +346,18 @@ def _append_event(
     occurred_at: datetime,
     source: str = API_SOURCE,
     causation_id: UUID | None = None,
+    event_id: UUID | None = None,
 ) -> int:
-    """Insert one timeline event and return the `seq` the database gave it."""
+    """Insert one timeline event and return the `seq` the database gave it.
+
+    `source` names the producing component (API_SOURCE, or the worker's). `event_id` defaults
+    to a new UUIDv7; a caller that needs idempotency passes a stable one and checks for it
+    first, under the incident's row lock: the trigger takes the next `seq` before a key
+    conflict could be seen, so ON CONFLICT would leave a gap."""
     seq = conn.execute(
         insert(timeline_events)
         .values(
-            event_id=uuid7(),
+            event_id=event_id or uuid7(),
             incident_id=incident_id,
             type=event_type,
             source=source,

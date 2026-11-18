@@ -106,8 +106,7 @@ def test_relay_delivers_a_signal(app_engine, catalogue, temporal):
             },
         )
 
-    async def go() -> list[str]:
-        await relay_until_delivered(Relay(app_engine, temporal), app_engine, incident_id)
+    async def signals() -> list[str]:
         handle = temporal.get_workflow_handle(f"incident-{incident_id}")
         return [
             e.workflow_execution_signaled_event_attributes.signal_name
@@ -115,13 +114,23 @@ def test_relay_delivers_a_signal(app_engine, catalogue, temporal):
             if e.event_type == EventType.EVENT_TYPE_WORKFLOW_EXECUTION_SIGNALED
         ]
 
-    # At least once (Artifact 7.7): a retry after a lost reply may signal twice, and the
-    # workflow drops the repeat by its request_id.
+    async def go() -> list[str]:
+        await relay_until_delivered(Relay(app_engine, temporal), app_engine, incident_id)
+        # Temporal buffers a signal that arrives while a workflow task is running and writes
+        # it to history only when that task completes. The first task of a new workflow can
+        # take a while on a fresh worker, so a delivered signal may not be in history yet.
+        for _ in range(40):
+            if names := await signals():
+                return names
+            await asyncio.sleep(0.25)
+        return []
+
+    # Exactly one. Delivery is at least once (Artifact 7.7), so a retry after a reply lost on
+    # the way back could signal twice, and the workflow would drop the repeat by its
+    # request_id; on a local stack none was seen in 50 runs (2026-11-18). A retry
+    # after a refused signal (the start not yet delivered by the other relay) sends one.
     names = asyncio.run(go())
-    assert names and set(names) == {"cancellation_requested"}, (
-        names,
-        rows(app_engine, incident_id),
-    )
+    assert names == ["cancellation_requested"], (names, rows(app_engine, incident_id))
 
 
 def test_a_signal_to_no_workflow_backs_off(app_engine, catalogue, temporal):

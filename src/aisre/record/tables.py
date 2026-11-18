@@ -186,5 +186,16 @@ actions = Table(
     Column("action_id", UUID, primary_key=True),
     Column("incident_id", UUID, nullable=False),
     Column("status", action_status, nullable=False),
+    Column("version", Integer, nullable=False),
     Column("created_at", Timestamp, nullable=False),
+)
+
+investigation_queue = Table(
+    "investigation_queue",
+    metadata,
+    Column("incident_id", UUID, primary_key=True),
+    Column("run_id", Text, nullable=False),
+    Column("severity", severity),
+    Column("queued_at", Timestamp, nullable=False),
+    Column("granted_at", Timestamp),
 )

@@ -168,6 +168,7 @@ services:
       AISRE_TEMPORAL_ADDRESS: ${AISRE_TEMPORAL_ADDRESS}
       AISRE_TEMPORAL_NAMESPACE: ${AISRE_TEMPORAL_NAMESPACE}
       AISRE_LOG_LEVEL: ${AISRE_LOG_LEVEL:-INFO}
+      AISRE_SCRIPTED_SKILLS: ${AISRE_SCRIPTED_SKILLS:-false}
     command: ["python", "-m", "aisre.workflow.worker"]
     healthcheck:
       # The worker touches this file after every relay pass (aisre.workflow.worker).

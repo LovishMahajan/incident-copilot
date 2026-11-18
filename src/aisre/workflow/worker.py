@@ -7,9 +7,11 @@ converter, as the workflow tests do (activities.DATA_CONVERTER). Dispatcher-queu
 (`dispatch_change`, `reconcile_execution`) belong to the dispatcher process, from M3; none is
 registered here.
 
-At M0 the activities are the interfaces in activities.py; T0.11 gives `load_incident`,
-`record_transition` and `hand_over` real bodies and scripts the skills. Until then a started
-workflow retries `load_incident` (DB_RETRY) and goes no further.
+Activities (T0.11): `load_incident`, `record_transition` and `hand_over` are real
+(record_activities.py). With `AISRE_SCRIPTED_SKILLS` true, the activities M0 doesn't build answer
+with aisre.workflow.scripted's fixed results, so an incident runs to `handed_over` with no model;
+the worker refuses that in production, as Settings does. Every other activity is the interface
+in activities.py, which raises if called. Without scripts, a workflow stops at the slot, retrying.
 
 Liveness: after every relay pass the worker touches ALIVE_FILE; `--check-alive` exits 0 if
 that happened within ALIVE_WITHIN, which is Compose's health check.
@@ -31,12 +33,15 @@ from datetime import timedelta
 from pathlib import Path
 from typing import Any, cast
 
+from sqlalchemy import Engine
 from temporalio.client import Client
 from temporalio.worker import Worker
 
 from aisre.config import Settings
 from aisre.record import make_engine
 from aisre.workflow import activities as act
+from aisre.workflow import scripted
+from aisre.workflow.record_activities import RecordActivities
 from aisre.workflow.relay import Relay
 from aisre.workflow.workflow import IncidentWorkflow, ReconciliationWorkflow
 
@@ -46,13 +51,29 @@ ALIVE_WITHIN = timedelta(seconds=30)
 log = logging.getLogger("aisre.worker")
 
 
-def build_worker(client: Client) -> Worker:
+def activity_name(fn: Callable[..., Any]) -> str:
+    return fn.__name__  # every activity here is defined under its own name
+
+
+def investigation_activities(settings: Settings, engine: Engine) -> list[Callable[..., Any]]:
+    """Real record activities, then the scripts if enabled, then the interfaces for the rest."""
+    chosen = RecordActivities(engine).all()
+    if settings.scripted_skills:
+        if settings.env == "production":
+            raise RuntimeError("scripted skills are refused when AISRE_ENV is production")
+        chosen += scripted.SCRIPTED_ACTIVITIES
+    names = {activity_name(a) for a in chosen}
+    # activities.py isn't strict: its list is typed as plain functions.
+    interfaces = cast(Sequence[Callable[..., Any]], act.ALL_INVESTIGATION_ACTIVITIES)
+    return chosen + [a for a in interfaces if activity_name(a) not in names]
+
+
+def build_worker(client: Client, activities: Sequence[Callable[..., Any]]) -> Worker:
     return Worker(
         client,
         task_queue=act.INVESTIGATION_QUEUE,
         workflows=[IncidentWorkflow, ReconciliationWorkflow],
-        # activities.py isn't strict: its list is typed as plain functions.
-        activities=cast(Sequence[Callable[..., Any]], act.ALL_INVESTIGATION_ACTIVITIES),
+        activities=activities,
     )
 
 
@@ -65,8 +86,12 @@ async def run(settings: Settings, stop: asyncio.Event | None = None) -> None:
     )
     engine = make_engine(settings.database_url)
     try:
-        async with build_worker(client):
-            log.info("worker on %s, relay running", act.INVESTIGATION_QUEUE)
+        async with build_worker(client, investigation_activities(settings, engine)):
+            log.info(
+                "worker on %s, relay running, scripted skills %s",
+                act.INVESTIGATION_QUEUE,
+                "on" if settings.scripted_skills else "off",
+            )
             await Relay(engine, client).run(stop, on_pass=ALIVE_FILE.touch)
     finally:
         engine.dispose()
