@@ -11,6 +11,8 @@ from datetime import datetime, timezone
 
 import pytest
 from pydantic import ValidationError
+from skill_rig import NOW as RIG_NOW
+from skill_rig import ScriptedTransport, collected, skills
 from support import FakeProvider, draft_json, gateway, make_patch, provider_reply, request
 
 from aisre.agent.agent_contracts import (
@@ -49,10 +51,12 @@ from aisre.agent.validation import (
     score_confidence,
 )
 from aisre.gateway.adapters import HttpResponse
-from aisre.gateway.gateway import GatewayConfig
+from aisre.gateway.gateway import BudgetLedger, GatewayConfig
 from aisre.gateway.gateway_contracts import ResultStatus
+from aisre.reliability import telemetry
 from aisre.reliability.telemetry import redact_text
 from aisre.remediation.sandbox import read_bundle
+from aisre.workflow import activities as act
 from aisre.workflow.activities import checked_result
 
 NOW = datetime(2026, 11, 1, 9, 0, tzinfo=timezone.utc)
@@ -169,10 +173,14 @@ def test_st23_malformed_output_stops_after_three_attempts_each_budgeted():
 
 def test_st23_schema_valid_command_output_ends_inconclusive_and_nothing_runs():
     payload = draft_json(summary="Fix: rm -rf /var/lib/app")
-    result = call(FakeProvider(provider_reply(payload)))
-    assert result.status == ResultStatus.OK  # the gateway checks shape; the activity checks content
+    provider = FakeProvider(provider_reply(payload))
+    result = call(provider)
+    # The gateway checks content too (T1.16), and never retries it; the activity checks again.
+    assert result.status == ResultStatus.INVALID_OUTPUT and result.parsed is None
+    assert result.validation_errors == ["unsafe model output: command"]
+    assert len(provider.bodies) == 1
     checked = checked_result(
-        "diagnose", DiagnosisDraft.model_validate(result.parsed), SkillUsage(model_calls=1)
+        "diagnose", DiagnosisDraft.model_validate(payload), SkillUsage(model_calls=1)
     )
     assert checked.output is None and checked.failure.code == "invalid_output"
     state = AgentState(
@@ -343,11 +351,56 @@ def test_st24_secret_in_a_new_error_signature_does_not_leave_the_sandbox():
     assert "hunter2" not in read_bundle(line, 0).new_error_signatures[0]
 
 
-def test_st24_leak_procedure_needs_people_and_the_notifier():
-    pytest.skip(
-        "The leak procedure is a runbook and a notification; no reference module starts it. `security_risk` "
-        "stopping the loop is what can be tested, and is, above"
+def test_st24_leak_procedure_starts_on_a_secret_in_a_skills_output(caplog):
+    """The real hypothesise skill: the gateway stops the answer with no retry and records no
+    unmasked or reusable copy; the skill fails `security_risk`, which hands the incident over
+    directly; the audit line keeps a masked copy; the leak metric counts it."""
+    inputs = collected()
+    cite = str(inputs.evidence[0].evidence_id)
+
+    def quote_a_secret(body):
+        claim = {"text": "Found password: hunter2 in the config", "evidence_ids": [cite]}
+        h = {
+            "statement": "A credential changed",
+            "category": "deployment_config",
+            "claims": [claim],
+            "confirm_test": "c",
+            "refute_test": "r",
+        }
+        text = json.dumps({"hypotheses": [h, h | {"category": "dependency"}]})
+        msg = {"model": body["model"], "content": [{"type": "text", "text": text}]}
+        return HttpResponse(200, msg | {"stop_reason": "end_turn", "usage": {}}, {})
+
+    ledger = BudgetLedger(clock=lambda: RIG_NOW)
+    sk, _, transport = skills(inputs, ScriptedTransport(override=quote_a_secret), ledger)
+    labels = {"task": "hypothesise", "kind": "secret"}
+    before = metric("aisre_model_output_unsafe_total", labels)
+    inp = act.SkillIn(
+        str(inputs.context.incident_id),
+        "k:s1",
+        evidence_ids=[str(e.evidence_id) for e in inputs.evidence],
     )
+    with caplog.at_level("WARNING", logger="aisre.audit"):
+        result = asyncio.run(sk.hypothesise(inp))
+    assert result.failure.code == "security_risk" and "hunter2" not in result.model_dump_json()
+    assert len(transport.bodies) == 1  # never retried: a retry resends what produced it
+    assert ledger.completed == {}  # nothing reusable kept
+    (attempt,) = sk.gateway.attempt_log
+    assert attempt.status == ResultStatus.INVALID_OUTPUT
+    assert "hunter2" not in attempt.model_dump_json()
+    (line,) = [json.loads(m) for m in caplog.messages if "aisre.model_output.unsafe" in m]
+    assert line["leak_procedure"] and line["kind"] == "secret"
+    assert "[MASKED]" in line["masked_output"] and "hunter2" not in json.dumps(line)
+    assert metric("aisre_model_output_unsafe_total", labels) == before + 1
+    s = AgentState(started_at=inputs.context.started_at)
+    s.baseline_done = s.knowledge_done = True
+    apply_result(s, Step.HYPOTHESISE, result)
+    assert next_step(s, inputs.context.started_at) == Step.FINISH_INCONCLUSIVE
+    assert s.stop_kind == StopKind.SECURITY
+
+
+def metric(name, labels):
+    return telemetry.REGISTRY.get_sample_value(name, labels) or 0.0
 
 
 # ---------------------------------------------------------------- ST-34
@@ -474,10 +527,10 @@ def test_st36_well_formed_but_hostile_response_is_rejected_whole(payload):
 
 
 def test_st36_a_link_from_the_provider_is_rejected_by_the_output_check():
-    result = call(
-        FakeProvider(provider_reply(draft_json(summary="See http://attacker.example/fix")))
-    )
-    checked = checked_result("diagnose", DiagnosisDraft.model_validate(result.parsed), SkillUsage())
+    payload = draft_json(summary="See http://attacker.example/fix")
+    result = call(FakeProvider(provider_reply(payload)))
+    assert result.validation_errors == ["unsafe model output: link"]
+    checked = checked_result("diagnose", DiagnosisDraft.model_validate(payload), SkillUsage())
     assert checked.failure.code == "invalid_output"
 
 

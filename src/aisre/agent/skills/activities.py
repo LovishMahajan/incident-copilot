@@ -5,7 +5,9 @@ Each one loads its incident's records through a SkillStore (aisre.agent.skills.s
 PostgreSQL), assembles its context (reasoning.build_request), and asks the Model Gateway, the
 only owner of model retries (ADR-27): up to three attempts per step, re-asking only to say what
 failed validation. The activity heartbeats while the gateway works, and a cancellation stops the
-call. Every answer goes through activities.checked_result before anyone sees it (ADR-59).
+call. Every answer goes through activities.checked_result before anyone sees it; one the gateway
+stopped under ADR-59 goes to activities.unsafe_result instead: no retry, a masked audit copy, and
+for a secret the security stop that starts the leak procedure (ST-23, ST-24).
 
 Failures are values (ADR-52): a SkillResult with a SkillFailure the coordinator stops on. A
 database outage raises instead, and MODEL_RETRY runs the activity again; the gateway then reuses
@@ -58,8 +60,8 @@ from aisre.agent.validation import (
     score_confidence,
 )
 from aisre.gateway.adapters import sha256
-from aisre.gateway.gateway import ModelGateway
-from aisre.gateway.gateway_contracts import ModelRequest, ModelResult, ResultStatus
+from aisre.gateway.gateway import UNSAFE_OUTPUT, ModelGateway, unsafe_kind
+from aisre.gateway.gateway_contracts import ModelRequest, ModelResult, ResultStatus, TextBlock
 from aisre.retrieval.context import PromptRegistry
 from aisre.workflow import activities as act
 
@@ -143,7 +145,7 @@ class ModelSkills:
             allowed, _refused = act.precheck_requests(gate, requests, "hypothesise")
             kept.append(h.model_dump() | {"evidence_needed": allowed})
         out = HypothesesOut.model_validate({"hypotheses": kept})
-        return act.checked_result("hypothesise", out, usage)
+        return act.checked_result("hypothesise", out, usage, inp.incident_id)
 
     @activity.defn(name="diagnose")
     async def diagnose(self, inp: act.SkillIn) -> SkillResult[DiagnosisResult]:
@@ -169,7 +171,7 @@ class ModelSkills:
         if isinstance(asked, SkillResult):
             return asked
         draft, usage = asked
-        checked = act.checked_result("diagnose", draft, usage)
+        checked = act.checked_result("diagnose", draft, usage, inp.incident_id)
         if checked.failure is not None:
             return checked
         report = check_citations(draft, ev, incident)
@@ -203,7 +205,7 @@ class ModelSkills:
         )
         if isinstance(asked, SkillResult):
             failure = asked.failure
-            if failure is not None and failure.code == "invalid_output":
+            if failure is not None and failure.code == "invalid_output" and not _unsafe(failure):
                 return SkillResult(output=ReviewResult(), usage=asked.usage)
             return asked
         verdict, usage = asked
@@ -215,7 +217,7 @@ class ModelSkills:
             )
         except ValidationError:  # a revise whose only content was refused requests
             return SkillResult(output=ReviewResult(), usage=usage)
-        checked = act.checked_result("critique", verdict, usage)
+        checked = act.checked_result("critique", verdict, usage, inp.incident_id)
         if checked.failure is not None:
             return checked
         review = combine(verdict, issues, level)
@@ -252,6 +254,12 @@ class ModelSkills:
             spent = await self.gateway.ledger.evidence_only(self.clock())
             usage = r.add_usage(usage, r.usage_of(result, calls, spent))
             if result.status != ResultStatus.OK or result.parsed is None:
+                kind = unsafe_kind(result)
+                if kind is not None:  # stopped in the gateway: its text is masked already
+                    shown = "".join(b.text for b in result.content if isinstance(b, TextBlock))
+                    return act.unsafe_result(
+                        task, kind, shown, usage, str(inputs.context.incident_id)
+                    )
                 return SkillResult(failure=r.failure_for(task, result), usage=usage)
             answer = model.model_validate(result.parsed)
             problem = check(answer)
@@ -298,6 +306,10 @@ class ModelSkills:
         c = inputs.context
         now = datetime.fromtimestamp(self.clock(), UTC)
         return ToolGate(str(c.incident_id), c.service, c.started_at, max(now, c.started_at))
+
+
+def _unsafe(failure: SkillFailure) -> bool:
+    return failure.detail.startswith(UNSAFE_OUTPUT)
 
 
 def _not_found(skill: str) -> SkillResult[Any]:

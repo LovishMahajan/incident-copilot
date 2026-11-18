@@ -33,7 +33,9 @@ by the interceptors in aisre.reliability.temporal_telemetry.
 
 Audit copy (T1.20): the copy and the weekly chain check run as timer jobs on the same
 BudgetJobWorkflow, started if they aren't running (aisre.reliability.audit_jobs). The store
-comes from the AISRE_AUDIT_STORE_* variables; without them only the chain is checked.
+comes from the AISRE_AUDIT_STORE_* variables; without them only the chain is checked. The
+worker's own audit lines (`aisre.model_output.unsafe`, T1.16) go to standard error and to the
+same store, as the API's do (aisre.api.audit).
 
 Liveness: after every relay pass the worker touches ALIVE_FILE; `--check-alive` exits 0 if
 that happened within ALIVE_WITHIN, which is Compose's health check.
@@ -59,6 +61,7 @@ from sqlalchemy import Engine
 from temporalio.client import Client
 from temporalio.worker import Interceptor, Worker
 
+from aisre.api import audit
 from aisre.config import Settings
 from aisre.evidence.snapshots import S3Snapshots
 from aisre.evidence.sources import SourceSet
@@ -165,10 +168,13 @@ async def run(settings: Settings, stop: asyncio.Event | None = None) -> None:
     )
     engine = make_engine(settings.database_url)
     notifier = Notifier(engine)
+    store = store_from_settings(settings)
+    audit.install_handler()
+    audit.install_copy(store)
     try:
         chosen = investigation_activities(settings, engine, notifier)
         chosen += budget_job_activities(engine)
-        chosen += AuditJobActivities(engine, store_from_settings(settings)).all()
+        chosen += AuditJobActivities(engine, store).all()
         async with build_worker(client, chosen, interceptors()):
             await ensure_budget_jobs(client, act.INVESTIGATION_QUEUE)
             await ensure_audit_jobs(client, act.INVESTIGATION_QUEUE)
@@ -182,6 +188,7 @@ async def run(settings: Settings, stop: asyncio.Event | None = None) -> None:
                 notifier.run(stop),
             )
     finally:
+        audit.install_copy(None)  # flushes what is pending
         engine.dispose()
         if metrics is not None:
             metrics.shutdown()

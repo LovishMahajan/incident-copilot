@@ -153,6 +153,12 @@ model_cost = Counter(
     ["provider", "model", "task"],
     registry=REGISTRY,
 )
+model_output_unsafe = Counter(
+    "aisre_model_output_unsafe_total",
+    "Model answers stopped by the output check (ADR-59); kind=secret starts the leak procedure",
+    ["task", "kind"],
+    registry=REGISTRY,
+)  # kind: secret|link|command
 budget_reserved = Gauge(
     "aisre_budget_reserved_micros",
     "Currently reserved, unsettled model spend (all incidents)",
