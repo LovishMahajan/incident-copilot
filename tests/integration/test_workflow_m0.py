@@ -3,7 +3,9 @@
 1. An alert posted through the API reaches `handed_over`, run by the Compose worker (which
    needs `AISRE_SCRIPTED_SKILLS=true`, as in .env.example), and its timeline lists every step
    in order, with the evidence the real collector stores when it is configured and, with the
-   provider configured (T1.18), the hypotheses and reviewed diagnosis of the real skills.
+   provider configured (T1.18), the hypotheses and reviewed diagnosis of the real skills. With
+   the review system configured too (M2), the fix is drafted, tested by the Test Runner on the
+   host (README) and proposed as a draft pull request before the hand-over.
 2. A stale version is reloaded and retried; when it stays stale, the run hands over (ADR-69).
 3. A repeated transition_id or handover_key changes nothing.
 
@@ -53,6 +55,20 @@ HANDED_OVER_PATH = [
     "aisre.incident.status_changed.v1",
     "aisre.incident.status_changed.v1",
     "aisre.incident.status_changed.v1",
+    "aisre.incident.handed_over.v1",
+]
+# M2 (T2.8, T2.12): with the review system configured (.env.example) the real draft_patch runs,
+# and the Test Runner on the host tests the fix; a passing fix gets its draft pull request.
+M2_PATH = [
+    "aisre.incident.created.v1",
+    "aisre.incident.status_changed.v1",  # open -> investigating
+    "aisre.incident.status_changed.v1",  # investigating -> diagnosed
+    "aisre.action.proposed.v1",
+    "aisre.incident.status_changed.v1",  # diagnosed -> testing
+    "aisre.action.test_started.v1",
+    "aisre.action.tested.v1",
+    "aisre.action.review_opened.v1",
+    "aisre.incident.status_changed.v1",  # testing -> handed_over
     "aisre.incident.handed_over.v1",
 ]
 
@@ -182,20 +198,35 @@ def test_an_alert_posted_through_the_api_reaches_handed_over(
         for e in every
         if not e["type"].startswith(("aisre.evidence.", "aisre.hypothesis.", "aisre.diagnosis."))
     ]
-    assert [e["type"] for e in items] == HANDED_OVER_PATH
-    page = {"items": items}
-    changes = [(e["data"]["from_status"], e["data"]["to_status"]) for e in page["items"][1:4]]
-    assert changes == [
-        ("open", "investigating"),
-        ("investigating", "diagnosed"),
-        ("diagnosed", "handed_over"),
-    ]
-    assert {e["source"] for e in page["items"][1:]} == {"/aisre/worker/workflow"}
-    assert page["items"][-1]["data"] == {
-        "from_status": "diagnosed",
-        "reason": f"no fix drafted: {scripted.NOT_DRAFTED}",
+    assert {e["source"] for e in items[1:] if e["type"].startswith("aisre.incident.")} == {
+        "/aisre/worker/workflow"
     }
-    assert view["status"] == "handed_over" and view["version"] == 4
+    statuses = [e for e in items if e["type"] == "aisre.incident.status_changed.v1"]
+    if "aisre.action.proposed.v1" in types:  # M2: drafted, tested, proposed for review
+        assert [e["type"] for e in items] == M2_PATH
+        assert [(e["data"]["from_status"], e["data"]["to_status"]) for e in statuses] == [
+            ("open", "investigating"),
+            ("investigating", "diagnosed"),
+            ("diagnosed", "testing"),
+            ("testing", "handed_over"),
+        ]
+        tested = next(e for e in items if e["type"] == "aisre.action.tested.v1")["data"]
+        assert (tested["outcome"], tested["reproduced"]) == ("passed", True)
+        assert tested["isolation"] in ("development-runc", "gvisor")
+        assert items[-1]["data"]["reason"].startswith("release_a_recommendation: fix passed")
+        assert view["status"] == "handed_over" and view["open_action_ids"] == []
+    else:
+        assert [e["type"] for e in items] == HANDED_OVER_PATH
+        assert [(e["data"]["from_status"], e["data"]["to_status"]) for e in statuses] == [
+            ("open", "investigating"),
+            ("investigating", "diagnosed"),
+            ("diagnosed", "handed_over"),
+        ]
+        assert items[-1]["data"] == {
+            "from_status": "diagnosed",
+            "reason": f"no fix drafted: {scripted.NOT_DRAFTED}",
+        }
+        assert view["status"] == "handed_over" and view["version"] == 4
 
     async def close_out() -> None:
         client = await Client.connect(temporal_address, namespace=settings.temporal_namespace)
