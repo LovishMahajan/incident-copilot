@@ -92,6 +92,12 @@ check_untyped_defs = true
 # The new M0 modules: strict from their first commit.
 module = [
     "aisre.config",
+    "aisre.cli",
+    "aisre.notify",
+    "aisre.notify.*",
+    "aisre.reliability.otlp",
+    "aisre.reliability.audit_jobs",
+    "aisre.reliability.temporal_telemetry",
     "aisre.record",
     "aisre.record.*",
     "aisre.api",

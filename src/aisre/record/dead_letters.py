@@ -5,10 +5,9 @@ service) gets a dead-letter row with the reason, the caller and the payload as r
 no incident. The table is append-only (schema.sql); the retention role deletes a row once
 `retain_until` passes.
 
-The incident lead is told through the Notifier, which doesn't exist yet (T1.19, M3). Rows are
-written in UUIDv7 order, so it will read new ones by `dead_letter_id` with a stored cursor,
-as Artifact 7.6 asks of every consumer; until then the API's `aisre.intake.dead_lettered` log
-line is the only signal (aisre.api.intake).
+The incident lead is told through the Notifier (aisre.notify.notifier, T1.19), which reads new
+rows by `dead_letter_id` (UUIDv7, so arrival order) after its stored cursor, as Artifact 7.6
+asks of every consumer. The API's `aisre.intake.dead_lettered` log line is logged as well.
 """
 
 from __future__ import annotations

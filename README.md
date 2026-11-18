@@ -107,6 +107,19 @@ AISRE_DATABASE_URL=postgresql+psycopg://aisre_app:fake-app-password@127.0.0.1:55
   uv run python -m aisre.retrieval.corpus tests/fixtures/runbooks --org 00000000-0000-7000-8000-000000000001
 ```
 
+**The CLI** (`src/aisre/cli.py`, T1.5) is a thin client of the API, so it can do only what the caller's roles allow. It reads `AISRE_API_URL` (default `http://127.0.0.1:8000`) and a bearer token from `AISRE_TOKEN`:
+
+```
+export AISRE_TOKEN=$(token lena aisre:incident_lead)
+uv run python -m aisre.cli incident submit tests/fixtures/reference-incident/alert.json
+uv run python -m aisre.cli incident show $ID
+uv run python -m aisre.cli incident timeline $ID [--follow]   # --follow streams it (SSE) until closed or cancelled
+uv run python -m aisre.cli incident cancel $ID --reason "false alarm"
+uv run python -m aisre.cli incident close $ID --note "fixed by hand"   # sends the incident's ETag as If-Match
+```
+
+Writes send a fresh `Idempotency-Key` unless `--key` gives one. A refusal prints the API's problem document on standard error and exits 1. The fence and restore commands ADR-69 gives the CLI aren't there yet.
+
 **Integration tests** run from the host against the stack, with test settings:
 
 ```
