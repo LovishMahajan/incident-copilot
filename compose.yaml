@@ -454,6 +454,33 @@ services:
       timeout: 5s
       retries: 20
 
+  grafana:
+    # M4 T4.7 (NFR-27): dashboards provisioned from ops/grafana, read-only in the UI. Anonymous
+    # viewer access, LOCAL STACK ONLY. Checked by pulling the tag on 2026-11-19.
+    image: grafana/grafana:12.2.0
+    depends_on:
+      prometheus:
+        condition: service_healthy
+      postgres:
+        condition: service_healthy
+    environment:
+      AISRE_APP_PASSWORD: ${AISRE_APP_PASSWORD:?copy .env.example to .env}
+      GF_AUTH_ANONYMOUS_ENABLED: "true"
+      GF_AUTH_ANONYMOUS_ORG_ROLE: Viewer
+      GF_ANALYTICS_REPORTING_ENABLED: "false"
+      GF_ANALYTICS_CHECK_FOR_UPDATES: "false"
+      GF_ANALYTICS_CHECK_FOR_PLUGIN_UPDATES: "false"
+    volumes:
+      - ./ops/grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./ops/grafana/dashboards:/var/lib/grafana/dashboards:ro
+    ports:
+      - "127.0.0.1:${AISRE_GRAFANA_PORT:-59030}:3000"
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1:3000/api/health"]
+      interval: 3s
+      timeout: 5s
+      retries: 40
+
   alertmanager:
     # M4 (T4.6, WR-25, ADR-74): routes Prometheus's alerts to a role's receiver. The paging path
     # is Prometheus -> Alertmanager -> pager, never the Notifier or PostgreSQL (Artifact 12.3).

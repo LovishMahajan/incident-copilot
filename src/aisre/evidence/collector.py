@@ -48,7 +48,7 @@ from aisre.evidence.facts import ChangeInfo, Observed, change_info, tier_and_rea
 from aisre.evidence.sources import DEFAULT_TIMEOUT_S, Record, SourceSet, SourceUnavailable
 from aisre.gateway.gateway import CircuitBreaker
 from aisre.record.incidents import uuid7
-from aisre.reliability.telemetry import redact_text
+from aisre.reliability.telemetry import evidence_call, redact_text
 
 SKILL = "collect_evidence"
 RETRIES = 2  # NFR-47, provisional: after the first try
@@ -220,6 +220,7 @@ async def collect(
             for attempt in range(retries + 1):
                 if not breaker.allow():
                     raise SourceUnavailable(f"{tool}: circuit open for this source")
+                started = time.monotonic()
                 try:
                     result = await asyncio.wait_for(
                         asyncio.to_thread(source.fetch, tool, params, scope.environment),
@@ -231,8 +232,10 @@ async def collect(
                     failure = e
                 else:
                     breaker.record(False)
+                    evidence_call.labels(tool, "ok").observe(time.monotonic() - started)
                     break
                 breaker.record(True)
+                evidence_call.labels(tool, "error").observe(time.monotonic() - started)
                 if attempt == retries:
                     raise failure
                 await asyncio.sleep(backoff_s[min(attempt, len(backoff_s) - 1)] if backoff_s else 0)
