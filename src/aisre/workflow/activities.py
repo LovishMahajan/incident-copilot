@@ -21,7 +21,6 @@ from __future__ import annotations
 
 import json
 import logging
-from collections import Counter
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 from typing import Literal, Optional
@@ -50,6 +49,12 @@ from aisre.agent.agent_contracts import (
 )
 from aisre.agent.tool_registry import ToolGate, ToolRefused
 from aisre.agent.validation import UnsafeOutput, check_output, mask_secrets
+from aisre.record.queue import (  # noqa: F401 (the rule, used here and by the record)
+    MAX_INVESTIGATIONS,
+    MAX_SLOTS_PER_SERVICE,
+    QueueRow,
+    may_grant,
+)
 from aisre.reliability import telemetry
 from aisre.workflow.states import InvalidTransition
 
@@ -59,8 +64,6 @@ DISPATCHER_QUEUE = "aisre-dispatcher"
 TEST_RUNNER_QUEUE = "aisre-test-runner"  # run_sandbox_test and the reaper only (ADR-71)
 
 DATA_CONVERTER = pydantic_data_converter
-MAX_INVESTIGATIONS = 5  # running at once, across all workers (8.1)
-MAX_SLOTS_PER_SERVICE = 4  # NFR-44, provisional: one service can't take every slot
 RECONCILIATION_SCHEDULE = "aisre-reconciliation"
 RECONCILIATION_EVERY = timedelta(minutes=5)  # provisional (8.9)
 RELEASE_RECONCILIATION_SCHEDULE = "aisre-release-reconciliation"
@@ -346,34 +349,6 @@ class StaleVersion(Exception):
 # ---------------------------------------------------------------------------
 # Rules the activity implementations apply. Pure, so they can be tested here.
 # ---------------------------------------------------------------------------
-@dataclass(frozen=True)
-class QueueRow:
-    """One investigation_queue row, with its incident's service. `severity` is the confirmed one,
-    else the proposed one, else None, which sorts last as NULL does in the table. `run_id` is the
-    workflow run that queued it (ADR-69)."""
-
-    incident_id: str
-    service: str
-    severity: Optional[str]
-    queued_at: datetime
-    granted: bool = False
-    run_id: str = ""
-
-
-def may_grant(incident_id: str, rows: list[QueueRow]) -> bool:
-    """Inside acquire_investigation_slot's locked transaction: fewer than 5 granted, and this
-    incident first in order, severity then oldest. A service holding MAX_SLOTS_PER_SERVICE waits, and
-    the next eligible incident takes the slot (NFR-44), the one exception to severity order."""
-    if sum(r.granted for r in rows) >= MAX_INVESTIGATIONS:
-        return False
-    held = Counter(r.service for r in rows if r.granted)
-    waiting = sorted(
-        (r for r in rows if not r.granted and held[r.service] < MAX_SLOTS_PER_SERVICE),
-        key=lambda r: (r.severity is None, r.severity or "", r.queued_at),
-    )
-    return bool(waiting) and waiting[0].incident_id == incident_id
-
-
 def precheck_requests(
     gate: ToolGate, requests: list[dict], skill: str
 ) -> tuple[list[dict], list[dict]]:

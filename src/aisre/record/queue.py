@@ -2,7 +2,7 @@
 
 `acquire` is one short transaction under one advisory lock, so two workers can't both take the
 fifth slot. It queues the incident under its workflow run (one row per incident; a later run
-takes the row over, ADR-69), then grants by activities.may_grant: fewer than 5 running, severity
+takes the row over, ADR-69), then grants by may_grant: fewer than 5 running, severity
 first (confirmed, else proposed, else last), oldest first, and no service holding more than 4
 (NFR-44). Nothing is ever dropped: a row stays until its incident leaves `investigating` (or is
 cancelled while open) in record_transition, or until the reconciliation job finds its run ended.
@@ -12,15 +12,45 @@ cancelled while open) in record_transition, or until the reconciliation job find
 
 from __future__ import annotations
 
+from collections import Counter
 from dataclasses import dataclass
 from datetime import datetime
+from typing import Optional
 from uuid import UUID
 
 from sqlalchemy import Connection, text
 
-from aisre.workflow.activities import QueueRow, may_grant
-
 LOCK = "aisre:investigation_queue"
+MAX_INVESTIGATIONS = 5  # running at once, across all workers (8.1)
+MAX_SLOTS_PER_SERVICE = 4  # NFR-44, provisional: one service can't take every slot
+
+
+@dataclass(frozen=True)
+class QueueRow:
+    """One investigation_queue row, with its incident's service. `severity` is the confirmed one,
+    else the proposed one, else None, which sorts last as NULL does in the table. `run_id` is the
+    workflow run that queued it (ADR-69)."""
+
+    incident_id: str
+    service: str
+    severity: Optional[str]
+    queued_at: datetime
+    granted: bool = False
+    run_id: str = ""
+
+
+def may_grant(incident_id: str, rows: list[QueueRow]) -> bool:
+    """Inside acquire_investigation_slot's locked transaction: fewer than 5 granted, and this
+    incident first in order, severity then oldest. A service holding MAX_SLOTS_PER_SERVICE waits, and
+    the next eligible incident takes the slot (NFR-44), the one exception to severity order."""
+    if sum(r.granted for r in rows) >= MAX_INVESTIGATIONS:
+        return False
+    held = Counter(r.service for r in rows if r.granted)
+    waiting = sorted(
+        (r for r in rows if not r.granted and held[r.service] < MAX_SLOTS_PER_SERVICE),
+        key=lambda r: (r.severity is None, r.severity or "", r.queued_at),
+    )
+    return bool(waiting) and waiting[0].incident_id == incident_id
 
 
 @dataclass(frozen=True)
