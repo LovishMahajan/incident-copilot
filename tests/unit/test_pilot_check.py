@@ -45,7 +45,12 @@ GOOD = {
     "AISRE_ENV": "production",
     "AISRE_PROVIDER_API_KEY": SECRET,
     "AISRE_EVIDENCE_SOURCES": json.dumps(EVIDENCE),
-    "AISRE_REVIEW_ADAPTER": "",
+    "AISRE_REVIEW_ADAPTER": "github",
+    "AISRE_REVIEW_URL": "https://api.github.com",
+    "AISRE_REVIEW_TOKEN": "github_pat_not_a_real_token",
+    "AISRE_REVIEW_REPOS": json.dumps(
+        {"orders-api": "example-org/orders-api", "payments-api": "example-org/payments-api"}
+    ),
 }
 PAGING = """route:
   receiver: platform_owner
@@ -95,6 +100,12 @@ def test_a_release_a_configuration_passes(paging):
         ({"AISRE_PROVIDER_API_KEY": "fake-provider-key"}, "real model"),
         ({"AISRE_PROVIDER_URL": "http://fake-provider:8080"}, "real model"),
         ({"AISRE_EVIDENCE_SOURCES": ""}, "evidence sources configured"),
+        # ADR-75: Release A drafts pull requests; no real review system is a FAIL.
+        (
+            {"AISRE_REVIEW_ADAPTER": "", "AISRE_REVIEW_URL": "", "AISRE_REVIEW_TOKEN": ""},
+            "real review system",
+        ),
+        ({"AISRE_REVIEW_REPOS": json.dumps({"orders-api": "o/orders-api"})}, "real review system"),
         (
             {
                 "AISRE_EVIDENCE_SOURCES": json.dumps(
@@ -124,9 +135,10 @@ def test_a_pilot_service_without_sources_for_every_tool_is_refused(paging):
     (r,) = found
     assert r.name == "evidence sources for orders-api in production"
     assert "get_alert" in r.detail and "get_logs" not in r.detail
-    assert (
-        failing(GOOD, paging, ["checkout"])[0].name == "evidence sources for checkout in production"
-    )
+    assert {r.name for r in failing(GOOD, paging, ["checkout"])} == {
+        "evidence sources for checkout in production",
+        "real review system: draft pull requests on GitHub for every pilot service",
+    }
     assert failing(GOOD, paging, [])[0].name == "pilot services named"
 
 

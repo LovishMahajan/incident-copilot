@@ -63,7 +63,8 @@ jobs:
             src/aisre/evidence src/aisre/retrieval/corpus.py src/aisre/agent/skills \
             src/aisre/evaluation/seed.py src/aisre/evaluation/runner.py \
             src/aisre/remediation/test_runner.py src/aisre/remediation/review.py \
-            src/aisre/remediation/release.py src/aisre/workflow/approval_activities.py \
+            src/aisre/remediation/release.py src/aisre/remediation/github.py \
+            src/aisre/workflow/approval_activities.py \
             src/aisre/remediation/dispatcher_process.py src/aisre/verification/verifier.py \
             src/aisre/workflow/reconciliation.py src/aisre/workflow/queue_activities.py \
             src/aisre/workflow/retention_jobs.py src/aisre/pilot

@@ -133,8 +133,25 @@ def check_settings(environ: Mapping[str, str], services: Sequence[str]) -> list[
         )
     )
     out.append(_model(s))
+    out.append(_review(environ, s, services))
     out += _evidence(s, services, environ)
     return out
+
+
+def _review(environ: Mapping[str, str], s: Settings, services: Sequence[str]) -> Check:
+    """ADR-75: Release A drafts pull requests (ADR-44, M2). Without a real review system every
+    draft_patch hands over, so the pilot couldn't measure a single proposed fix: a FAIL."""
+    name = "real review system: draft pull requests on GitHub for every pilot service"
+    problems = []
+    if s.review_adapter != "github":
+        problems.append("set AISRE_REVIEW_ADAPTER=github")
+    else:
+        missing = [svc for svc in services if svc not in (s.review_repos or {})]
+        if missing:
+            problems.append(f"AISRE_REVIEW_REPOS names no repository for {', '.join(missing)}")
+        if not _set(environ, "AISRE_REVIEW_TOKEN"):
+            problems.append("set AISRE_REVIEW_TOKEN")
+    return Check(name, not problems, "; ".join(problems))
 
 
 def _model(s: Settings) -> Check:

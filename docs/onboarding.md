@@ -122,7 +122,16 @@ The API verifies tokens against `AISRE_OIDC_ISSUER`, `_AUDIENCE` and `_JWKS_URL`
 
 The Patch Proposer reads, and opens draft pull requests in, the repository **named after the service** (FR-48: never one the model names), through the review system (`AISRE_REVIEW_ADAPTER`, `_URL`, `_TOKEN`, ADR-72). The Test Runner tests a patch against a local git mirror of that repository, from `AISRE_SANDBOX_REPOS` (JSON, service to mirror path), in the `runsc` sandbox (`AISRE_SANDBOX_IMAGE` by digest).
 
-**Gap:** the only review adapter is `fake_review`, refused in production. Without a review system a diagnosis is still made and handed over, but `draft_patch` fails and the hand-over says so: no patch is drafted or tested in the pilot until a real review adapter exists.
+For the pilot that is GitHub (or GitHub Enterprise), `AISRE_REVIEW_ADAPTER=github`, allowed in production because Release A drafts pull requests (ADR-44, M2):
+
+```
+AISRE_REVIEW_ADAPTER=github
+AISRE_REVIEW_URL=https://api.github.com            # or https://github.example.com/api/v3
+AISRE_REVIEW_TOKEN=<from the secrets manager>      # worker only
+AISRE_REVIEW_REPOS={"payments-api": "example-org/payments-api"}
+```
+
+The token is a fine-grained token (or a GitHub App's) on the pilot's repositories only, with Contents read and write (to create the `aisre/<action>` branch) and Pull requests read and write. The client opens draft pull requests only and refuses any merge in code; branch protection on the default branch stays the barrier. It is tested against recorded responses only, not yet against a real repository (ADR-75): open one draft on the first day. Without it, the go-live check fails: every `draft_patch` would hand over with nothing drafted.
 
 ## 6. Release process
 
@@ -141,6 +150,6 @@ uv run python -m aisre.cli pilot check --service payments-api --service orders-a
   --alertmanager /path/to/alertmanager.yml
 ```
 
-It prints one PASS or FAIL line per check and exits 1 on any FAIL; it names variables, never their values. It passes only when Release A holds: production, no release credential, remediation off, nothing fake or development-only (scripted skills, `runc`, fake adapters, development signing keys, the fake pager), a real model key with every task's alias pinned, evidence sources answering every source tool for each named service in `production`, and a paging receiver for each role. What it can't tell, check by hand on the first day: that each credential works, each source answers (post a test alert and read the evidence; a `gap` names the failing source), and a page reaches a person.
+It prints one PASS or FAIL line per check and exits 1 on any FAIL; it names variables, never their values. It passes only when Release A holds: production, no release credential, remediation off, nothing fake or development-only (scripted skills, `runc`, fake adapters, development signing keys, the fake pager), a real model key with every task's alias pinned, the GitHub review system with a repository for each named service, evidence sources answering every source tool for each named service in `production` with every credential they reference present, and a paging receiver for each role. What it can't tell, check by hand on the first day: that each credential works, each source answers (post a test alert and read the evidence; a `gap` names the failing source), and a page reaches a person.
 
 Once incidents run, the incident lead records each review (`aisre incident review <id> review.json`), and the SRE lead runs `aisre pilot report`, `pilot baseline` and `pilot approvals` (README, Pilot readiness).

@@ -132,6 +132,7 @@ module = [
     "aisre.remediation.test_runner",
     "aisre.remediation.review",
     "aisre.remediation.release",
+    "aisre.remediation.github",
     "aisre.workflow.approval_activities",
     "aisre.remediation.dispatcher_process",
     "aisre.verification.verifier",

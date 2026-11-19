@@ -70,6 +70,7 @@ ENV_VARS: dict[str, str] = {
     "review_adapter": "AISRE_REVIEW_ADAPTER",
     "review_url": "AISRE_REVIEW_URL",
     "review_token": "AISRE_REVIEW_TOKEN",
+    "review_repos": "AISRE_REVIEW_REPOS",
     "release_adapter": "AISRE_RELEASE_ADAPTER",
     "release_url": "AISRE_RELEASE_URL",
     "release_token": "AISRE_RELEASE_TOKEN",
@@ -156,11 +157,14 @@ class Settings(BaseModel):
     # The review system (M2, T2.8, ADR-72): where draft pull requests are opened and where the
     # Patch Proposer reads the repository at its base revision, with the worker's
     # draft-pull-request credential (Artifact 11.7). `fake_review` is Compose's fake
-    # (ops/fakes/review.py), refused in production like the other fakes. Unset: no real
-    # draft_patch, and no pull request.
-    review_adapter: Literal["fake_review"] | None = None
+    # (ops/fakes/review.py), refused in production like the other fakes. `github` is GitHub or
+    # GitHub Enterprise (aisre.remediation.github, ADR-75): the URL is its API's
+    # (https://api.github.com or https://HOST/api/v3), and AISRE_REVIEW_REPOS maps each service to
+    # its repository, `owner/name`. Unset: no real draft_patch, and no pull request.
+    review_adapter: Literal["fake_review", "github"] | None = None
     review_url: str | None = Field(default=None, pattern=r"^https?://")
     review_token: SecretStr | None = None
+    review_repos: Json[dict[str, str]] | None = None
     # The release process (M3, T3.1, ADR-73): `fake_release` is Compose's fake
     # (ops/fakes/release.py), the only adapter, refused in production: no production write
     # credential exists (ADR-44). On the worker the adapter alone turns on the approval path; the
@@ -202,6 +206,10 @@ class Settings(BaseModel):
             self.review_adapter is not None and self.review_token is None
         ):
             raise ValueError("AISRE_REVIEW_ADAPTER, _URL and _TOKEN go together")
+        if self.review_adapter == "github" and (
+            not self.review_repos or not (self.review_url or "").startswith("https://")
+        ):
+            raise ValueError("AISRE_REVIEW_ADAPTER=github needs an https _URL and _REPOS")
         if self.release_adapter is not None and self.env == "production":
             raise ValueError("AISRE_RELEASE_ADAPTER=fake_release is for development and test")
         if (self.release_url is None) != (self.release_token is None) or (
