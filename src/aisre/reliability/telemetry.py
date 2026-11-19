@@ -94,6 +94,13 @@ step_duration = Histogram(
     buckets=SEC,
     registry=REGISTRY,
 )
+evidence_call = Histogram(
+    "aisre_evidence_call_seconds",
+    "One evidence source call, per tool and attempt (NFR-27)",
+    ["tool", "outcome"],
+    buckets=SEC,
+    registry=REGISTRY,
+)
 time_to_first_summary = Histogram(
     "aisre_time_to_first_summary_seconds",
     "Alert time to first summary",
@@ -159,6 +166,9 @@ model_output_unsafe = Counter(
     ["task", "kind"],
     registry=REGISTRY,
 )  # kind: secret|link|command
+MODEL_TASKS = ("hypothesise", "diagnose", "critique", "draft_patch")  # the model_task enum
+for _task in MODEL_TASKS:  # at 0, so the first secret after a restart pages (increase())
+    model_output_unsafe.labels(task=_task, kind="secret")
 budget_reserved = Gauge(
     "aisre_budget_reserved_micros",
     "Currently reserved, unsettled model spend (all incidents)",

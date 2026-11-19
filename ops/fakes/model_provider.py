@@ -30,7 +30,11 @@ expression. That is how a fixed script cites evidence collected at run time. A s
 placeholders nothing fills doesn't match, and the next one is tried.
 
 A message's `id`, `type`, `role` and `model` (echoed from the request) are filled in, and
-`usage` defaults to a rough count (4 characters a token). FAKE_PROVIDER_PORT sets the port
+`usage` defaults to a rough count (4 characters a token).
+
+A key of the form `fake-script-<name>` (M4 fault tests, ADR-74) answers every request with the
+script `<name>.json`, whatever it matches: `fake-script-auth-error` is a rejected key, and
+`fake-script-leak-secret` an answer holding a (fake) credential. FAKE_PROVIDER_PORT sets the port
 (default 8080). Needs only the standard library.
 """
 
@@ -50,6 +54,7 @@ SCRIPTS = Path(__file__).parent / "provider-scripts"
 REQUIRED = ("model", "max_tokens", "messages")
 DATA_BLOCK = re.compile(r'<data ref="[a-z]+:([0-9a-f-]{36})" kind="[^"]*">\n(.*?)\n</data>', re.S)
 PLACEHOLDER = re.compile(r"\{\{ref:(.+?)\}\}")
+FORCE = "fake-script-"
 
 
 def load_scripts(directory: Path) -> list[dict[str, Any]]:
@@ -138,9 +143,13 @@ class Provider:
         self.requests.append(req)
         text = json.dumps([req.get("system"), req["messages"], req.get("tools")])
         blocks = DATA_BLOCK.findall(user_text(req))
+        key = headers.get("x-api-key") or bearer
+        forced = key.removeprefix(FORCE) if key.startswith(FORCE) else None
         script, response = None, {}
         for candidate in self.scripts:
-            if not matches(candidate, text):
+            if forced is not None and candidate["name"] != forced:
+                continue
+            if forced is None and not matches(candidate, text):
                 continue
             response = dict(candidate.get("response", {}))
             if "answer" in candidate:

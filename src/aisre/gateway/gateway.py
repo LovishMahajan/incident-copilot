@@ -446,6 +446,11 @@ class ModelGateway:
         self.schemas, self.cfg, self.sleep, self.clock = schemas, config, sleep, clock
         self.global_slots = asyncio.Semaphore(config.global_concurrency)
         self.incident_slots: dict[str, asyncio.Semaphore] = {}
+        for model in set(getattr(adapter, "model_ids", {}).values()):  # the paging series
+            for task in telemetry.MODEL_TASKS:  # exist at 0, so a first rejected key after a
+                telemetry.model_calls.labels(  # restart counts in increase() (T4.6 pass 2)
+                    provider=adapter.provider, model=model, task=task, status="auth_error"
+                )
         self.breaker = CircuitBreaker(
             clock,
             config.breaker_failure_ratio,

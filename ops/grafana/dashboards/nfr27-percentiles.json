@@ -1,0 +1,275 @@
+{
+  "uid": "aisre-nfr27",
+  "title": "Incident Copilot: percentiles (NFR-27)",
+  "description": "M4 T4.7: the six measurements of Artifact 4.4 by percentile. Histograms from Prometheus; human wait and end-to-end from PostgreSQL (nearest rank, 12.9).",
+  "tags": [
+    "aisre",
+    "nfr-27"
+  ],
+  "timezone": "utc",
+  "schemaVersion": 41,
+  "version": 1,
+  "time": {
+    "from": "now-24h",
+    "to": "now"
+  },
+  "refresh": "1m",
+  "panels": [
+    {
+      "id": 1,
+      "type": "timeseries",
+      "title": "Queue wait (NFR-16, 4.4)",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "aisre-prometheus"
+      },
+      "gridPos": {
+        "x": 0,
+        "y": 0,
+        "w": 12,
+        "h": 8
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s"
+        },
+        "overrides": []
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "aisre-prometheus"
+          },
+          "expr": "histogram_quantile(0.5, sum by (le, severity) (rate(aisre_incident_queue_wait_seconds_bucket[$__rate_interval])))",
+          "legendFormat": "p50 {{severity}}"
+        },
+        {
+          "refId": "B",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "aisre-prometheus"
+          },
+          "expr": "histogram_quantile(0.95, sum by (le, severity) (rate(aisre_incident_queue_wait_seconds_bucket[$__rate_interval])))",
+          "legendFormat": "p95 {{severity}}"
+        },
+        {
+          "refId": "C",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "aisre-prometheus"
+          },
+          "expr": "histogram_quantile(0.99, sum by (le, severity) (rate(aisre_incident_queue_wait_seconds_bucket[$__rate_interval])))",
+          "legendFormat": "p99 {{severity}}"
+        }
+      ]
+    },
+    {
+      "id": 2,
+      "type": "timeseries",
+      "title": "Duration of each step",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "aisre-prometheus"
+      },
+      "gridPos": {
+        "x": 12,
+        "y": 0,
+        "w": 12,
+        "h": 8
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s"
+        },
+        "overrides": []
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "aisre-prometheus"
+          },
+          "expr": "histogram_quantile(0.5, sum by (le, step) (rate(aisre_step_seconds_bucket[$__rate_interval])))",
+          "legendFormat": "p50 {{step}}"
+        },
+        {
+          "refId": "B",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "aisre-prometheus"
+          },
+          "expr": "histogram_quantile(0.95, sum by (le, step) (rate(aisre_step_seconds_bucket[$__rate_interval])))",
+          "legendFormat": "p95 {{step}}"
+        },
+        {
+          "refId": "C",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "aisre-prometheus"
+          },
+          "expr": "histogram_quantile(0.99, sum by (le, step) (rate(aisre_step_seconds_bucket[$__rate_interval])))",
+          "legendFormat": "p99 {{step}}"
+        }
+      ]
+    },
+    {
+      "id": 3,
+      "type": "timeseries",
+      "title": "Each evidence source",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "aisre-prometheus"
+      },
+      "gridPos": {
+        "x": 0,
+        "y": 8,
+        "w": 12,
+        "h": 8
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s"
+        },
+        "overrides": []
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "aisre-prometheus"
+          },
+          "expr": "histogram_quantile(0.5, sum by (le, tool) (rate(aisre_evidence_call_seconds_bucket[$__rate_interval])))",
+          "legendFormat": "p50 {{tool}}"
+        },
+        {
+          "refId": "B",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "aisre-prometheus"
+          },
+          "expr": "histogram_quantile(0.95, sum by (le, tool) (rate(aisre_evidence_call_seconds_bucket[$__rate_interval])))",
+          "legendFormat": "p95 {{tool}}"
+        },
+        {
+          "refId": "C",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "aisre-prometheus"
+          },
+          "expr": "histogram_quantile(0.99, sum by (le, tool) (rate(aisre_evidence_call_seconds_bucket[$__rate_interval])))",
+          "legendFormat": "p99 {{tool}}"
+        }
+      ]
+    },
+    {
+      "id": 4,
+      "type": "timeseries",
+      "title": "Each model call",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "aisre-prometheus"
+      },
+      "gridPos": {
+        "x": 12,
+        "y": 8,
+        "w": 12,
+        "h": 8
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s"
+        },
+        "overrides": []
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "aisre-prometheus"
+          },
+          "expr": "histogram_quantile(0.5, sum by (le, task) (rate(aisre_model_call_seconds_bucket[$__rate_interval])))",
+          "legendFormat": "p50 {{task}}"
+        },
+        {
+          "refId": "B",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "aisre-prometheus"
+          },
+          "expr": "histogram_quantile(0.95, sum by (le, task) (rate(aisre_model_call_seconds_bucket[$__rate_interval])))",
+          "legendFormat": "p95 {{task}}"
+        },
+        {
+          "refId": "C",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "aisre-prometheus"
+          },
+          "expr": "histogram_quantile(0.99, sum by (le, task) (rate(aisre_model_call_seconds_bucket[$__rate_interval])))",
+          "legendFormat": "p99 {{task}}"
+        }
+      ]
+    },
+    {
+      "id": 10,
+      "type": "table",
+      "title": "Human wait: approval request to decision (seconds, nearest rank)",
+      "datasource": {
+        "type": "grafana-postgresql-datasource",
+        "uid": "aisre-postgres"
+      },
+      "gridPos": {
+        "x": 0,
+        "y": 16,
+        "w": 12,
+        "h": 6
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "grafana-postgresql-datasource",
+            "uid": "aisre-postgres"
+          },
+          "format": "table",
+          "rawQuery": true,
+          "editorMode": "code",
+          "rawSql": "SELECT percentile_disc(0.5) WITHIN GROUP (ORDER BY w) AS p50, percentile_disc(0.95) WITHIN GROUP (ORDER BY w) AS p95, percentile_disc(0.99) WITHIN GROUP (ORDER BY w) AS p99, count(*) AS n FROM (SELECT EXTRACT(EPOCH FROM d.decided_at - r.requested_at) AS w FROM approval_decisions d JOIN approval_requests r USING (approval_request_id) WHERE $__timeFilter(d.decided_at)) x"
+        }
+      ]
+    },
+    {
+      "id": 11,
+      "type": "table",
+      "title": "End to end: alert to close (seconds, nearest rank)",
+      "datasource": {
+        "type": "grafana-postgresql-datasource",
+        "uid": "aisre-postgres"
+      },
+      "gridPos": {
+        "x": 12,
+        "y": 16,
+        "w": 12,
+        "h": 6
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "grafana-postgresql-datasource",
+            "uid": "aisre-postgres"
+          },
+          "format": "table",
+          "rawQuery": true,
+          "editorMode": "code",
+          "rawSql": "SELECT percentile_disc(0.5) WITHIN GROUP (ORDER BY e) AS p50, percentile_disc(0.95) WITHIN GROUP (ORDER BY e) AS p95, percentile_disc(0.99) WITHIN GROUP (ORDER BY e) AS p99, count(*) AS n FROM (SELECT EXTRACT(EPOCH FROM closed_at - started_at) AS e FROM incidents WHERE status = 'closed' AND $__timeFilter(closed_at)) x"
+        }
+      ]
+    }
+  ]
+}
