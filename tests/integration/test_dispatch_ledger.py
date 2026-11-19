@@ -391,3 +391,72 @@ def test_the_cancel_route_refuses_a_caller_whose_groups_give_no_cancel(
             headers=headers(org, service, "vic", "viewer"),
         )
     assert r.status_code == 403
+
+
+# ------------------------------------------------- T3.16: POST /v1/actions/{id}/outcome-resolutions
+def late_block(dispatcher_engine, service, action_id, blobs) -> Dispatcher:
+    store = PgTrustedStore(dispatcher_engine, blobs)
+    d = dispatcher(
+        dispatcher_engine,
+        service,
+        Late(store.action(str(action_id)).base_revision),
+        blobs,
+        timeout=0.2,
+    )
+    assert asyncio.run(d.execute(str(action_id))).outcome == Outcome.NOT_APPLIED
+    first = d.ledger.get(str(action_id))
+    assert first is not None
+    d._record(
+        type(first)(**{**first.__dict__, "attempt_no": 1, "state": LedgerState.STARTED}),
+        LedgerState.APPLIED,
+        "late",
+    )
+    return d
+
+
+def test_fr53_the_lead_resolves_through_the_api_and_the_dispatcher_clears_the_block(
+    app_engine, settings, dispatcher_engine, approved, catalogue
+):
+    from temporalio.testing import ActivityEnvironment
+
+    from aisre.remediation.dispatcher_process import DispatcherActivities
+    from aisre.workflow import activities as act
+
+    org, _, _ = catalogue
+    service, incident_id, action_id, blobs = approved
+    d = late_block(dispatcher_engine, service, action_id, blobs)
+    body = {"outcome": "applied", "observed_revision": "cfg-42+patch", "reason": "checked the host"}
+    url = f"/v1/actions/{action_id}/outcome-resolutions"
+    v = version_of(app_engine, action_id)
+    with client_for(settings, app_engine) as c:
+        approver = c.post(url, json=body, headers=headers(org, service, "priya", version=v))
+        stale = c.post(url, json=body, headers=headers(
+            org, service, "lee", "incident_lead", version=v, auth_age_seconds=3600))  # fmt: skip
+        ok = c.post(
+            url, json=body, headers=headers(org, service, "lee", "incident_lead", version=v)
+        )
+    assert approver.status_code == 403 and stale.json()["code"] == "reauth_required"
+    assert ok.status_code == 202, ok.json()
+    with app_engine.connect() as conn:
+        payload = conn.execute(
+            text("SELECT payload FROM outbox WHERE workflow_id = :w"),
+            {"w": ok.json()["workflow_id"]},
+        ).scalar_one()
+    assert payload["workflow"] == "OutcomeResolutionWorkflow"
+    acts = DispatcherActivities(
+        dispatcher_engine, lambda store: d.release, PgTrustedStore(dispatcher_engine, blobs),
+        development_verify_keys(PUBLIC), directory(service),
+    )  # fmt: skip
+    out = asyncio.run(
+        ActivityEnvironment().run(acts.resolve_outcome, act.ResolutionIn(**payload["arg"]))
+    )
+    assert out.outcome == "applied" and d.ledger.unresolved("orders-api-production") == []
+    with app_engine.connect() as conn:
+        cleared = conn.execute(
+            text(
+                "SELECT cleared_by, observed_revision FROM deployment_blocks"
+                " WHERE action_id = :a AND reason = 'late_apply'"
+            ),
+            {"a": action_id},
+        ).one()
+    assert tuple(cleared) == ("user:lee", "cfg-42+patch")

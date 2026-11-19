@@ -6,6 +6,7 @@ Approval Service's routes.
     POST /v1/actions/{id}/approvals          approve (+ the conditional rollback)  action:approve
     POST /v1/actions/{id}/rejections         reject, with a reason                 action:reject
     POST /v1/actions/{id}/revocations        withdraw your own approval            approval:revoke_own
+    POST /v1/actions/{id}/outcome-resolutions  clear an unknown outcome (T3.16)      action:resolve_outcome
 
 Every write takes an `Idempotency-Key` and `If-Match` (the action's version, ADR-64), and runs
 in one transaction: the action row locked, the key claimed, `action.record_decision` (the
@@ -22,6 +23,7 @@ approved unsigned.
 
 from __future__ import annotations
 
+import json
 from collections.abc import Callable
 from datetime import UTC, datetime
 from typing import Annotated, Any, Literal
@@ -46,6 +48,7 @@ from aisre.contracts import (
     ApprovalRefusedData,
     ApprovalRejectedData,
     ApprovalRevokedData,
+    OutcomeResolutionCreate,
     Page,
     RejectionCreate,
     RevocationCreate,
@@ -56,6 +59,13 @@ from aisre.record import idempotency as idem
 from aisre.record import load_incident, reads
 from aisre.record.incidents import SIGNAL_WORKFLOW, append_event, enqueue, uuid7
 from aisre.reliability import telemetry
+from aisre.reliability.fence import (
+    INCIDENT_LEAD,
+    Actor,
+    FenceReason,
+    FenceState,
+    RecordedState,
+)
 from aisre.remediation.action import (
     ApprovalError,
     ApprovalPolicy,
@@ -472,6 +482,116 @@ class Approvals:
         )
 
 
+def resolve_outcome(
+    db: Engine,
+    request: Request,
+    caller: Caller,
+    action_id: UUID,
+    body: OutcomeResolutionCreate,
+    key: str | None,
+    if_match: str | None,
+) -> JSONResponse:
+    """T3.16, FR-53: the Incident lead records what the target runs. Checked here: the lead's
+    groups on the service, a sign-in within 15 minutes with two-factor, the fence's own rule for
+    a recorded state (`fence.lift`), `If-Match` and an unknown outcome or a late apply's block to
+    clear. Written by the dispatcher, the only role that writes attempts and blocks (ADR-51):
+    a one-activity workflow started through the outbox. 202: accepted, not yet written (ADR-73).
+    An active `unknown_outcome_on_deployment` fence on the deployment is lifted with it."""
+    key = check_key(key)
+    version = parse_if_match(if_match)
+    operation = f"{request.method} {request.scope['route'].path}"
+    fingerprint = idem.request_fingerprint(
+        {"action_id": str(action_id), "if_match": version, "body": body.model_dump(mode="json")}
+    )
+    now = _now()
+    with db.begin() as conn:
+        locked = _lock(conn, action_id, caller.org_id)
+        if locked is None or not check_service(request, caller, Perm.READ, locked.service):
+            raise ApiError(404, "not_found", "Action not found", f"No action {action_id}.")
+        if not check_service(request, caller, Perm.RESOLVE_OUTCOME, locked.service):
+            raise ApiError(403, "forbidden", "Forbidden", "Only the incident lead resolves this.")
+        try:
+            stored = idem.claim(conn, caller.caller_id, operation, key, fingerprint)
+        except (idem.KeyReused, idem.KeyInProgress):
+            raise ApiError(409, "idempotency_key_reused", "Idempotency key already used") from None
+        if stored is None:
+            if locked.version != version:
+                raise ApiError(412, "precondition_failed", "Version mismatch",
+                               headers={"ETag": f'"{locked.version}"'})  # fmt: skip
+            auth = caller.auth_time
+            if auth is None or now - auth > ApprovalPolicy().max_auth_age or not caller.mfa:
+                raise ApiError(401, "reauth_required", "Sign in again with two-factor")
+            state = RecordedState(
+                Actor(caller.caller_id, INCIDENT_LEAD),
+                body.outcome.value,
+                body.observed_revision,
+                body.reason,
+            )
+            deployment = conn.execute(
+                text("SELECT target_deployment FROM actions WHERE action_id = :a"),
+                {"a": action_id},
+            ).scalar_one()
+            late = conn.execute(
+                text(
+                    "SELECT 1 FROM deployment_blocks WHERE action_id = :a "
+                    "AND reason = 'late_apply' AND cleared_at IS NULL"
+                ),
+                {"a": action_id},
+            ).first()
+            if locked.status != "outcome_unknown" and late is None:
+                raise ApiError(409, "action_not_open", "Nothing to resolve",
+                               f"The action is {locked.status} and its deployment is not blocked.")  # fmt: skip
+            fence = FenceState(deployment_reasons={deployment: {FenceReason.UNKNOWN_OUTCOME}})
+            try:
+                fence.lift(FenceReason.UNKNOWN_OUTCOME, deployment, recorded_state=state)
+            except PermissionError as e:
+                raise ApiError(403, "forbidden", "Forbidden", str(e)) from None
+            conn.execute(
+                text(
+                    "UPDATE fence_reasons SET cleared_by = :by, cleared_at = now() "
+                    "WHERE scope = :d AND reason = :r AND cleared_at IS NULL"
+                ),
+                {"by": caller.caller_id, "d": deployment, "r": FenceReason.UNKNOWN_OUTCOME.value},
+            )
+            request_key = str(uuid7())
+            workflow_id = f"incident-{locked.incident_id}-resolution-{request_key}"
+            arg = {
+                "action_id": str(action_id),
+                "subject": caller.caller_id,
+                "outcome": body.outcome.value,
+                "observed_revision": body.observed_revision,
+                "reason": body.reason,
+                "auth_time": auth.isoformat(),
+                "mfa": caller.mfa,
+                "request_key": request_key,
+            }
+            conn.execute(
+                text(
+                    "INSERT INTO outbox (message_id, incident_id, kind, workflow_id, payload) "
+                    "VALUES (:m, :i, 'start_workflow', :w, CAST(:p AS jsonb))"
+                ),
+                {
+                    "m": uuid7(),
+                    "i": locked.incident_id,
+                    "w": workflow_id,
+                    "p": json.dumps({"workflow": "OutcomeResolutionWorkflow", "arg": arg}),
+                },
+            )
+            stored = idem.StoredResponse(
+                202, {"action_id": str(action_id), "accepted": True, "workflow_id": workflow_id}
+            )
+            idem.complete(conn, caller.caller_id, operation, key, status=202, body=stored.body,
+                          resource_id=action_id)  # fmt: skip
+    audit.emit(
+        "aisre.outcome_resolution.requested",
+        request,
+        caller=caller.caller_id,
+        action_id=str(action_id),
+        outcome=body.outcome.value,
+    )
+    return JSONResponse(stored.body, status_code=stored.status)
+
+
 def stop_check(caller: Caller) -> Callable[[Connection, Any], None]:
     """T3.5, FR-56: a cancel while a fix waits for approval or dispatch is a stop, checked by
     `action.request_stop` on each open fix of the incident: the caller's groups must give the
@@ -535,6 +655,23 @@ def register(app: FastAPI, approvals: Approvals) -> None:
         request: Request, action_id: UUID, caller: CallerDep
     ) -> Page[ApprovalDecisionView]:
         return approvals.history(request, caller, action_id)
+
+    @app.post(
+        "/v1/actions/{action_id}/outcome-resolutions",
+        status_code=202,
+        **requires(Perm.RESOLVE_OUTCOME),
+    )
+    def resolve(
+        request: Request,
+        action_id: UUID,
+        body: OutcomeResolutionCreate,
+        caller: CallerDep,
+        idempotency_key: KeyDep = None,
+        if_match: IfMatchDep = None,
+    ) -> JSONResponse:
+        return resolve_outcome(
+            approvals.db, request, caller, action_id, body, idempotency_key, if_match
+        )
 
     @app.post("/v1/actions/{action_id}/approvals", status_code=201, **requires(Perm.APPROVE))
     def approve(
