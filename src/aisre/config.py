@@ -70,6 +70,9 @@ ENV_VARS: dict[str, str] = {
     "release_adapter": "AISRE_RELEASE_ADAPTER",
     "release_url": "AISRE_RELEASE_URL",
     "release_token": "AISRE_RELEASE_TOKEN",
+    "approval_signing_key": "AISRE_APPROVAL_SIGNING_KEY",
+    "approval_verify_key": "AISRE_APPROVAL_VERIFY_KEY",
+    "identity_directory_url": "AISRE_IDENTITY_DIRECTORY_URL",
 }
 
 
@@ -150,6 +153,14 @@ class Settings(BaseModel):
     release_adapter: Literal["fake_release"] | None = None
     release_url: str | None = Field(default=None, pattern=r"^https?://")
     release_token: SecretStr | None = None
+    # Approvals (M3, T3.2, T3.3, ADR-73). No secrets manager is chosen, so the Approval Service
+    # signs with a DEVELOPMENT Ed25519 key from settings (32-byte seed, base64; the API only),
+    # and the dispatcher holds its public key (base64). Both refused outside development and
+    # test. The identity directory is the fake issuer's (ops/fakes/token_issuer.py), which the
+    # dispatcher asks for an approver's current groups (Q11.59); refused in production.
+    approval_signing_key: SecretStr | None = None
+    approval_verify_key: str | None = Field(default=None, min_length=1)
+    identity_directory_url: str | None = Field(default=None, pattern=r"^https?://")
 
     # Fixed: equal to aisre.workflow.activities.INVESTIGATION_QUEUE, DISPATCHER_QUEUE and
     # TEST_RUNNER_QUEUE.
@@ -175,6 +186,14 @@ class Settings(BaseModel):
             self.release_url is not None and self.release_adapter is None
         ):
             raise ValueError("AISRE_RELEASE_URL and _TOKEN go together, with AISRE_RELEASE_ADAPTER")
+        dev_keys = self.approval_signing_key is not None or self.approval_verify_key is not None
+        if dev_keys and self.env not in ("development", "test"):
+            raise ValueError(
+                "AISRE_APPROVAL_SIGNING_KEY and _VERIFY_KEY are development keys (ADR-73): "
+                "development and test only"
+            )
+        if self.identity_directory_url is not None and self.env == "production":
+            raise ValueError("AISRE_IDENTITY_DIRECTORY_URL is the fake issuer's: not production")
         return self
 
     @model_validator(mode="after")
