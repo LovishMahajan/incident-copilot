@@ -254,3 +254,24 @@ def test_no_approve_or_apply_control(name: str) -> None:
         "Close incident",
     ):
         assert word not in text, word
+
+
+def test_fix_card_wording_follows_the_path() -> None:
+    """M3 follow-up: on the approval path the Undo line is the rollback action through the FAKE
+    release process, and the note says it ran on the synthetic target under ADR-73's stand-ins.
+    The M2 wording (revert the merge, people deploy, advisory) stays for Release A only."""
+    app = (DEMO / "app.js").read_text()
+    assert 'el("dd", { text: undoText(a, actions) })' in app
+    undo = app[app.index("function undoText") : app.index("// States reached only")]
+    assert "if (!onApprovalPath(a, actions)) return a.undo_plan;" in undo
+    assert "FAKE release process" in undo and "ADR-48, ADR-73" in undo
+    assert "people merge" not in undo.lower() and "advisory" not in undo
+    note = app[
+        app.index("const approvalPath = actions.some") : app.index(
+            "} else {", app.index("const approvalPath")
+        )
+    ]
+    approval_text, release_a_text = re.findall(r"(?:\?|:) \"([^\"]{40,})\"", note)
+    assert "ADR-73's stand-ins" in approval_text and "synthetic target" in approval_text
+    assert "advisory" not in approval_text and "ADR-44" not in approval_text
+    assert "advisory in this release (ADR-44)" in release_a_text
