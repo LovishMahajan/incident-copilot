@@ -16,6 +16,7 @@ it was.
 from __future__ import annotations
 
 import asyncio
+import time
 from datetime import UTC, datetime, timedelta
 from uuid import UUID
 
@@ -155,10 +156,16 @@ def free(app_engine, iid: str) -> None:
 
 def test_a_burst_of_60_is_queued_by_severity_and_none_dropped(app_engine, opened):
     acts = QueueActivities(app_engine, Notifier(app_engine))
-    with app_engine.connect() as conn:
-        others = conn.execute(text("SELECT count(*) FROM investigation_queue")).scalar_one()
-    if others:
-        pytest.skip(f"the stack's queue holds {others} rows; this test needs it empty")
+
+    def others() -> int:
+        with app_engine.connect() as conn:
+            return int(conn.execute(text("SELECT count(*) FROM investigation_queue")).scalar_one())
+
+    deadline = time.monotonic() + 180  # incidents earlier tests sent to the stack drain first
+    while others() and time.monotonic() < deadline:
+        time.sleep(2)
+    if others():
+        pytest.skip(f"the stack's queue still holds {others()} rows; this test needs it empty")
     # Five noisy sev1s first, so NFR-44 shows: the fifth waits while a slot is free.
     noisy = [opened("noisy", "sev1") for _ in range(5)]
     assert [ask(acts, i) for i in noisy] == [True] * 4 + [False]
