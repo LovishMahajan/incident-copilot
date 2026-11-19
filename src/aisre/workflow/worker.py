@@ -123,6 +123,7 @@ from aisre.workflow.queue_activities import QueueActivities, publish_depth
 from aisre.workflow.reconciliation import ReconciliationActivities
 from aisre.workflow.record_activities import EvidenceActivities, RecordActivities
 from aisre.workflow.relay import Relay
+from aisre.workflow.retention_jobs import RetentionActivities, ensure_retention_job
 from aisre.workflow.workflow import (
     IncidentWorkflow,
     OutcomeResolutionWorkflow,
@@ -305,13 +306,22 @@ async def run(settings: Settings, stop: asyncio.Event | None = None) -> None:
     audit.install_handler()
     audit.install_copy(store)
     transport = provider_transport(settings)
+    retention_engine: Engine | None = None
     try:
         chosen = investigation_activities(settings, engine, notifier, transport, client)
         chosen += budget_job_activities(engine)
         chosen += AuditJobActivities(engine, store).all()
+        if settings.retention_database_url is not None:  # T4.8: only that role deletes
+            retention_engine = make_engine(settings.retention_database_url)
+            objects = object_store(settings)
+            chosen += RetentionActivities(
+                retention_engine, objects.delete if objects else None
+            ).all()
         async with build_worker(client, chosen, interceptors()):
             await ensure_budget_jobs(client, act.INVESTIGATION_QUEUE)
             await ensure_audit_jobs(client, act.INVESTIGATION_QUEUE)
+            if retention_engine is not None:
+                await ensure_retention_job(client, act.INVESTIGATION_QUEUE)
             await act.ensure_reconciliation_schedule(client)  # 8.9, T3.10
             if remediation_enabled(settings):  # ST-40, T3.11: only where a release adapter is
                 await act.ensure_release_reconciliation_schedule(client)
@@ -331,6 +341,8 @@ async def run(settings: Settings, stop: asyncio.Event | None = None) -> None:
             await transport.close()
         audit.install_copy(None)  # flushes what is pending
         engine.dispose()
+        if retention_engine is not None:
+            retention_engine.dispose()
         if metrics is not None:
             metrics.shutdown()
 

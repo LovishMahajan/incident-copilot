@@ -105,6 +105,7 @@ services:
       AISRE_OWNER_PASSWORD: ${AISRE_OWNER_PASSWORD:?copy .env.example to .env}
       AISRE_APP_PASSWORD: ${AISRE_APP_PASSWORD:?copy .env.example to .env}
       AISRE_DISPATCHER_PASSWORD: ${AISRE_DISPATCHER_PASSWORD:?copy .env.example to .env}
+      AISRE_RETENTION_PASSWORD: ${AISRE_RETENTION_PASSWORD:-}
       TEMPORAL_DB_PASSWORD: ${TEMPORAL_DB_PASSWORD:?copy .env.example to .env}
     volumes:
       - pgdata:/var/lib/postgresql/data
@@ -298,6 +299,7 @@ services:
       AISRE_LOG_LEVEL: ${AISRE_LOG_LEVEL:-INFO}
       AISRE_SCRIPTED_SKILLS: ${AISRE_SCRIPTED_SKILLS:-false}
       AISRE_SCRIPTED_STEP_SECONDS: ${AISRE_SCRIPTED_STEP_SECONDS:-0}
+      AISRE_RETENTION_DATABASE_URL: ${AISRE_RETENTION_DATABASE_URL:-}  # T4.8
       # The real Evidence Collector and Knowledge Retriever (T1.10, T1.17). Empty: scripted.
       AISRE_EVIDENCE_SOURCES: ${AISRE_EVIDENCE_SOURCES:-}
       AISRE_OBJECT_STORE_URL: ${AISRE_OBJECT_STORE_URL:-}
