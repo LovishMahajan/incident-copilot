@@ -108,7 +108,8 @@ class Settings(BaseModel):
     oidc_audience: str | None = Field(default=None, min_length=1)
     oidc_jwks_url: str | None = Field(default=None, pattern=r"^https?://")
     # Evidence (T1.10, T1.17): JSON for aisre.evidence.sources.SourceSet.from_config, naming the
-    # adapter answering each READ tool. Unset: no real Evidence Collector or Knowledge Retriever.
+    # adapter answering each READ tool, platform-wide and per service or service and environment
+    # (ADR-75). Unset: no real Evidence Collector or Knowledge Retriever.
     evidence_sources: Json[dict[str, Any]] | None = None
     # Evidence snapshots in the object store (ADR-57). All four or none.
     object_store_url: str | None = Field(default=None, pattern=r"^https?://")
