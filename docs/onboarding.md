@@ -135,7 +135,7 @@ The token is a fine-grained token (or a GitHub App's) on the pilot's repositorie
 
 ## 6. Release process
 
-In Release A there is none to configure: people change production by hand, and **no release adapter or credential may be set** (ADR-44). Every `AISRE_RELEASE_*` variable fails the go-live check. Production releases run from GitHub Actions; the adapter for it (apply, undo, look up by key) is the next pass's work and stays unusable until HG-10's recorded decision provisions a write credential.
+In Release A there is none to configure: people change production by hand, and **no release adapter or credential may be set** (ADR-44). Every `AISRE_RELEASE_*` variable fails the go-live check. Production releases run from GitHub Actions: `AISRE_RELEASE_ADAPTER=github_actions` (aisre.remediation.github) dispatches an apply and an undo workflow and reads GitHub Deployments, for T5.5's scenario revert in a test environment only. Settings refuse it in production until HG-10's recorded decision provisions a write credential. Its module docstring is the contract the two workflows must keep (run name, inputs, the key check under a concurrency group, the deployment carrying the key), because GitHub has no idempotency key of its own.
 
 ## 7. Paging
 

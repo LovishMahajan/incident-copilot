@@ -106,6 +106,18 @@ def test_a_release_a_configuration_passes(paging):
             "real review system",
         ),
         ({"AISRE_REVIEW_REPOS": json.dumps({"orders-api": "o/orders-api"})}, "real review system"),
+        # The GitHub Actions release adapter, configured: its AISRE_RELEASE_* token is refused.
+        (
+            {
+                "AISRE_RELEASE_ADAPTER": "github_actions",
+                "AISRE_RELEASE_URL": "https://api.github.com",
+                "AISRE_RELEASE_TOKEN": SECRET,
+                "AISRE_RELEASE_GITHUB": json.dumps(
+                    {"repository": "o/deploys", "apply_workflow": "a.yml", "undo_workflow": "u.yml"}
+                ),
+            },
+            "no release or production write credential",
+        ),
         (
             {
                 "AISRE_EVIDENCE_SOURCES": json.dumps(

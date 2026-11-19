@@ -74,6 +74,7 @@ ENV_VARS: dict[str, str] = {
     "release_adapter": "AISRE_RELEASE_ADAPTER",
     "release_url": "AISRE_RELEASE_URL",
     "release_token": "AISRE_RELEASE_TOKEN",
+    "release_github": "AISRE_RELEASE_GITHUB",
     "approval_signing_key": "AISRE_APPROVAL_SIGNING_KEY",
     "approval_verify_key": "AISRE_APPROVAL_VERIFY_KEY",
     "identity_directory_url": "AISRE_IDENTITY_DIRECTORY_URL",
@@ -166,12 +167,15 @@ class Settings(BaseModel):
     review_token: SecretStr | None = None
     review_repos: Json[dict[str, str]] | None = None
     # The release process (M3, T3.1, ADR-73): `fake_release` is Compose's fake
-    # (ops/fakes/release.py), the only adapter, refused in production: no production write
-    # credential exists (ADR-44). On the worker the adapter alone turns on the approval path; the
-    # URL and the token, the release credential, are the dispatcher process's only.
-    release_adapter: Literal["fake_release"] | None = None
+    # (ops/fakes/release.py); `github_actions` dispatches workflows on GitHub (T5.5 prep, ADR-75),
+    # with AISRE_RELEASE_GITHUB naming the repository, the apply and undo workflows and the ref.
+    # Both are refused in production: no production write credential exists until HG-10
+    # (ADR-44). On the worker the adapter alone turns on the approval path; the URL and the
+    # token, the release credential, are the dispatcher process's only.
+    release_adapter: Literal["fake_release", "github_actions"] | None = None
     release_url: str | None = Field(default=None, pattern=r"^https?://")
     release_token: SecretStr | None = None
+    release_github: Json[dict[str, str]] | None = None
     # Approvals (M3, T3.2, T3.3, ADR-73). No secrets manager is chosen, so the Approval Service
     # signs with a DEVELOPMENT Ed25519 key from settings (32-byte seed, base64; the API only),
     # and the dispatcher holds its public key (base64). Both refused outside development and
@@ -211,7 +215,12 @@ class Settings(BaseModel):
         ):
             raise ValueError("AISRE_REVIEW_ADAPTER=github needs an https _URL and _REPOS")
         if self.release_adapter is not None and self.env == "production":
-            raise ValueError("AISRE_RELEASE_ADAPTER=fake_release is for development and test")
+            raise ValueError(
+                "AISRE_RELEASE_ADAPTER is for development and test: no production write "
+                "credential until HG-10 (ADR-44)"
+            )
+        if (self.release_adapter == "github_actions") != (self.release_github is not None):
+            raise ValueError("AISRE_RELEASE_ADAPTER=github_actions goes with AISRE_RELEASE_GITHUB")
         if (self.release_url is None) != (self.release_token is None) or (
             self.release_url is not None and self.release_adapter is None
         ):
