@@ -1223,13 +1223,16 @@ async def test_failed_verification_rolls_back_as_its_own_action_and_hands_over()
 @pytest.mark.asyncio
 async def test_t317_the_watch_after_a_verified_fix_flags_to_people_and_rolls_nothing_back():
     """11.12: each flag is a notification to on-call and the incident lead, with its detail,
-    linked to the fix; the action stays verified, no rollback is asked for or dispatched, and the
-    run waits for the watch to end even after the incident is closed."""
+    linked to the fix; the action stays verified, and no rollback is asked for or dispatched."""
     f = Fakes(watch=120, watch_flags=["alert_breach:http_5xx_rate", "new_error_group:x"])
 
     async def driver(env, h):
         await to_approval(h)
         await wait_state(h, "recovered")
+        for _ in range(200):
+            if f.calls["watch_after_change"] == 3:
+                break
+            await asyncio.sleep(0.05)
         await close(h)
 
     assert await run_case(f, driver) == "closed"
@@ -1262,6 +1265,25 @@ async def test_t317_no_watch_without_a_verified_fix_and_a_failed_watch_ends_quie
         await close(h)
 
     assert await run_case(f, driver) == "closed" and f.calls["watch_after_change"] == 1
+
+
+@pytest.mark.asyncio
+async def test_t317_closing_the_incident_ends_a_running_watch():
+    """The incident lead accepted recovery: the watch stops, so no closed incident keeps a live
+    run (8.9)."""
+    f = Fakes(watch=3600, blocks={"watch_after_change"})
+
+    async def driver(env, h):
+        await to_approval(h)
+        await wait_state(h, "recovered")
+        for _ in range(200):
+            if f.calls["watch_after_change"]:
+                break
+            await asyncio.sleep(0.05)
+        await close(h)
+
+    assert await run_case(f, driver) == "closed"
+    assert "watch_after_change:stopped" in f.events
 
 
 @pytest.mark.asyncio

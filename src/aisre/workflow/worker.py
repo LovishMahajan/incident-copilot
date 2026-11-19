@@ -47,6 +47,9 @@ set, `verify_recovery` and `watch_after_change` are the Recovery Verifier
 approval path on and no monitoring source, `verify_recovery` answers at once with a
 non-retryable error, so an applied fix is handed over saying a person decides.
 
+Reconciliation (T3.10, 8.9): `reconcile_workflows` is real (aisre.workflow.reconciliation), and
+the worker creates the `aisre-reconciliation` schedule if it doesn't exist.
+
 Budget jobs (T1.21): the worker registers BudgetJobWorkflow with the ledger's expiry and
 reconciliation activities, over PostgreSQL, and starts both jobs if they aren't running
 (aisre.workflow.budget_jobs).
@@ -114,6 +117,7 @@ from aisre.workflow import activities as act
 from aisre.workflow import scripted
 from aisre.workflow.approval_activities import ApprovalActivities
 from aisre.workflow.budget_jobs import BudgetJobWorkflow, ensure_budget_jobs
+from aisre.workflow.reconciliation import ReconciliationActivities
 from aisre.workflow.record_activities import EvidenceActivities, RecordActivities
 from aisre.workflow.relay import Relay
 from aisre.workflow.workflow import (
@@ -205,9 +209,11 @@ def investigation_activities(
     engine: Engine,
     notifier: Notifier | None = None,
     transport: AnthropicTransport | None = None,
+    client: Client | None = None,
 ) -> list[Callable[..., Any]]:
     """Real record, evidence, skill and Notifier activities, then the scripts if enabled for
-    what is still missing, then the interfaces for the rest."""
+    what is still missing, then the interfaces for the rest. With a Temporal client, the
+    workflow reconciliation job's activity is real too (T3.10)."""
     chosen = (
         RecordActivities(engine, remediation_enabled(settings)).all()
         + ApprovalActivities(engine).all()
@@ -215,6 +221,7 @@ def investigation_activities(
         + skill_activities(settings, engine, transport)
         + review_activities(settings, engine)
         + (notifier or Notifier(engine)).activities()
+        + (ReconciliationActivities(engine, client).all() if client is not None else [])
     )
     if remediation_enabled(settings):
         chosen += verifier_activities(settings, engine)
@@ -292,12 +299,13 @@ async def run(settings: Settings, stop: asyncio.Event | None = None) -> None:
     audit.install_copy(store)
     transport = provider_transport(settings)
     try:
-        chosen = investigation_activities(settings, engine, notifier, transport)
+        chosen = investigation_activities(settings, engine, notifier, transport, client)
         chosen += budget_job_activities(engine)
         chosen += AuditJobActivities(engine, store).all()
         async with build_worker(client, chosen, interceptors()):
             await ensure_budget_jobs(client, act.INVESTIGATION_QUEUE)
             await ensure_audit_jobs(client, act.INVESTIGATION_QUEUE)
+            await act.ensure_reconciliation_schedule(client)  # 8.9, T3.10
             log.info(
                 "worker on %s, relay running, model skills %s, scripted skills %s",
                 act.INVESTIGATION_QUEUE,

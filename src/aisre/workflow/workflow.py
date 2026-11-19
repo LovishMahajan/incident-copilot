@@ -13,6 +13,8 @@ never skips that rollback (ADR-69). The incident's version is only the last one 
 change the record while the workflow runs, so a stale write is reloaded and retried (ADR-69).
 After a verified fix, the post-change watch (11.12, T3.17) runs beside the wait for closure: it
 flags regressions to on-call and the incident lead, linked to the action, and never rolls back.
+Closing the incident ends it: the incident lead has accepted recovery (8.9 counts a closed
+incident with a live run as a mismatch).
 
 activities pulls in Pydantic and Layer 9's contracts, so it passes through the sandbox.
 coordinator and states are pure; coordinator is imported plainly so the sandbox checks that.
@@ -220,6 +222,7 @@ class IncidentWorkflow:
         self.critic = None
         self.verification: Optional[act.VerifyOut] = None  # the last verdict, with its window
         self.watch = None  # the post-change watch task, after a verified fix (T3.17)
+        self.watching = None  # its running activity, which closing the incident cancels
 
     # ----------------------------------------------------------------- signals
     @workflow.signal
@@ -296,8 +299,10 @@ class IncidentWorkflow:
                 await self._finish_cancelled()
             # Already handed over or recovered: a person owns it; cancellation changes nothing.
         if self.watch is not None:
+            if self.watching is not None:
+                self.watching.cancel()  # closed, or the run's limit: a person has it now
             try:
-                await self.watch  # closing doesn't cut the watch short; the 24-hour limit does
+                await self.watch
             except (asyncio.CancelledError, Cancelled, HandOverNow, ActivityError):
                 pass
         limit_timer.cancel()
@@ -743,25 +748,31 @@ class IncidentWorkflow:
         )
         flagged: list[str] = []
         for n in range(1, MAX_WATCH_ROUNDS + 1):
-            if self.limit_reached:
+            if self.limit_reached or self.close_requested:
                 return
+            handle = workflow.start_activity(
+                act.watch_after_change,
+                act.WatchIn(
+                    action_id,
+                    ver.verification_id,
+                    start,
+                    end.isoformat(),
+                    f"{action_id}:watch:{n}",
+                    list(flagged),
+                ),
+                task_queue=act.INVESTIGATION_QUEUE,
+                start_to_close_timeout=timedelta(seconds=ver.watch_seconds + 300),
+                heartbeat_timeout=timedelta(seconds=60),
+                retry_policy=READ_RETRY,
+                cancellation_type=workflow.ActivityCancellationType.WAIT_CANCELLATION_COMPLETED,
+            )
+            self.watching = handle
             try:
-                out: act.WatchOut = await self._act(
-                    act.watch_after_change,
-                    act.WatchIn(
-                        action_id,
-                        ver.verification_id,
-                        start,
-                        end.isoformat(),
-                        f"{action_id}:watch:{n}",
-                        list(flagged),
-                    ),
-                    timeout_s=ver.watch_seconds + 300,
-                    heartbeat_s=60,
-                    retry=READ_RETRY,
-                )
+                out: act.WatchOut = await handle
             except ActivityError:
-                return
+                return  # cancelled on closure, or failed: advice only
+            finally:
+                self.watching = None
             for flag in out.flags:
                 flagged.append(flag.key)
                 try:
