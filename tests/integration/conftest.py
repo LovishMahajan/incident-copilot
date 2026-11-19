@@ -23,17 +23,22 @@ CONNECT_TIMEOUT_S = 3
 
 def pytest_collection_modifyitems(config: pytest.Config, items: list[pytest.Item]) -> None:
     """Every test here is `integration`. A `fault` test (M4: it stops or kills Compose services
-    and takes minutes) runs only when `-m` names `fault`; otherwise it is deselected, so neither
-    the default run nor `-m integration` includes it."""
+    and takes minutes) runs only when `-m` names `fault`, and a `load` test (T4.10) only when it
+    names `load`; otherwise they are deselected, so neither the default run nor `-m integration`
+    includes them."""
     for item in items:
         if HERE in item.path.parents:
             item.add_marker(pytest.mark.integration)
-    if "fault" in (config.getoption("markexpr", "") or ""):
-        return
-    dropped = [i for i in items if i.get_closest_marker("fault")]
+    named = config.getoption("markexpr", "") or ""
+    kept = {m for m in ("fault", "load") if m in named}
+
+    def dropped_here(i: pytest.Item) -> bool:
+        return any(i.get_closest_marker(m) and m not in kept for m in ("fault", "load"))
+
+    dropped = [i for i in items if dropped_here(i)]
     if dropped:
         config.hook.pytest_deselected(items=dropped)
-        items[:] = [i for i in items if not i.get_closest_marker("fault")]
+        items[:] = [i for i in items if not dropped_here(i)]
 
 
 @pytest.fixture(scope="session")

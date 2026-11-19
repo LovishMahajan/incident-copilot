@@ -48,6 +48,7 @@ markers = [
     "system: needs the Compose stack and the gVisor host",
     "paid: calls a paid provider; needs AISRE_TEST_PROVIDER_KEY and AISRE_PAID_TESTS=1",
     "fault: stops or kills this project's Compose services, minutes long; only with -m fault",
+    "load: load tests against the Compose stack, a minute or more; only with -m load",
 ]
 
 [tool.ruff]
