@@ -48,7 +48,9 @@ approval path on and no monitoring source, `verify_recovery` answers at once wit
 non-retryable error, so an applied fix is handed over saying a person decides.
 
 Reconciliation (T3.10, 8.9): `reconcile_workflows` is real (aisre.workflow.reconciliation), and
-the worker creates the `aisre-reconciliation` schedule if it doesn't exist.
+the worker creates the `aisre-reconciliation` schedule if it doesn't exist. With the approval
+path on it also creates `aisre-release-reconciliation` (T3.11, ST-40): ReleaseReconciliationWorkflow
+runs here daily, and its one activity, `reconcile_releases`, on the dispatcher's queue.
 
 Budget jobs (T1.21): the worker registers BudgetJobWorkflow with the ledger's expiry and
 reconciliation activities, over PostgreSQL, and starts both jobs if they aren't running
@@ -124,6 +126,7 @@ from aisre.workflow.workflow import (
     IncidentWorkflow,
     OutcomeResolutionWorkflow,
     ReconciliationWorkflow,
+    ReleaseReconciliationWorkflow,
 )
 
 ALIVE_FILE = Path(tempfile.gettempdir()) / "aisre-worker.alive"
@@ -277,6 +280,7 @@ def build_worker(
             ReconciliationWorkflow,
             BudgetJobWorkflow,
             OutcomeResolutionWorkflow,
+            ReleaseReconciliationWorkflow,
         ],
         activities=activities,
         interceptors=worker_interceptors,
@@ -306,6 +310,8 @@ async def run(settings: Settings, stop: asyncio.Event | None = None) -> None:
             await ensure_budget_jobs(client, act.INVESTIGATION_QUEUE)
             await ensure_audit_jobs(client, act.INVESTIGATION_QUEUE)
             await act.ensure_reconciliation_schedule(client)  # 8.9, T3.10
+            if remediation_enabled(settings):  # ST-40, T3.11: only where a release adapter is
+                await act.ensure_release_reconciliation_schedule(client)
             log.info(
                 "worker on %s, relay running, model skills %s, scripted skills %s",
                 act.INVESTIGATION_QUEUE,

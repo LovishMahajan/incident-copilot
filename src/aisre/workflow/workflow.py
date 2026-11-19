@@ -1124,6 +1124,26 @@ class OutcomeResolutionWorkflow:
         return out.outcome
 
 
+@workflow.defn(name="ReleaseReconciliationWorkflow")
+class ReleaseReconciliationWorkflow:
+    """T3.11 (ST-40): started daily by the aisre-release-reconciliation schedule. The release
+    process's change history over the last 25 hours against execution_attempts, read by the
+    dispatcher, the only holder of the release credential. Returns the unmatched count."""
+
+    @workflow.run
+    async def run(self) -> int:
+        since = workflow.now() - act.RELEASE_RECONCILIATION_WINDOW
+        out = await workflow.execute_activity(
+            act.reconcile_releases,
+            act.ReleaseReconciliationIn(workflow.info().run_id, since.isoformat()),
+            task_queue=act.DISPATCHER_QUEUE,
+            start_to_close_timeout=timedelta(seconds=60),
+            schedule_to_close_timeout=timedelta(seconds=300),
+            retry_policy=TOOL_RETRY,
+        )
+        return len(out.unmatched)
+
+
 @workflow.defn(name="ReconciliationWorkflow")
 class ReconciliationWorkflow:
     """Started by the aisre-reconciliation schedule (8.9): runs the one read-only activity."""

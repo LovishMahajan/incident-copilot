@@ -243,6 +243,12 @@ verification_outcomes = Counter(
     ["verdict", "action_kind", "category"],
     registry=REGISTRY,
 )
+release_changes_unmatched = Gauge(
+    "aisre_release_changes_unmatched",
+    "Changes in the release process's history with no matching execution attempt, at the last "
+    "daily release reconciliation (ST-40, provisional)",
+    registry=REGISTRY,
+)
 rollbacks = Counter(
     "aisre_rollbacks_total", "Rollback actions dispatched", ["outcome"], registry=REGISTRY
 )

@@ -22,13 +22,14 @@ import json
 import urllib.error
 import urllib.request
 from collections.abc import Callable
+from datetime import datetime
 from typing import Any
 from urllib.parse import quote
 
 from pydantic import SecretStr
 
 from aisre.config import Settings
-from aisre.remediation.dispatcher import TargetState
+from aisre.remediation.dispatcher import ReleaseChange, TargetState
 
 TIMEOUT_S = 10.0
 PRODUCTION_REFUSED = (
@@ -110,6 +111,25 @@ class FakeReleaseClient:
         if status != 200 or not isinstance(answer, dict):
             return "rejected"  # refused before anything ran: 4xx (5xx raised above)
         return str(answer.get("result", "rejected"))
+
+    async def history(self, deployment: str) -> list[ReleaseChange]:
+        """The change history (T3.11): what ran when, and the key each platform change carried.
+        A deployment the release process doesn't know has none."""
+        status, body = await asyncio.to_thread(self._call, "GET", self._dep(deployment))
+        if status == 404:
+            return []
+        if status != 200 or not isinstance(body, dict):
+            raise ConnectionError(f"release process: HTTP {status} reading {deployment}")
+        return [
+            ReleaseChange(
+                deployment,
+                datetime.fromisoformat(str(h["at"]).replace("Z", "+00:00")),
+                str(h.get("kind") or "unknown"),
+                str(h["revision"]),
+                str(h["execution_key"]) if h.get("execution_key") else None,
+            )
+            for h in body.get("history") or []
+        ]
 
     async def lookup(self, deployment: str, execution_key: str) -> str | None:
         path = f"{self._dep(deployment)}/changes/{quote(execution_key, safe='')}"

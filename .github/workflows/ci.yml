@@ -21,9 +21,9 @@ defaults:
 env:
   UV_VERSION: "0.12.6"
   PYTHON_VERSION: "3.12"
-  # tests/security skips in a default run on 2026-11-18. A new skip there fails the build
+  # tests/security skips in a default run on 2026-11-19. A new skip there fails the build
   # (Artifact 13.4, M0 security gate); lower this when a skip is removed.
-  SECURITY_SKIPS_ALLOWED: "13"
+  SECURITY_SKIPS_ALLOWED: "10"
 
 jobs:
   checks:

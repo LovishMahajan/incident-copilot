@@ -2,8 +2,10 @@
 process. `python -m aisre.remediation.dispatcher_process`.
 
 Its own process and its own Compose service, on the `aisre-dispatcher` task queue, serving
-three activities and nothing else: `dispatch_change`, `reconcile_execution` and
-`resolve_outcome`. It connects to PostgreSQL as `aisre_dispatcher` and is the only process that
+four activities and nothing else: `dispatch_change`, `reconcile_execution`, `resolve_outcome`
+and, read-only, the daily release reconciliation `reconcile_releases` (T3.11, ST-40), which
+compares the release process's change history with `execution_attempts`. It serves /metrics on
+AISRE_METRICS_PORT. It connects to PostgreSQL as `aisre_dispatcher` and is the only process that
 holds the release credential (`AISRE_RELEASE_URL`, `_TOKEN`); it never holds the Docker socket,
 and the worker and the API never hold the release token. It reads the patch bytes from the
 object store, holds only the approval verify key, and asks the identity directory for an
@@ -31,7 +33,7 @@ from datetime import UTC, datetime
 from typing import Any
 from urllib.parse import quote
 
-from sqlalchemy import Engine
+from sqlalchemy import Engine, text
 from temporalio import activity
 from temporalio.client import Client
 from temporalio.exceptions import ApplicationError
@@ -51,11 +53,18 @@ from aisre.remediation.action import (
     development_verify_keys,
     roles_from_groups,
 )
-from aisre.remediation.dispatcher import Dispatcher, DispatchResult, ReleaseProcess
+from aisre.remediation.dispatcher import (
+    Dispatcher,
+    DispatchResult,
+    ReleaseProcess,
+    unmatched_changes,
+)
 from aisre.remediation.release import ReleaseRefused, release_from_settings
 from aisre.workflow import activities as act
 
 log = logging.getLogger("aisre.dispatcher")
+audit = logging.getLogger("aisre.audit")
+UNMATCHED_EVENT = "aisre.release.unmatched_change"  # the audit line per unmatched change (ST-40)
 DIRECTORY_TIMEOUT_S = 3.0
 
 
@@ -108,7 +117,12 @@ class DispatcherActivities:
         self.policy = policy or ApprovalPolicy()
 
     def all(self) -> list[Callable[..., Any]]:
-        return [self.dispatch_change, self.reconcile_execution, self.resolve_outcome]
+        return [
+            self.dispatch_change,
+            self.reconcile_execution,
+            self.resolve_outcome,
+            self.reconcile_releases,
+        ]
 
     def dispatcher(self) -> Dispatcher:
         return Dispatcher(
@@ -162,6 +176,53 @@ class DispatcherActivities:
             raise ApplicationError(str(e), type="Refused", non_retryable=True) from None
         return self._out(d, res)
 
+    @activity.defn(name="reconcile_releases")
+    async def reconcile_releases(
+        self, inp: act.ReleaseReconciliationIn
+    ) -> act.ReleaseReconciliationOut:
+        """T3.11, ST-40: each deployment's change history against execution_attempts. An
+        unmatched change sets aisre_release_changes_unmatched, which pages the Security lead
+        (AisreReleaseChangeUnmatched), and writes one `aisre.release.unmatched_change` audit line.
+        Read-only."""
+        since = datetime.fromisoformat(inp.since)
+
+        def known() -> tuple[list[str], set[str]]:
+            with self.engine.connect() as conn:
+                deps = [
+                    str(d)
+                    for (d,) in conn.execute(
+                        text("SELECT DISTINCT target_deployment FROM actions ORDER BY 1")
+                    )
+                ]
+                keys = {
+                    str(k)
+                    for (k,) in conn.execute(text("SELECT execution_key FROM execution_attempts"))
+                }
+            return deps, keys
+
+        deployments, keys = await asyncio.to_thread(known)
+        history = getattr(self.release, "history", None)
+        if history is None:
+            raise ApplicationError("this release adapter has no change history", non_retryable=True)
+        changes = [c for d in deployments for c in await history(d)]
+        found = unmatched_changes(changes, keys, since)
+        telemetry.release_changes_unmatched.set(len(found))
+        for c in found:
+            record = {
+                "event": UNMATCHED_EVENT,
+                "deployment": c.deployment,
+                "at": c.at.isoformat(),
+                "kind": c.kind,
+                "revision": c.revision,
+                "execution_key": c.execution_key,
+                "reconciliation": inp.idempotency_key,
+            }
+            audit.warning(json.dumps(record, sort_keys=True), extra={"aisre": record})
+        return act.ReleaseReconciliationOut(
+            len(changes),
+            [f"{c.deployment} {c.at.isoformat()} {c.kind} {c.revision}" for c in found],
+        )
+
 
 def from_settings(settings: Settings, engine: Engine) -> DispatcherActivities:
     """Refuses to build without each thing the dispatcher needs; in production, always."""
@@ -196,6 +257,7 @@ def from_settings(settings: Settings, engine: Engine) -> DispatcherActivities:
 async def run(settings: Settings, stop: asyncio.Event) -> None:
     engine = make_engine(settings.dispatcher_database_url)
     acts = from_settings(settings, engine)
+    metrics = telemetry.serve_metrics(settings.metrics_port)
     client = await Client.connect(
         settings.temporal_address,
         namespace=settings.temporal_namespace,
@@ -207,6 +269,8 @@ async def run(settings: Settings, stop: asyncio.Event) -> None:
             await stop.wait()
     finally:
         engine.dispose()
+        if metrics is not None:
+            metrics.shutdown()
 
 
 def main(argv: Sequence[str] | None = None) -> int:

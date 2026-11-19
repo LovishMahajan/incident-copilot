@@ -63,6 +63,9 @@ MAX_INVESTIGATIONS = 5  # running at once, across all workers (8.1)
 MAX_SLOTS_PER_SERVICE = 4  # NFR-44, provisional: one service can't take every slot
 RECONCILIATION_SCHEDULE = "aisre-reconciliation"
 RECONCILIATION_EVERY = timedelta(minutes=5)  # provisional (8.9)
+RELEASE_RECONCILIATION_SCHEDULE = "aisre-release-reconciliation"
+RELEASE_RECONCILIATION_EVERY = timedelta(days=1)  # provisional (Artifact 5.2, ST-40)
+RELEASE_RECONCILIATION_WINDOW = timedelta(hours=25)  # each run overlaps the last by an hour
 REFUSED_EXPIRED = "approval expired"  # start of the dispatcher's reason when the approval ran out
 DB_REFUSALS = {"23514", "23001"}  # check_violation, restrict_violation: the record said no
 MAX_PATCH_CANDIDATES = 3  # per diagnosis, one action each, drafted one at a time (ADR-69)
@@ -489,6 +492,28 @@ def reconciliation_schedule() -> Schedule:
         ),
         spec=ScheduleSpec(intervals=[ScheduleIntervalSpec(every=RECONCILIATION_EVERY)]),
     )
+
+
+def release_reconciliation_schedule() -> Schedule:
+    """Daily, one ReleaseReconciliationWorkflow; its activity runs on the dispatcher's queue."""
+    return Schedule(
+        action=ScheduleActionStartWorkflow(
+            "ReleaseReconciliationWorkflow",
+            id=f"{RELEASE_RECONCILIATION_SCHEDULE}-run",
+            task_queue=INVESTIGATION_QUEUE,
+        ),
+        spec=ScheduleSpec(intervals=[ScheduleIntervalSpec(every=RELEASE_RECONCILIATION_EVERY)]),
+    )
+
+
+async def ensure_release_reconciliation_schedule(client: Client) -> None:
+    """T3.11: creates the daily schedule unless it exists."""
+    try:
+        await client.create_schedule(
+            RELEASE_RECONCILIATION_SCHEDULE, release_reconciliation_schedule()
+        )
+    except ScheduleAlreadyRunningError:
+        pass
 
 
 async def ensure_reconciliation_schedule(client: Client) -> None:

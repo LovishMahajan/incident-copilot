@@ -1,5 +1,6 @@
 """Artifact 13.5 T3.10, T3.11 (8.9, WR-29, RB-04; ST-40): the reconciliation jobs against the
-Compose stack's Temporal and PostgreSQL.
+Compose stack's Temporal and PostgreSQL, and the release reconciliation against the fake release
+process in-process.
 
 `reconcile_workflows` compares the record with every running IncidentWorkflow on the stack, so
 other incidents may add mismatches; the checks here are on the two incidents the test makes:
@@ -8,9 +9,12 @@ one left `investigating` with no workflow, which counts in aisre_workflows_stall
 worker creates.
 """
 
+# ruff: noqa: F811 (pytest fixtures imported, then named as arguments)
 from __future__ import annotations
 
 import asyncio
+import json
+from datetime import UTC, datetime, timedelta
 from uuid import UUID
 
 import pytest
@@ -18,10 +22,23 @@ from conftest import add_catalogue
 from sqlalchemy import text
 from temporalio.client import Client
 from temporalio.testing import ActivityEnvironment
+from test_approvals import PUBLIC, awaiting  # noqa: F401 (fixtures)
+from test_dispatch_ledger import (  # noqa: F401 (fixtures)
+    approved,
+    client,
+    directory,
+    dispatcher_engine,
+    released,
+)
+from test_patch_review import drafted, review  # noqa: F401 (fixtures)
 
 from aisre.record import uuid7
+from aisre.record.execution import PgTrustedStore
 from aisre.record.transitions import Transition, record_transition
 from aisre.reliability import telemetry
+from aisre.remediation.action import development_verify_keys
+from aisre.remediation.dispatcher import Outcome
+from aisre.remediation.dispatcher_process import DispatcherActivities
 from aisre.workflow import activities as act
 from aisre.workflow.reconciliation import ReconciliationActivities
 
@@ -85,3 +102,46 @@ def test_t310_the_worker_creates_the_schedule_once(temporal_address):
         return desc.schedule.action.workflow, desc.schedule.action.task_queue
 
     assert asyncio.run(go()) == ("ReconciliationWorkflow", act.INVESTIGATION_QUEUE)
+
+
+def test_t311_st40_a_change_no_attempt_carries_pages_security(
+    app_engine,
+    dispatcher_engine,
+    approved,
+    released,
+    caplog,
+):
+    """The dispatcher's daily job, as aisre_dispatcher, over the fake release process: the
+    applied fix is matched by its attempt; an out-of-band change is not, and sets
+    aisre_release_changes_unmatched with an audit line."""
+    service, incident_id, action_id, blobs = approved
+    release, url = released
+    store = PgTrustedStore(dispatcher_engine, blobs)
+    acts = DispatcherActivities(
+        dispatcher_engine,
+        lambda s: client(url, s),
+        store,
+        development_verify_keys(PUBLIC),
+        directory(service),
+    )
+    res = asyncio.run(acts.dispatcher().execute(str(action_id)))
+    assert res.outcome == Outcome.APPLIED, res.reason
+    since = (datetime.now(UTC) - timedelta(hours=25)).isoformat()
+
+    def check() -> act.ReleaseReconciliationOut:
+        return asyncio.run(
+            ActivityEnvironment().run(
+                acts.reconcile_releases, act.ReleaseReconciliationIn("t311", since)
+            )
+        )
+
+    clean = check()
+    assert clean.unmatched == [] and clean.changes >= 1
+    assert telemetry.REGISTRY.get_sample_value("aisre_release_changes_unmatched") == 0
+    release.out_of_band({"set": {"ORDER_TAX_RATE_BPS": "9.5"}})
+    with caplog.at_level("WARNING", logger="aisre.audit"):
+        found = check()
+    assert len(found.unmatched) == 1 and " manual " in found.unmatched[0]
+    assert telemetry.REGISTRY.get_sample_value("aisre_release_changes_unmatched") == 1
+    (line,) = [r for r in caplog.records if "aisre.release.unmatched_change" in r.getMessage()]
+    assert json.loads(line.getMessage())["deployment"] == "orders-api-production"
