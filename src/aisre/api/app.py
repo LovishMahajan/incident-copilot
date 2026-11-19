@@ -80,7 +80,6 @@ from aisre.record import load_incident, make_engine, reads, timeline, uuid7
 from aisre.record.audit_copy import WriteOnceStore, store_from_settings
 from aisre.reliability import health, telemetry
 from aisre.remediation.action import Perm, Signer, development_signer
-from aisre.remediation.release import remediation_enabled
 
 REQUEST_ID_HEADER = "X-Request-ID"
 TIMELINE_PAGE_MAX = 500
@@ -505,6 +504,12 @@ def create_app(
     return app
 
 
+def approval_path_on(settings: Settings) -> bool:
+    """release.remediation_enabled's rule, restated: ST-39 keeps the release module out of the
+    API package (tests/unit/test_health.py holds the two equal)."""
+    return settings.env in ("development", "test") and settings.release_adapter == "fake_release"
+
+
 def api_health(settings: Settings, db: Engine, store: WriteOnceStore | None) -> health.Health:
     """The API's readiness checks and its probes: PostgreSQL and the object store (the audit
     copy). It never talks to Temporal (ADR-19), so it doesn't probe it."""
@@ -513,7 +518,7 @@ def api_health(settings: Settings, db: Engine, store: WriteOnceStore | None) -> 
         "schema_version": health.schema_version(db),
         "configuration": health.present("database URL", settings.database_url.get_secret_value()),
     }
-    if remediation_enabled(settings):  # the approval path is on: the API alone signs (ADR-73)
+    if approval_path_on(settings):  # the API alone signs decisions (ADR-73)
         readiness["approval_signing_key"] = health.present(
             "approval signing key", settings.approval_signing_key
         )
