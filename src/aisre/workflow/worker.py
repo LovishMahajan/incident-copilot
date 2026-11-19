@@ -109,7 +109,7 @@ from aisre.gateway.transport import AnthropicTransport
 from aisre.notify.notifier import Notifier
 from aisre.record import make_engine
 from aisre.record.audit_copy import store_from_settings
-from aisre.reliability import telemetry
+from aisre.reliability import health, telemetry
 from aisre.reliability.audit_jobs import AuditJobActivities, ensure_audit_jobs
 from aisre.reliability.temporal_telemetry import interceptors
 from aisre.remediation.release import remediation_enabled
@@ -321,6 +321,7 @@ async def run(settings: Settings, stop: asyncio.Event | None = None) -> None:
             await asyncio.gather(
                 Relay(engine, client).run(stop, on_pass=ALIVE_FILE.touch),
                 notifier.run(stop),
+                worker_health(settings, engine, client, store).run(stop),  # T4.5
             )
     finally:
         if transport is not None:
@@ -329,6 +330,23 @@ async def run(settings: Settings, stop: asyncio.Event | None = None) -> None:
         engine.dispose()
         if metrics is not None:
             metrics.shutdown()
+
+
+def worker_health(
+    settings: Settings, engine: Engine, client: Client, store: Any | None
+) -> health.Health:
+    """T4.5 (12.5): readiness is the database, the schema version and the configuration;
+    probes are PostgreSQL, Temporal and the object store (the audit copy), every 15 s. Sets
+    aisre_process_ready{process="worker"} and aisre_dependency_up."""
+    readiness = {
+        "database": health.database(engine),
+        "schema_version": health.schema_version(engine),
+        "configuration": health.present("Temporal address", settings.temporal_address),
+    }
+    dependencies = {"postgresql": health.database(engine), "temporal": health.temporal(client)}
+    if store is not None:
+        dependencies["object_store"] = health.object_store(store)
+    return health.Health("worker", readiness, dependencies)
 
 
 def is_alive(now: float | None = None) -> bool:

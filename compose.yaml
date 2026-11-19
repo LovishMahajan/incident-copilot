@@ -214,6 +214,9 @@ services:
       # The DEVELOPMENT approval signing key (ADR-73): the API alone signs decisions. Unset:
       # approval writes answer 503.
       AISRE_APPROVAL_SIGNING_KEY: ${AISRE_APPROVAL_SIGNING_KEY:-}
+      # T4.5: with the approval path on, /readyz also needs the signing key (12.5). The adapter
+      # name only; the API never holds the release URL or token.
+      AISRE_RELEASE_ADAPTER: ${AISRE_RELEASE_ADAPTER:-}
       # Unset: each start signs exports with a fresh key (development and test only).
       AISRE_EXPORT_SIGNING_KEY: ${AISRE_EXPORT_SIGNING_KEY:-}
       # Read-only use: a patch's diff for GET /v1/artifacts/{id}/content (M2). Unset: not served.

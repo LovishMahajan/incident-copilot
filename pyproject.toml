@@ -98,6 +98,7 @@ module = [
     "aisre.reliability.otlp",
     "aisre.reliability.audit_jobs",
     "aisre.reliability.temporal_telemetry",
+    "aisre.reliability.health",
     "aisre.record",
     "aisre.record.*",
     "aisre.api",
