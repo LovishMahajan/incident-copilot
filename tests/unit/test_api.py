@@ -156,3 +156,19 @@ def test_every_v1_route_declares_and_enforces_an_adr50_permission(client):
     assert spec["paths"]["/v1/incidents/{incident_id}/timeline"]["get"][PERMISSION_KEY] == (
         "incident:read"
     )
+
+
+def test_intake_answers_503_while_the_record_is_down(client):
+    """12.5, T4.2: never acknowledged without being stored, and not a 500."""
+    body = json.loads(ALERT.read_text())["incident_create"]
+    r = client.post(
+        "/v1/incidents",
+        json=body,
+        headers={
+            "Idempotency-Key": "t42-down-0001",
+            "X-Aisre-Dev-Caller": "monitoring",
+            "X-Aisre-Dev-Groups": "aisre:monitoring",
+        },
+    )
+    assert r.status_code == 503 and r.json()["code"] == "record_unavailable", r.text
+    assert r.headers["Retry-After"] == "30"

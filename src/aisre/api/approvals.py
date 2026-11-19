@@ -184,6 +184,8 @@ class Approvals:
     ) -> None:
         self.db, self.signer, self.clock = db, signer, clock
         self.policy = policy or ApprovalPolicy()
+        for code in _security_codes():  # each series exists at 0, so a first refusal after a
+            telemetry.approval_refused.labels(reason=code)  # restart counts in increase() (T4.6)
 
     # ------------------------------------------------------------------ reads
     def readable(self, request: Request, conn: Connection, caller: Caller, action_id: UUID) -> Any:
