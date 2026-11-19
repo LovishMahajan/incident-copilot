@@ -33,6 +33,8 @@ from aisre.remediation.sandbox import (
     validate_args,
 )
 
+ROOT = Path(__file__).resolve().parents[2]
+
 
 def spliced(*extra):
     a = launch_args(SandboxSpec(), "run1", "ws")
@@ -199,9 +201,105 @@ def test_st18_the_dispatcher_module_cannot_reach_the_signing_key():
     assert not imported & {"Signer", "Ed25519PrivateKey", "record_decision"}
 
 
-def test_st18_review_secrets_and_live_database_roles_need_real_systems():
+def _fake(name: str):
+    import importlib.util
+
+    spec = importlib.util.spec_from_file_location(
+        f"fake_{name}_st18", ROOT / f"ops/fakes/{name}.py"
+    )
+    assert spec and spec.loader
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def _call(url: str, method: str, body: dict | None = None, token: str | None = None) -> int:
+    import urllib.error
+    import urllib.request
+
+    req = urllib.request.Request(
+        url,
+        data=json.dumps(body or {}).encode(),
+        method=method,
+        headers={"Authorization": f"Bearer {token}"} if token else {},
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=5) as r:
+            return int(r.status)
+    except urllib.error.HTTPError as e:
+        return int(e.code)
+
+
+def _service_env(compose: dict, name: str) -> dict:
+    return compose["services"][name].get("environment") or {}
+
+
+def test_st18_only_the_dispatcher_holds_the_release_credential_and_it_has_no_docker():
+    """T3.12 on the stand-ins (ADR-51, ADR-73): in compose.yaml the release URL and token reach the
+    dispatcher only; the worker carries the adapter name alone, and the API, the worker and the
+    dispatcher mount no Docker socket (only the Test Runner, on the host, has Docker)."""
+    import yaml
+
+    compose = yaml.safe_load((ROOT / "compose.yaml").read_text())
+    holders = {
+        name
+        for name in compose["services"]
+        if {"AISRE_RELEASE_URL", "AISRE_RELEASE_TOKEN"} & set(_service_env(compose, name))
+    }
+    assert holders == {"dispatcher"}
+    assert set(_service_env(compose, "worker")) & {"AISRE_RELEASE_ADAPTER"}
+    for name in ("api", "worker", "dispatcher"):
+        volumes = " ".join(str(v) for v in compose["services"][name].get("volumes") or [])
+        assert "docker.sock" not in volumes, name
+    signing = {
+        name
+        for name in compose["services"]
+        if "AISRE_APPROVAL_SIGNING_KEY" in _service_env(compose, name)
+    }
+    assert signing <= {
+        "api"
+    }  # the Approval Service signs; the dispatcher holds the public key only
+
+
+def test_st18_without_the_release_credential_nothing_is_applied(tmp_path):
+    """A caller without the dispatcher's token (the worker holds none) is refused by the fake
+    release process, and the deployment is unchanged; the token works, as a control."""
+    release_fake = _fake("release")
+    repo = tmp_path / "orders-api"
+    release_fake.review.build(repo)
+    release = release_fake.Release(release_fake.review.Repo(repo, "main"), "main")
+    server = release_fake.serve(release, "the-dispatchers-token")
+    url = f"http://127.0.0.1:{server.server_address[1]}/v1/deployments/orders-api-production"
+    try:
+        body = {"execution_key": "k1", "base_revision": release.revision, "to_revision": "r1"}
+        assert _call(f"{url}/undo", "POST", body) == 401
+        assert _call(f"{url}/undo", "POST", body, token="a-worker-guess") == 401
+        assert _call(f"{url}/changes/k1", "GET", token="a-worker-guess") == 401
+        assert [h["kind"] for h in release.history] == ["start"]
+        control = {**body, "to_revision": release.revision}
+        assert _call(f"{url}/undo", "POST", control, token="the-dispatchers-token") == 200
+    finally:
+        server.shutdown()
+
+
+def test_st18_the_draft_pull_request_credential_cannot_merge(tmp_path):
+    """The worker's review credential opens draft pull requests only: the fake review system
+    refuses a merge, as a branch protection rule would. A real review system must enforce it."""
+    review_fake = _fake("review")
+    repo = tmp_path / "orders-api"
+    review_fake.build(repo)
+    review = review_fake.Review(review_fake.Repo(repo, "main"))
+    server = review_fake.serve(review)
+    base = f"http://127.0.0.1:{server.server_address[1]}/v1/repos/orders-api/pulls/1/merge"
+    try:
+        assert _call(base, "PUT", token="the-workers-review-token") == 403
+    finally:
+        server.shutdown()
+
+
+def test_st18_the_secrets_manager_and_the_real_systems_need_choosing():
     pytest.skip(
-        "Merging with the draft-pull-request credential, reading the secrets manager and calling the release "
-        "process as a worker need those real systems. Database-role rights are proved by schema-tests.sql "
-        "(see README), which needs PostgreSQL"
+        "No secrets manager, identity system or real release and review systems are chosen (ADR-73): the "
+        "signing key is a development key from settings, refused outside development and test. The stand-ins "
+        "are checked above; database-role rights against PostgreSQL in tests/integration/test_live_roles.py"
     )

@@ -157,4 +157,8 @@ def test_st15_a_new_commit_is_a_new_action_nobody_has_approved():
 
 
 def test_st15_review_lock_needs_a_review_system():
-    pytest.skip("The review lock lives in the review system; no reference module talks to one")
+    pytest.skip(
+        "The review lock is a real review system's branch protection (T3.12): the fake review system has no "
+        "push, so a commit added to a reviewed change can't be tried. On the M3 approval path what runs is "
+        "the stored patch, hashed at dispatch (ST-13), so a new commit is a new digest nobody approved (above)"
+    )
