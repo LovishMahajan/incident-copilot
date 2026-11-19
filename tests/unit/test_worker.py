@@ -99,3 +99,19 @@ def test_the_real_skills_replace_the_scripts_once_the_gateway_is_configured():
         assert isinstance(by_name[name].__self__, ModelSkills)
     assert by_name["draft_patch"].__module__ == "aisre.workflow.scripted"  # until M2
     assert worker.provider_transport(Settings.from_env({"AISRE_ENV": "test"})) is None
+
+
+def test_the_fake_release_adapter_turns_on_the_approval_path_and_nothing_else():
+    """ADR-73: the worker gets the adapter name, never the release credential. With it,
+    load_incident reports remediation enabled and verify_recovery is the T3.8 seam; without it,
+    Release A as in M2. Activity names stay unique either way."""
+    from aisre.workflow.record_activities import RecordActivities
+
+    for environ, enabled in (({"AISRE_RELEASE_ADAPTER": "fake_release"}, True), ({}, False)):
+        chosen = _activities(environ)
+        names = [worker.activity_name(a) for a in chosen]
+        assert len(names) == len(set(names))
+        load = next(a for a in chosen if worker.activity_name(a) == "load_incident")
+        assert isinstance(load.__self__, RecordActivities) and load.__self__.remediation is enabled
+        verify = next(a for a in chosen if worker.activity_name(a) == "verify_recovery")
+        assert (verify.__module__ == "aisre.workflow.worker") is enabled

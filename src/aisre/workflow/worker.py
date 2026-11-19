@@ -210,7 +210,7 @@ def investigation_activities(
         + (notifier or Notifier(engine)).activities()
     )
     if remediation_enabled(settings):
-        chosen.append(verify_recovery_not_built)
+        chosen.append(verify_recovery)
     if settings.scripted_skills:
         if settings.env == "production":
             raise RuntimeError("scripted skills are refused when AISRE_ENV is production")
@@ -224,7 +224,7 @@ def investigation_activities(
 
 
 @activity.defn(name="verify_recovery")
-async def verify_recovery_not_built(inp: act.VerifyIn) -> act.VerifyOut:
+async def verify_recovery(inp: act.VerifyIn) -> act.VerifyOut:
     """The seam for T3.8 (pass 2): until the Recovery Verifier exists, an applied fix gets no
     verdict at once, never a retry loop, so the workflow hands over saying a person decides."""
     raise ApplicationError(
