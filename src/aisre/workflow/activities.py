@@ -270,6 +270,46 @@ class VerifyIn:
 class VerifyOut:
     verification_id: str
     result: Literal["verified", "failed", "inconclusive"]
+    window_end: Optional[str] = None  # ISO 8601: where the post-change watch starts (T3.17)
+    watch_seconds: int = 0  # the post-change watch after a verified fix; 0: none
+
+
+@dataclass
+class WatchIn:
+    """One stretch of the post-change watch (11.12, T3.17): from `start` to `end` (ISO 8601),
+    returning early on a new flag. `flagged` holds the keys flagged already."""
+
+    action_id: str
+    verification_id: str
+    start: str
+    end: str
+    watch_key: str  # idempotency key
+    flagged: list[str] = field(default_factory=list)
+
+
+@dataclass
+class WatchFlagOut:
+    key: str
+    kind: str  # alert_breach | new_error_group
+    detail: str
+
+
+@dataclass
+class WatchOut:
+    flags: list[WatchFlagOut]
+    done: bool  # the watch reached its end
+
+
+@dataclass
+class ReleaseReconciliationIn:
+    idempotency_key: str
+    since: str  # ISO 8601: the change history from here on
+
+
+@dataclass
+class ReleaseReconciliationOut:
+    changes: int
+    unmatched: list[str]  # "<deployment> <at> <kind> <revision>" for each unmatched change
 
 
 @dataclass
@@ -614,7 +654,24 @@ async def resolve_outcome(inp: ResolutionIn) -> DispatchOut:
 @activity.defn(name="verify_recovery")
 async def verify_recovery(inp: VerifyIn) -> VerifyOut:
     """Recovery Verifier: reads monitoring directly for the hold period. Heartbeats. The
-    implementation counts aisre_verification_outcomes_total with action_kind and category."""
+    implementation counts aisre_verification_outcomes_total with action_kind and category.
+    Implementation: aisre.verification.verifier (T3.8)."""
+    raise NotImplementedError
+
+
+@activity.defn(name="watch_after_change")
+async def watch_after_change(inp: WatchIn) -> WatchOut:
+    """Post-change watch (11.12, T3.17): flags new error groups and breaches of the recovery
+    criteria after the hold period, as `aisre.verification.watch_flagged.v1` linked to the
+    action. Never rolls back. Heartbeats. Implementation: aisre.verification.verifier."""
+    raise NotImplementedError
+
+
+@activity.defn(name="reconcile_releases")
+async def reconcile_releases(inp: ReleaseReconciliationIn) -> ReleaseReconciliationOut:
+    """Trusted Dispatcher (T3.11, ST-40): the release process's change history against
+    `execution_attempts`. A change with no matching attempt is a security alert. Read-only.
+    Implementation: aisre.remediation.dispatcher_process."""
     raise NotImplementedError
 
 
@@ -649,8 +706,14 @@ ALL_INVESTIGATION_ACTIVITIES = [
     escalate_approval,
     close_approval_request,
     verify_recovery,
+    watch_after_change,
     hand_over,
     reconcile_workflows,
 ]
-ALL_DISPATCHER_ACTIVITIES = [dispatch_change, reconcile_execution, resolve_outcome]
+ALL_DISPATCHER_ACTIVITIES = [
+    dispatch_change,
+    reconcile_execution,
+    resolve_outcome,
+    reconcile_releases,
+]
 ALL_TEST_RUNNER_ACTIVITIES = [run_sandbox_test]  # with the reaper's reap_sandboxes (ADR-71)

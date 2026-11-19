@@ -115,3 +115,22 @@ def test_the_fake_release_adapter_turns_on_the_approval_path_and_nothing_else():
         assert isinstance(load.__self__, RecordActivities) and load.__self__.remediation is enabled
         verify = next(a for a in chosen if worker.activity_name(a) == "verify_recovery")
         assert (verify.__module__ == "aisre.workflow.worker") is enabled
+
+
+def test_with_a_monitoring_source_the_verifier_and_the_watch_are_real():
+    """T3.8, T3.17: the approval path plus AISRE_VERIFIER_MONITORING_URL gives the Recovery
+    Verifier both activities, with the configured watch; names stay unique."""
+    from aisre.verification.verifier import RecoveryVerifier
+
+    chosen = _activities(
+        {
+            "AISRE_RELEASE_ADAPTER": "fake_release",
+            "AISRE_VERIFIER_MONITORING_URL": "http://fake-monitoring:8080",
+            "AISRE_POST_CHANGE_WATCH_SECONDS": "120",
+        }
+    )
+    names = [worker.activity_name(a) for a in chosen]
+    assert len(names) == len(set(names))
+    for name in ("verify_recovery", "watch_after_change"):
+        fn = next(a for a in chosen if worker.activity_name(a) == name)
+        assert isinstance(fn.__self__, RecoveryVerifier) and fn.__self__.watch_seconds == 120

@@ -41,6 +41,12 @@ Approvals (M3, T3.2, ADR-73): `request_approval`, `escalate_approval` and
 enabled, so a tested fix asks for approval instead of handing over; the worker never holds the
 release URL or token, which are the dispatcher process's (aisre.remediation.dispatcher_process).
 
+Verification (M3, T3.8, T3.17): with the approval path on and `AISRE_VERIFIER_MONITORING_URL`
+set, `verify_recovery` and `watch_after_change` are the Recovery Verifier
+(aisre.verification.verifier), reading the fake monitoring source's live metrics. With the
+approval path on and no monitoring source, `verify_recovery` answers at once with a
+non-retryable error, so an applied fix is handed over saying a person decides.
+
 Budget jobs (T1.21): the worker registers BudgetJobWorkflow with the ledger's expiry and
 reconciliation activities, over PostgreSQL, and starts both jobs if they aren't running
 (aisre.workflow.budget_jobs).
@@ -103,6 +109,7 @@ from aisre.reliability.audit_jobs import AuditJobActivities, ensure_audit_jobs
 from aisre.reliability.temporal_telemetry import interceptors
 from aisre.remediation.release import remediation_enabled
 from aisre.remediation.review import ReviewActivities, client_from_settings
+from aisre.verification.verifier import LiveMonitoring, RecoveryVerifier
 from aisre.workflow import activities as act
 from aisre.workflow import scripted
 from aisre.workflow.approval_activities import ApprovalActivities
@@ -210,7 +217,7 @@ def investigation_activities(
         + (notifier or Notifier(engine)).activities()
     )
     if remediation_enabled(settings):
-        chosen.append(verify_recovery)
+        chosen += verifier_activities(settings, engine)
     if settings.scripted_skills:
         if settings.env == "production":
             raise RuntimeError("scripted skills are refused when AISRE_ENV is production")
@@ -223,12 +230,25 @@ def investigation_activities(
     return chosen + [a for a in interfaces if activity_name(a) not in names]
 
 
+def verifier_activities(settings: Settings, engine: Engine) -> list[Callable[..., Any]]:
+    """T3.8, T3.17: the Recovery Verifier over the monitoring source; without one, the seam."""
+    if settings.verifier_monitoring_url is None:
+        return [verify_recovery]
+    monitoring = LiveMonitoring(settings.verifier_monitoring_url)
+    verifier = RecoveryVerifier(
+        engine, monitoring, watch_seconds=settings.post_change_watch_seconds
+    )
+    return verifier.all()
+
+
 @activity.defn(name="verify_recovery")
 async def verify_recovery(inp: act.VerifyIn) -> act.VerifyOut:
-    """The seam for T3.8 (pass 2): until the Recovery Verifier exists, an applied fix gets no
-    verdict at once, never a retry loop, so the workflow hands over saying a person decides."""
+    """No monitoring source configured: an applied fix gets no verdict at once, never a retry
+    loop, so the workflow hands over saying a person decides."""
     raise ApplicationError(
-        "verify_recovery is not built yet (T3.8): no verdict", type="NotBuilt", non_retryable=True
+        "no monitoring source (AISRE_VERIFIER_MONITORING_URL): no verdict",
+        type="NoMonitoring",
+        non_retryable=True,
     )
 
 

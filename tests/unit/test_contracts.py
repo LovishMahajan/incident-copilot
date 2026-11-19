@@ -174,7 +174,7 @@ def artifact_event_types() -> set[str]:
 
 
 def test_every_event_type_in_the_artifact_has_a_payload_model():
-    assert len(c.EVENT_DATA) == 43
+    assert len(c.EVENT_DATA) == 45
     assert set(c.EVENT_DATA) == artifact_event_types()
 
 
