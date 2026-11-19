@@ -173,3 +173,22 @@ def test_the_command_exits_0_when_release_a_holds(paging):
     args = ["pilot", "check", "--service", "orders-api", "--alertmanager", str(paging)]
     assert cli.main(args, GOOD, out) == 0
     assert out.getvalue().splitlines()[-1].endswith("Release A holds")
+
+
+def test_evidence_credentials_referenced_must_be_present_and_are_never_printed(paging):
+    dd = {
+        "adapter": "datadog",
+        "api_key": {"env": "DD_API_KEY"},
+        "app_key": {"env": "DD_APP_KEY"},
+    }
+    env = {
+        **GOOD,
+        "AISRE_EVIDENCE_SOURCES": json.dumps(
+            {"services": {**EVIDENCE["services"], "orders-api": {"get_metric": dd}}}
+        ),
+    }
+    bad = [r for r in failing(env, paging) if r.name.startswith("evidence credentials")]
+    assert len(bad) == 1 and "DD_API_KEY" in bad[0].detail and "DD_APP_KEY" in bad[0].detail
+    present = {**env, "DD_API_KEY": SECRET, "DD_APP_KEY": SECRET}
+    assert not [r for r in failing(present, paging) if r.name.startswith("evidence credentials")]
+    assert SECRET not in "".join(r.line() for r in check.run(present, ["orders-api"], paging))

@@ -133,7 +133,7 @@ def check_settings(environ: Mapping[str, str], services: Sequence[str]) -> list[
         )
     )
     out.append(_model(s))
-    out += _evidence(s, services)
+    out += _evidence(s, services, environ)
     return out
 
 
@@ -155,7 +155,7 @@ def _model(s: Settings) -> Check:
     return Check(name, not problems, "; ".join(problems))
 
 
-def _evidence(s: Settings, services: Sequence[str]) -> list[Check]:
+def _evidence(s: Settings, services: Sequence[str], environ: Mapping[str, str]) -> list[Check]:
     if s.evidence_sources is None:
         return [Check("evidence sources configured", False, "set AISRE_EVIDENCE_SOURCES")]
     try:
@@ -163,6 +163,19 @@ def _evidence(s: Settings, services: Sequence[str]) -> list[Check]:
     except (ValueError, TypeError) as e:
         return [Check("evidence sources load in production", False, str(e))]
     out = [Check("evidence sources load in production", True)]
+    adapters = [
+        *sources.sources.values(),
+        *(a for m in sources.services.values() for a in m.values()),
+    ]
+    refs = {r.describe(): r for a in adapters for r in getattr(a, "credentials", ())}
+    absent = sorted(d for d, r in refs.items() if not r.present(environ))
+    out.append(
+        Check(
+            "evidence credentials referenced are present (not that they work)",
+            not absent,
+            f"missing: {'; '.join(absent)}" if absent else "",
+        )
+    )
     if not services:
         out.append(Check("pilot services named", False, "name each with --service"))
     for service in services:

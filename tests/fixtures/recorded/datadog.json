@@ -1,0 +1,383 @@
+{
+ "_source": "Datadog API: Query timeseries points GET /api/v1/query (API v1) https://docs.datadoghq.com/api/latest/metrics/#query-timeseries-points ; Search logs POST /api/v2/logs/events/search (API v2) https://docs.datadoghq.com/api/latest/logs/#search-logs ; Get a list of events GET /api/v1/events (API v1) https://docs.datadoghq.com/api/latest/events/#get-a-list-of-events",
+ "exchanges": [
+  {
+   "method": "GET",
+   "path": "/api/v1/query",
+   "when": [
+    "by {version}",
+    "trace.http.request.hits"
+   ],
+   "status": 200,
+   "body": {
+    "status": "ok",
+    "res_type": "time_series",
+    "from_date": 1795082400000,
+    "to_date": 1795086000000,
+    "query": "...",
+    "series": [
+     {
+      "metric": "trace.http.request.hits",
+      "display_name": "trace.http.request.hits",
+      "pointlist": [
+       [
+        1795082400000.0,
+        400.0
+       ],
+       [
+        1795082460000.0,
+        390.0
+       ]
+      ],
+      "scope": "env:production,service:orders-api,version:1.4.0",
+      "tag_set": [
+       "env:production",
+       "service:orders-api",
+       "version:1.4.0"
+      ],
+      "expression": "...",
+      "interval": 60,
+      "length": 2,
+      "start": 1795082400000,
+      "end": 1795082460000,
+      "aggr": "sum",
+      "unit": null
+     },
+     {
+      "metric": "trace.http.request.hits",
+      "display_name": "trace.http.request.hits",
+      "pointlist": [
+       [
+        1795082400000.0,
+        30.0
+       ],
+       [
+        1795082460000.0,
+        35.0
+       ]
+      ],
+      "scope": "env:production,service:orders-api,version:1.3.2",
+      "tag_set": [
+       "env:production",
+       "service:orders-api",
+       "version:1.3.2"
+      ],
+      "expression": "...",
+      "interval": 60,
+      "length": 2,
+      "start": 1795082400000,
+      "end": 1795082460000,
+      "aggr": "sum",
+      "unit": null
+     }
+    ]
+   }
+  },
+  {
+   "method": "GET",
+   "path": "/api/v1/query",
+   "when": [
+    "by {version}"
+   ],
+   "status": 200,
+   "body": {
+    "status": "ok",
+    "res_type": "time_series",
+    "from_date": 1795082400000,
+    "to_date": 1795086000000,
+    "query": "...",
+    "series": [
+     {
+      "metric": "trace.http.request.errors",
+      "display_name": "errors",
+      "pointlist": [
+       [
+        1795082400000.0,
+        0.22
+       ],
+       [
+        1795082460000.0,
+        0.25
+       ]
+      ],
+      "scope": "env:production,service:orders-api,version:1.4.0",
+      "tag_set": [
+       "env:production",
+       "service:orders-api",
+       "version:1.4.0"
+      ],
+      "expression": "...",
+      "interval": 60,
+      "length": 2,
+      "start": 1795082400000,
+      "end": 1795082460000,
+      "aggr": "sum",
+      "unit": null
+     },
+     {
+      "metric": "trace.http.request.errors",
+      "display_name": "errors",
+      "pointlist": [
+       [
+        1795082400000.0,
+        0.0
+       ],
+       [
+        1795082460000.0,
+        null
+       ]
+      ],
+      "scope": "env:production,service:orders-api,version:1.3.2",
+      "tag_set": [
+       "env:production",
+       "service:orders-api",
+       "version:1.3.2"
+      ],
+      "expression": "...",
+      "interval": 60,
+      "length": 2,
+      "start": 1795082400000,
+      "end": 1795082460000,
+      "aggr": "sum",
+      "unit": null
+     },
+     {
+      "metric": "trace.http.request.errors",
+      "display_name": "errors",
+      "pointlist": [
+       [
+        1795082400000.0,
+        0.9
+       ]
+      ],
+      "scope": "env:staging,service:orders-api,version:2.0.0",
+      "tag_set": [
+       "env:staging",
+       "service:orders-api",
+       "version:2.0.0"
+      ],
+      "expression": "...",
+      "interval": 60,
+      "length": 1,
+      "start": 1795082400000,
+      "end": 1795082400000,
+      "aggr": "sum",
+      "unit": null
+     }
+    ]
+   }
+  },
+  {
+   "method": "GET",
+   "path": "/api/v1/query",
+   "when": [
+    "http.5xx"
+   ],
+   "status": 200,
+   "body": {
+    "status": "ok",
+    "res_type": "time_series",
+    "from_date": 1795082400000,
+    "to_date": 1795086000000,
+    "query": "...",
+    "series": [
+     {
+      "metric": "http.5xx",
+      "display_name": "http.5xx",
+      "pointlist": [
+       [
+        1795082400000.0,
+        0.01
+       ],
+       [
+        1795082460000.0,
+        0.2
+       ]
+      ],
+      "scope": "env:production,service:orders-api",
+      "tag_set": [],
+      "expression": "...",
+      "interval": 60,
+      "length": 2,
+      "start": 1795082400000,
+      "end": 1795082460000,
+      "aggr": "avg",
+      "unit": null
+     }
+    ]
+   }
+  },
+  {
+   "method": "GET",
+   "path": "/api/v1/query",
+   "when": [
+    "http.requests"
+   ],
+   "status": 200,
+   "body": {
+    "status": "ok",
+    "res_type": "time_series",
+    "series": [
+     {
+      "metric": "http.requests",
+      "pointlist": [
+       [
+        1795082400000.0,
+        450.0
+       ],
+       [
+        1795082460000.0,
+        445.0
+       ]
+      ],
+      "scope": "env:production,service:orders-api",
+      "tag_set": [],
+      "expression": "...",
+      "interval": 60,
+      "length": 2,
+      "aggr": "sum",
+      "unit": null
+     }
+    ]
+   }
+  },
+  {
+   "method": "GET",
+   "path": "/api/v1/query",
+   "when": [
+    "latency"
+   ],
+   "status": 403,
+   "body": {
+    "errors": [
+     "Forbidden"
+    ]
+   }
+  },
+  {
+   "method": "POST",
+   "path": "/api/v2/logs/events/search",
+   "status": 200,
+   "body": {
+    "data": [
+     {
+      "id": "AQAAAYvXbXVTA",
+      "type": "log",
+      "attributes": {
+       "timestamp": "2026-11-19T10:00:05.120Z",
+       "status": "error",
+       "service": "orders-api",
+       "host": "orders-api-7f9c",
+       "message": "checkout failed",
+       "tags": [
+        "env:production",
+        "service:orders-api",
+        "version:1.4.0"
+       ],
+       "attributes": {
+        "error": {
+         "kind": "KeyError",
+         "message": "'currency'",
+         "stack": "Traceback ..."
+        },
+        "http": {
+         "method": "POST",
+         "url_details": {
+          "path": "/checkout"
+         },
+         "status_code": 500
+        },
+        "trace_id": "4bf92f3577b34da6a3ce929d0e0e4736",
+        "version": "1.4.0"
+       }
+      }
+     },
+     {
+      "id": "AQAAAYvXbXVTB",
+      "type": "log",
+      "attributes": {
+       "timestamp": "2026-11-19T10:00:07.000Z",
+       "status": "warn",
+       "service": "orders-api",
+       "host": "orders-api-7f9c",
+       "message": "retrying payment call",
+       "tags": [
+        "env:production",
+        "service:orders-api"
+       ],
+       "attributes": {}
+      }
+     },
+     {
+      "id": "AQAAAYvXbXVTC",
+      "type": "log",
+      "attributes": {
+       "timestamp": "2026-11-19T10:00:08.000Z",
+       "status": "error",
+       "service": "payments-api",
+       "host": "payments-1",
+       "message": "another service",
+       "tags": [
+        "env:production",
+        "service:payments-api"
+       ],
+       "attributes": {}
+      }
+     }
+    ],
+    "links": {
+     "next": "https://api.datadoghq.com/api/v2/logs/events?page[cursor]=eyJhZnRlciI6IkFRQUFBWXZYYlhWVEMifQ"
+    },
+    "meta": {
+     "elapsed": 132,
+     "page": {
+      "after": "eyJhZnRlciI6IkFRQUFBWXZYYlhWVEMifQ"
+     },
+     "request_id": "pddv1ChZ",
+     "status": "done"
+    }
+   }
+  },
+  {
+   "method": "GET",
+   "path": "/api/v1/events",
+   "status": 200,
+   "body": {
+    "status": "ok",
+    "events": [
+     {
+      "id": 7531902345123456789,
+      "title": "Deployed orders-api 1.4.0",
+      "text": "canary to 100%",
+      "date_happened": 1795082280,
+      "alert_type": "info",
+      "priority": "normal",
+      "source_type_name": "my_apps",
+      "tags": [
+       "service:orders-api",
+       "env:production",
+       "version:1.4.0",
+       "previous_version:1.3.2"
+      ],
+      "url": "/event/event?id=7531902345123456789"
+     },
+     {
+      "id": 7531902345123456790,
+      "title": "Deployed payments-api 9.9.9",
+      "text": "",
+      "date_happened": 1795082100,
+      "alert_type": "info",
+      "priority": "normal",
+      "source_type_name": "my_apps",
+      "tags": [
+       "service:payments-api",
+       "env:production",
+       "version:9.9.9"
+      ],
+      "url": "/event/event?id=7531902345123456790"
+     }
+    ]
+   }
+  }
+ ]
+}
