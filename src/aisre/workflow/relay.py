@@ -41,13 +41,14 @@ from temporalio.service import RPCError, RPCStatusCode
 from aisre.record import SIGNAL_WORKFLOW, START_WORKFLOW
 from aisre.record.tables import outbox
 from aisre.reliability import telemetry
-from aisre.workflow.activities import INVESTIGATION_QUEUE
+from aisre.workflow.activities import INVESTIGATION_QUEUE, ResolutionIn
 from aisre.workflow.workflow import (
     ApprovalSignal,
     CancelSignal,
     IncidentWorkflow,
     IncidentWorkflowInput,
     LeadSignal,
+    OutcomeResolutionWorkflow,
 )
 
 log = logging.getLogger(__name__)
@@ -56,6 +57,7 @@ BATCH = 50
 MAX_BACKOFF = timedelta(minutes=1)
 IDLE_WAIT_S = 0.5  # between passes when caught up; NFR-31 wants p95 <= 1 s
 ERROR_TEXT_MAX = 1000
+RESOLUTION = "OutcomeResolutionWorkflow"  # a start row's `workflow`, else IncidentWorkflow
 SIGNALS: dict[str, type[Any]] = {
     "approval_decided": ApprovalSignal,
     "cancellation_requested": CancelSignal,
@@ -141,7 +143,18 @@ class Relay:
 
     async def deliver(self, m: Message) -> None:
         """Start or signal the workflow. Raises on anything but success or "already started"."""
-        if m.kind == START_WORKFLOW:
+        if m.kind == START_WORKFLOW and m.payload.get("workflow") == RESOLUTION:
+            try:  # T3.16: a person's outcome resolution, for the dispatcher to write
+                await self.client.start_workflow(
+                    OutcomeResolutionWorkflow.run,
+                    ResolutionIn(**m.payload["arg"]),
+                    id=m.workflow_id,
+                    task_queue=self.task_queue,
+                    id_reuse_policy=WorkflowIDReusePolicy.REJECT_DUPLICATE,
+                )
+            except WorkflowAlreadyStartedError:
+                pass
+        elif m.kind == START_WORKFLOW:
             try:
                 await self.client.start_workflow(
                     IncidentWorkflow.run,

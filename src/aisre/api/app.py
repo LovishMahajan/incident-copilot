@@ -48,7 +48,7 @@ from sqlalchemy import Engine, text
 from starlette.exceptions import HTTPException
 
 from aisre.api import audit, observe
-from aisre.api.approvals import Approvals
+from aisre.api.approvals import Approvals, stop_check
 from aisre.api.approvals import register as register_approvals
 from aisre.api.auth import Authenticator, Caller, current_caller
 from aisre.api.commands import Commands, parse_if_match
@@ -223,7 +223,7 @@ def create_app(
             Perm.CANCEL,
             idempotency_key,
             body,
-            lambda c, inc: cmd.cancel(c, inc, caller.caller_id, body.reason),
+            lambda c, inc: cmd.cancel(c, inc, caller.caller_id, body.reason, stop_check(caller)),
             status=202,
         )
 

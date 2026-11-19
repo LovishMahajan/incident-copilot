@@ -342,3 +342,52 @@ def test_the_dispatcher_role_writes_nothing_else(dispatcher_engine, approved):
             text("UPDATE incidents SET status = 'closed' WHERE incident_id = :i"),
             {"i": UUID(incident_id)},
         )
+
+
+# ---------------------------------------------------------------- T3.5: the process's activities
+def test_dispatch_change_returns_the_attempt_and_the_cancel_route_writes_the_stop(
+    app_engine, settings, dispatcher_engine, approved, released, catalogue
+):
+    """FR-56: the cancellation route checks action.request_stop and writes the stop the
+    dispatcher refuses on; a fresh action's dispatch_change gives its attempt ID."""
+    from temporalio.testing import ActivityEnvironment
+
+    from aisre.remediation.dispatcher_process import DispatcherActivities
+    from aisre.workflow import activities as act
+
+    org, _, _ = catalogue
+    service, incident_id, action_id, blobs = approved
+    _, url = released
+    acts = DispatcherActivities(
+        dispatcher_engine,
+        lambda store: client(url, store),
+        PgTrustedStore(dispatcher_engine, blobs),
+        development_verify_keys(PUBLIC),
+        directory(service),
+    )
+    with client_for(settings, app_engine) as c:
+        r = c.post(
+            f"/v1/incidents/{incident_id}/cancellation",
+            json={"reason": "stop before it ships"},
+            headers=headers(org, service, "rin", "responder"),
+        )
+    assert r.status_code == 202, r.json()
+    out = asyncio.run(
+        ActivityEnvironment().run(acts.dispatch_change, act.DispatchIn(str(action_id)))
+    )
+    assert out.outcome == "refused" and "stop requested by user:rin" in out.refusal_reason
+    assert out.attempt_id == "" and attempts(app_engine, action_id) == []
+
+
+def test_the_cancel_route_refuses_a_caller_whose_groups_give_no_cancel(
+    app_engine, settings, approved, catalogue
+):
+    org, _, _ = catalogue
+    service, incident_id, action_id, _ = approved
+    with client_for(settings, app_engine) as c:
+        r = c.post(
+            f"/v1/incidents/{incident_id}/cancellation",
+            json={"reason": "just looking around"},
+            headers=headers(org, service, "vic", "viewer"),
+        )
+    assert r.status_code == 403

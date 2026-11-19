@@ -271,6 +271,8 @@ services:
       AISRE_REVIEW_ADAPTER: ${AISRE_REVIEW_ADAPTER:-}
       AISRE_REVIEW_URL: ${AISRE_REVIEW_URL:-}
       AISRE_REVIEW_TOKEN: ${AISRE_REVIEW_TOKEN:-}
+      # M3 (ADR-73): the adapter alone turns on the approval path. Never the URL or the token.
+      AISRE_RELEASE_ADAPTER: ${AISRE_RELEASE_ADAPTER:-}
     command: ["python", "-m", "aisre.workflow.worker"]
     healthcheck:
       # The worker touches this file after every relay pass (aisre.workflow.worker).
@@ -278,6 +280,34 @@ services:
       interval: 5s
       timeout: 5s
       retries: 12
+
+  dispatcher:
+    # M3 (T3.5, ADR-51, ADR-73): the trusted dispatcher, its own process on the aisre-dispatcher
+    # queue, as aisre_dispatcher. The only holder of the release credential; no Docker socket.
+    <<: *app
+    depends_on:
+      <<: *app-depends
+      fake-release:
+        condition: service_healthy
+      token-issuer:
+        condition: service_healthy
+    environment:
+      AISRE_ENV: ${AISRE_ENV:-development}
+      AISRE_DISPATCHER_DATABASE_URL: ${AISRE_DISPATCHER_DATABASE_URL}
+      AISRE_TEMPORAL_ADDRESS: ${AISRE_TEMPORAL_ADDRESS}
+      AISRE_TEMPORAL_NAMESPACE: ${AISRE_TEMPORAL_NAMESPACE}
+      AISRE_LOG_LEVEL: ${AISRE_LOG_LEVEL:-INFO}
+      AISRE_RELEASE_ADAPTER: ${AISRE_RELEASE_ADAPTER:-}
+      AISRE_RELEASE_URL: ${AISRE_RELEASE_URL:-}
+      AISRE_RELEASE_TOKEN: ${AISRE_RELEASE_TOKEN:-}
+      AISRE_APPROVAL_VERIFY_KEY: ${AISRE_APPROVAL_VERIFY_KEY:-}
+      AISRE_IDENTITY_DIRECTORY_URL: ${AISRE_IDENTITY_DIRECTORY_URL:-}
+      # Read-only use: the patch bytes it hashes and sends (ST-13).
+      AISRE_OBJECT_STORE_URL: ${AISRE_OBJECT_STORE_URL:-}
+      AISRE_OBJECT_STORE_BUCKET: ${AISRE_OBJECT_STORE_BUCKET:-aisre-artifacts}
+      AISRE_OBJECT_STORE_ACCESS_KEY: ${AISRE_OBJECT_STORE_ACCESS_KEY:-}
+      AISRE_OBJECT_STORE_SECRET_KEY: ${AISRE_OBJECT_STORE_SECRET_KEY:-}
+    command: ["python", "-m", "aisre.remediation.dispatcher_process"]
 
   corpus-seed:
     # DEVELOPMENT ONLY (T1.17): the synthetic runbook corpus, into the development
