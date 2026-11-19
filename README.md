@@ -128,6 +128,8 @@ Writes send a fresh `Idempotency-Key` unless `--key` gives one. A refusal prints
 
 **Readiness and probes** (T4.5, Artifact 12.5). `/livez` is only that the API answers. `/readyz` checks the database, the schema version (the Alembic head the code expects, `aisre.reliability.health.SCHEMA_HEAD`), the configuration and, with the approval path on, the approval signing key; never Temporal, the model provider or the collector. The worker and the dispatcher run the same checks (the dispatcher's also include the global write fence) and publish them as `aisre_process_ready{process}` on `/metrics`; they have no HTTP probe of their own, and Compose's health check for the worker is still `--check-alive`. Every 15 s each process probes what it uses and sets `aisre_dependency_up{dependency}`: postgresql, temporal (worker, dispatcher), object_store (API, worker), release_process (dispatcher).
 
+**The investigation queue** (T4.3). `acquire_investigation_slot` is real from M4 (`aisre.workflow.queue_activities`, `aisre.record.queue`): each incident queues in `investigation_queue` under its run, at most 5 run at once, the next slot goes by severity (confirmed, else proposed, else last) then age, and one service never holds more than 4. A queued incident tells on-call once (`queued`); beyond 50 waiting the incident lead is told (`queue_overflow`) and `AisreQueueDepthHigh` pages them. Nothing is dropped; the row goes when the incident leaves `investigating`. `tests/integration/test_queue.py` runs a burst of 60 through the activity in seconds.
+
 **Integration tests** run from the host against the stack, with test settings. The owner URL lets the audit copy's tamper tests (ST-31, ST-32) run; without it they skip:
 
 ```
