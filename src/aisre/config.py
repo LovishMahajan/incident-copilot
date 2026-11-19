@@ -81,6 +81,13 @@ ENV_VARS: dict[str, str] = {
 }
 
 
+def referenced_value(name: str, environ: Mapping[str, str] | None = None) -> str:
+    """A credential an adapter names by reference (aisre.evidence.sources.SecretRef, ADR-75),
+    read when a call needs it. The one read of the environment outside Settings, kept here so
+    no other module reads the environment."""
+    return (os.environ if environ is None else environ).get(name, "")
+
+
 class Settings(BaseModel):
     """One process's settings. Defaults suit a local development stack and hold no secret."""
 

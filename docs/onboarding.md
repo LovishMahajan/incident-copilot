@@ -40,7 +40,60 @@ INSERT INTO environments (environment_id, org_id, slug) VALUES ('<uuid7>', '<org
 
 Lookup is most specific first: `payments-api/production`, then `payments-api`, then `"sources"`. A service no scope covers gets a `gap` for every source, never another service's data, and the diagnosis says what is missing. A misspelt tool or an unknown adapter stops the worker at start.
 
-Each adapter's arguments are its own (its module docstring). Credentials are named by reference, an environment variable or a secret file, never written into this JSON. **Today the only adapter is `fake_monitoring`, local use only and refused in production**; the Prometheus and Loki, Datadog and CloudWatch adapters are the next pass's work (ADR-75), and until one is configured the go-live check fails.
+Each adapter's arguments are its own (its module docstring). Credentials are named by reference, `{"env": "NAME"}` or `{"file": "/path"}`, never written into this JSON; a value given directly is refused at start. Queries are yours: `$service` and `$environment` are put in for each call, quoted for the query language, and `$levels` (logs) is the levels asked for. Each metric is `{"value": query, "requests": query}` (`requests` is optional, and only read for `http_5xx_rate` and `error_rate_by_version`, whose query returns one series per version). `fake_monitoring` is local use only and refused in production. The real adapters, all read-only and **tested against recorded responses only, not yet against a real account** (ADR-75):
+
+| Adapter | Tools | Credentials |
+| --- | --- | --- |
+| `prometheus` | `get_metric` (HTTP API v1 `query_range`) | optional bearer `token`, or `username` and `token` for basic auth; optional `tenant` |
+| `loki` | `get_logs` (`/loki/api/v1/query_range`) | as Prometheus |
+| `datadog` | `get_metric` (v1 query), `get_logs` (v2 logs search), `get_changes` (v1 events) | `api_key` and `app_key`, the application key scoped read-only; `site` |
+| `cloudwatch` | `get_metric` (GetMetricData), `get_logs` (FilterLogEvents) | the standard AWS chain (optional `profile`); needs the `aws` extra, `uv sync --extra aws` |
+
+No adapter answers `get_alert`, `get_traces`, `get_error_groups` or `get_dependency_health` yet, so the go-live check fails until each has a source or the check is changed (ADR-75). Prometheus and Loki:
+
+```json
+{"services": {"payments-api/production": {
+  "get_metric": {"adapter": "prometheus", "url": "https://prometheus.internal.example",
+    "token": {"file": "/run/secrets/prometheus-token"},
+    "metrics": {
+      "http_5xx_rate": {
+        "value": "sum(rate(http_requests_total{service=\"$service\",env=\"$environment\",code=~\"5..\"}[1m])) / sum(rate(http_requests_total{service=\"$service\",env=\"$environment\"}[1m]))",
+        "requests": "sum(increase(http_requests_total{service=\"$service\",env=\"$environment\"}[1m]))"},
+      "error_rate_by_version": {
+        "value": "sum by (version) (rate(http_requests_total{service=\"$service\",code=~\"5..\"}[1m])) / sum by (version) (rate(http_requests_total{service=\"$service\"}[1m]))",
+        "requests": "sum by (version) (increase(http_requests_total{service=\"$service\"}[1m]))"}},
+    "environment_label": "env"},
+  "get_logs": {"adapter": "loki", "url": "https://loki.internal.example", "tenant": "payments",
+    "token": {"env": "LOKI_READ_TOKEN"},
+    "query": "{service=\"$service\", env=\"$environment\"} | json | level=~\"$levels\"",
+    "environment_label": "env"}}}}
+```
+
+Datadog (`$levels` becomes `(error OR warn)`, or the one level asked for):
+
+```json
+{"services": {"payments-api/production": {"*": {"adapter": "datadog", "site": "datadoghq.eu",
+  "api_key": {"env": "DD_API_KEY"}, "app_key": {"file": "/run/secrets/dd-app-key-readonly"},
+  "metrics": {
+    "http_5xx_rate": {"value": "sum:trace.http.request.errors{service:$service,env:$environment}.as_rate() / sum:trace.http.request.hits{service:$service,env:$environment}.as_rate()",
+      "requests": "sum:trace.http.request.hits{service:$service,env:$environment}.as_count()"},
+    "error_rate_by_version": {"value": "sum:trace.http.request.errors{service:$service,env:$environment} by {version}.as_rate() / sum:trace.http.request.hits{service:$service,env:$environment} by {version}.as_rate()",
+      "requests": "sum:trace.http.request.hits{service:$service,env:$environment} by {version}.as_count()"}},
+  "logs_query": "service:$service env:$environment status:$levels",
+  "events_tags": "service:$service,env:$environment", "events_sources": "github"}}}}
+```
+
+Deployment events need `service:`, `env:` and `version:` tags (and `previous_version:` if you have it); Datadog doesn't hold the files or configuration keys a release changed, so the fact rules have less to go on than with a full change history. CloudWatch (the worker's role needs only `cloudwatch:GetMetricData` and `logs:FilterLogEvents` on the service's log groups):
+
+```json
+{"services": {"payments-api/production": {"*": {"adapter": "cloudwatch", "region": "eu-west-1",
+  "metrics": {
+    "http_5xx_rate": {"value": "SUM(SEARCH('{App,Service,Env} Service=\"$service\" Env=\"$environment\" MetricName=\"5xxRate\"', 'Average', 60))",
+      "requests": "SUM(SEARCH('{App,Service,Env} Service=\"$service\" Env=\"$environment\" MetricName=\"Requests\"', 'Sum', 60))"},
+    "error_rate_by_version": {"value": "SEARCH('{App,Service,Env,version} Service=\"$service\" Env=\"$environment\" MetricName=\"5xxRate\"', 'Average', 60)"}},
+  "log_group": "/ecs/$service-$environment",
+  "filter_pattern": "{ $.level = \"error\" || $.level = \"warn\" }"}}}}
+```
 
 ## 3. Runbooks and past incidents
 
