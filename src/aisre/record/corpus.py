@@ -26,6 +26,7 @@ from sqlalchemy import (
     Text,
     insert,
     select,
+    text,
 )
 from sqlalchemy.dialects.postgresql import ARRAY, JSONB, TIMESTAMP
 from sqlalchemy.dialects.postgresql import UUID as PgUUID
@@ -247,3 +248,15 @@ def ingest(
         "misses": b.misses,
         "report": b.report,
     }
+
+
+def purge_document_text(conn: Connection, document_id: UUID, reason: str) -> int:
+    """T4.11 (WR-36, Q10.55): one document version's text out of PostgreSQL, as aisre_retention
+    (migration 0012): the body and every chunk blanked, the hashes kept, the evidence citing
+    that version marked "content removed". Returns how many evidence records were marked; a
+    second call marks none and changes nothing. Retrieval stops finding it at once, since its
+    chunks are empty; a new revision without it is the ingest pipeline's (10.9)."""
+    marked = conn.execute(
+        text("SELECT purge_document_text(:d, :r)"), {"d": document_id, "r": reason}
+    ).scalar_one()
+    return int(marked)
