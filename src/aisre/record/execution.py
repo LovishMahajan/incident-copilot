@@ -44,6 +44,7 @@ from aisre.record.incidents import uuid7
 from aisre.remediation.action import Decision, ImmutableAction, ImpactFacts
 from aisre.remediation.dispatcher import (
     ACTION_STATUS,
+    LATE_APPLY,
     DeploymentBlock,
     LedgerEntry,
     LedgerState,
@@ -367,10 +368,37 @@ class PgLedger:
             return [DeploymentBlock(deployment, str(r[0]), str(r[1])) for r in rows]
 
     def block_late_apply(self, e: LedgerEntry) -> None:
-        raise NotImplementedError("T3.7")
+        """T3.7, FR-55: a call answered after reconciliation recorded `not_applied`. The block goes
+        back, once per key, on the attempt the late call belonged to; only a person clears it."""
+        with self.engine.begin() as conn:
+            conn.execute(
+                text(
+                    "INSERT INTO deployment_blocks (attempt_id, action_id, reason, target_deployment) "
+                    "SELECT e.attempt_id, e.action_id, :why, a.target_deployment "
+                    "FROM execution_attempts e JOIN actions a ON a.action_id = e.action_id "
+                    "WHERE e.execution_key = :k AND e.attempt_no = :n "
+                    "ON CONFLICT (attempt_id, reason) DO NOTHING"
+                ),
+                {"why": LATE_APPLY, "k": e.execution_key, "n": e.attempt_no},
+            )
 
     def clear_late_apply(self, execution_key: str, resolution: OutcomeResolution) -> bool:
-        raise NotImplementedError("T3.7")
+        with self.engine.begin() as conn:
+            done = conn.execute(
+                text(
+                    "UPDATE deployment_blocks SET cleared_at = now(), cleared_by = :by, "
+                    "observed_revision = :rev, resolution_reason = :why "
+                    "WHERE action_id = :a AND reason = :late AND cleared_at IS NULL"
+                ),
+                {
+                    "by": resolution.subject,
+                    "rev": resolution.observed_revision,
+                    "why": resolution.reason,
+                    "a": UUID(execution_key),
+                    "late": LATE_APPLY,
+                },
+            ).rowcount
+            return bool(done)
 
 
 class PgFence:
