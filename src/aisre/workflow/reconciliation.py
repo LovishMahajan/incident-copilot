@@ -11,6 +11,10 @@ run has ended (ADR-69).
 
 A run whose query doesn't answer (a worker gone, or a run from older code) is left out of the
 comparison rather than guessed: the record's status alone isn't a mismatch for it.
+
+An incident whose start was withheld on purpose (every start row delivered with no attempt,
+which the relay never writes) and that has no live run is told apart from a stall and left out:
+see activities.reconciliation_findings. One the relay really started is always judged.
 """
 
 from __future__ import annotations
@@ -61,7 +65,7 @@ class ReconciliationActivities:
         answers = await asyncio.gather(*(ask(w) for w in ids))
         return dict(zip(ids, answers, strict=True))
 
-    def _read(self, live: list[str]) -> tuple[dict[str, str], dict[str, str], set[str]]:
+    def _read(self, live: list[str]) -> tuple[dict[str, str], dict[str, str], set[str], set[str]]:
         with self.engine.connect() as conn:
             incidents = {
                 str(i): str(s)
@@ -89,7 +93,19 @@ class ReconciliationActivities:
                     )
                 )
             }
-        return incidents, queue, pending
+            unstarted = {
+                str(i)
+                for (i,) in conn.execute(
+                    text(
+                        "SELECT o.incident_id FROM outbox o JOIN incidents i USING (incident_id) "
+                        "WHERE o.kind = 'start_workflow' "
+                        "AND i.status NOT IN ('closed', 'cancelled') "
+                        "GROUP BY o.incident_id "
+                        "HAVING bool_and(delivered_at IS NOT NULL AND attempts = 0)"
+                    )
+                )
+            }
+        return incidents, queue, pending, unstarted
 
     def _remove(self, orphans: list[str], queue: dict[str, str]) -> None:
         with self.engine.begin() as conn:
@@ -107,9 +123,11 @@ class ReconciliationActivities:
             state = running[wid]
             if state is not None:
                 live[incident_of(wid)] = state
-        incidents, queue, pending = await asyncio.to_thread(self._read, sorted(live))
+        incidents, queue, pending, unstarted = await asyncio.to_thread(self._read, sorted(live))
         judged = {i: s for i, s in incidents.items() if i in live or i not in _unanswered(running)}
-        stalled, orphans = act.reconciliation_findings(judged, live, queue, pending, set(running))
+        stalled, orphans = act.reconciliation_findings(
+            judged, live, queue, pending, set(running), unstarted & set(judged)
+        )
         for state in IncidentState:
             telemetry.workflows_stalled.labels(state=state.value).set(stalled.get(state.value, 0))
         if orphans:

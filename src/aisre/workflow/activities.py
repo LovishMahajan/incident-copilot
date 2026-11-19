@@ -456,17 +456,26 @@ def reconciliation_findings(
     queue: dict[str, str],
     pending_outbox: set[str],
     live_runs: set[str] = frozenset(),
+    unstarted: set[str] = frozenset(),
 ) -> tuple[dict[str, int], list[str]]:
     """The 8.9 table. `incidents` maps ID to the record's status, `running` maps ID to a live
     workflow's current_state, `queue` maps each investigation_queue row's incident ID to its run
     ID, `pending_outbox` holds the IDs with an undelivered start, `live_runs` the IDs of workflow
     runs still running. Returns (mismatches per state, for aisre_workflows_stalled; queue rows to
     remove). A row goes only when its run has ended: a re-investigation queues while its incident
-    is still `handed_over` (ADR-69). Alerts only: the record wins."""
+    is still `handed_over` (ADR-69). Alerts only: the record wins.
+
+    `unstarted` holds the IDs whose start was withheld on purpose: every start row is marked
+    delivered with no delivery attempt, which the relay never writes (it counts each attempt it
+    makes), so only a deliberate hold, such as the integration tests' `quiet` incidents, does.
+    With no live run such an incident is not a stall and isn't counted; once any start has
+    really gone to Temporal, or a run is live, it is judged like any other."""
     settled = {"handed_over", "recovered", "closed", "cancelled"}
     stalled: dict[str, int] = {}
     for iid, status in incidents.items():
         live = running.get(iid)
+        if live is None and iid in unstarted:
+            continue
         if live is None:
             orphan = status == "open" and iid not in queue and iid not in pending_outbox
             mismatch = orphan or (status != "open" and status not in settled)

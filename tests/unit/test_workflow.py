@@ -2191,3 +2191,26 @@ async def test_completed_history_replays_deterministically():
     await Replayer(workflows=[IncidentWorkflow], data_converter=act.DATA_CONVERTER).replay_workflow(
         history
     )
+
+
+def test_reconciliation_tells_a_withheld_start_from_a_stall():
+    """M3 follow-up: an incident whose start was withheld on purpose (the integration tests'
+    `quiet` ones) isn't counted while no run is live; the same states with a start the relay
+    really delivered are stalls, and a withheld one with a live run is judged as usual."""
+    incidents = {
+        "held-open": "open",
+        "held-moved": "investigating",
+        "held-live": "testing",
+        "lost-open": "open",
+        "lost-moved": "investigating",
+    }
+    running = {"held-live": "investigating"}
+    stalled, _ = act.reconciliation_findings(
+        incidents,
+        running,
+        {},
+        set(),
+        live_runs={"incident-held-live"},
+        unstarted={"held-open", "held-moved", "held-live"},
+    )
+    assert stalled == {"open": 1, "investigating": 1, "testing": 1}
