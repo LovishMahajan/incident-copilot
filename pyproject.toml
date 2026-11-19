@@ -123,6 +123,7 @@ module = [
     "aisre.workflow.approval_activities",
     "aisre.remediation.dispatcher_process",
     "aisre.verification.verifier",
+    "aisre.workflow.reconciliation",
 ]
 # `strict = true` here applies to every module, so name the flags --strict sets.
 disallow_any_generics = true

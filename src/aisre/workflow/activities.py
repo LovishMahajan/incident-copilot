@@ -31,6 +31,7 @@ from temporalio.client import (
     Client,
     Schedule,
     ScheduleActionStartWorkflow,
+    ScheduleAlreadyRunningError,
     ScheduleIntervalSpec,
     ScheduleSpec,
 )
@@ -491,7 +492,11 @@ def reconciliation_schedule() -> Schedule:
 
 
 async def ensure_reconciliation_schedule(client: Client) -> None:
-    await client.create_schedule(RECONCILIATION_SCHEDULE, reconciliation_schedule())
+    """Creates the schedule unless it exists (the worker calls this at start, T3.10)."""
+    try:
+        await client.create_schedule(RECONCILIATION_SCHEDULE, reconciliation_schedule())
+    except ScheduleAlreadyRunningError:
+        pass
 
 
 # ---------------------------------------------------------------------------
