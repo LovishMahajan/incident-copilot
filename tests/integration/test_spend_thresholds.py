@@ -21,6 +21,7 @@ That the expressions fire, with their holds and routes, is test_alert_rules.py (
 from __future__ import annotations
 
 import asyncio
+import secrets
 from datetime import UTC, datetime, timedelta
 
 import pytest
@@ -35,7 +36,8 @@ from aisre.reliability import telemetry
 
 PROVIDER = "http://127.0.0.1:59200"
 MODEL = "claude-opus-5-5"
-DAY1 = datetime(2032, 7, 14, 9, 0, tzinfo=UTC)  # a month no other test touches
+# A month no other test or run touches: each run its own, since settled spend stays.
+DAY1 = datetime(3000 + secrets.randbelow(6000), 7, 14, 9, 0, tzinfo=UTC)
 DAY2 = DAY1 + timedelta(days=1)
 
 
