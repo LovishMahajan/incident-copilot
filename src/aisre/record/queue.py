@@ -97,6 +97,14 @@ def acquire(conn: Connection, incident_id: UUID, run_id: str) -> Grant:
             ),
             {"i": incident_id, "r": run_id, "s": sev},
         )
+    else:  # a severity set while waiting (confirmed, or proposed) reorders the queue
+        conn.execute(
+            text(
+                "UPDATE investigation_queue SET severity = CAST(:s AS severity) "
+                "WHERE incident_id = :i AND severity IS DISTINCT FROM CAST(:s AS severity)"
+            ),
+            {"i": incident_id, "s": sev},
+        )
     rows = _rows(conn)
     me = next(r for r in rows if r.incident_id == str(incident_id))
     just = not me.granted and may_grant(str(incident_id), rows)
