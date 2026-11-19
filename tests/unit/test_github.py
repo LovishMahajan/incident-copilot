@@ -10,17 +10,22 @@ either works against a real GitHub account.
 
 from __future__ import annotations
 
+import asyncio
+import base64
 import hashlib
 import json
 import urllib.request
 
 import pytest
-from aisre.config import Settings
-from aisre.remediation.github import GitHubReviewClient, WriteRefused
-from aisre.remediation.review import DraftPullRequest, ReviewUnavailable, client_from_settings
 from pydantic import SecretStr, ValidationError
 from recorded_http import Recorded, load
 from temporalio.exceptions import ApplicationError
+
+from aisre.config import Settings
+from aisre.remediation import github
+from aisre.remediation.github import GitHubActionsRelease, GitHubReviewClient, WriteRefused
+from aisre.remediation.release import ReleaseRefused, release_from_settings
+from aisre.remediation.review import DraftPullRequest, ReviewUnavailable, client_from_settings
 
 HEAD = "9f1c2ab3d4e5f60718293a4b5c6d7e8f90a1b2c3"
 C1 = "1a2b3c4d5e6f708192a3b4c5d6e7f8091a2b3c4d"
@@ -251,3 +256,176 @@ def test_settings_allow_github_review_in_production_and_build_it_without_a_call(
         Settings(review_adapter="github", review_url="https://api.github.com", review_token=TOKEN)
     with pytest.raises(ValueError, match="https"):
         GitHubReviewClient("http://api.github.com", TOKEN, {})
+
+
+# ---------------------------------------------------------------------------
+# Release: GitHub Actions and Deployments
+# ---------------------------------------------------------------------------
+PATCH = b'{"files":[]}'
+
+
+@pytest.fixture
+def release() -> GitHubActionsRelease:
+    return GitHubActionsRelease(
+        API,
+        TOKEN,
+        lambda digest: PATCH,
+        repository="example-org/deploys",
+        apply_workflow="aisre-apply.yml",
+        undo_workflow="aisre-undo.yml",
+    )
+
+
+def run(coro):
+    return asyncio.run(coro)
+
+
+def test_current_state_is_the_newest_successful_deployment(recorded, release):
+    state = run(release.current_state("orders-api-production"))
+    assert state.revision == "r2r2r2r2" and state.in_progress_key == "act-2"
+
+
+@pytest.mark.parametrize(
+    "key, found",
+    [
+        ("act-2", "in_progress"),  # its deployment is running
+        ("act-0", "applied"),  # inactive: superseded after it succeeded (payload as a string)
+        ("act-9", "in_progress"),  # dispatched, its run queued, no deployment yet
+        ("act-8", "failed"),  # its run failed before a deployment
+        ("act-unknown", None),
+    ],
+)
+def test_lookup_by_key_from_deployments_then_runs(recorded, release, key, found):
+    assert run(release.lookup("orders-api-production", key)) == found
+    assert run(release.lookup("orders-api-production", key)) == found  # safe to repeat
+    assert all(s.method == "GET" for s in recorded.sent)
+
+
+def test_a_run_that_succeeded_without_its_deployment_is_unknown_not_none(recorded, release):
+    with pytest.raises(ConnectionError, match="a person must check"):
+        run(release.lookup("orders-api-production", "act-7"))
+
+
+def test_apply_dispatches_the_apply_workflow_with_the_key_and_the_patch(recorded, release):
+    result = run(
+        release.apply("orders-api-production", "act-new", "r2r2r2r2", "abc123", "r4r4r4r4")
+    )
+    assert result == "in_progress"
+    (sent,) = recorded.to("POST", "/dispatches")
+    assert sent.path.endswith("/aisre-apply.yml/dispatches")
+    assert sent.body == {
+        "ref": "main",
+        "inputs": {
+            "deployment": "orders-api-production",
+            "execution_key": "act-new",
+            "base_revision": "r2r2r2r2",
+            "to_revision": "r4r4r4r4",
+            "patch_sha256": "abc123",
+            "patch": base64.b64encode(PATCH).decode(),
+        },
+    }
+    assert "github_pat" not in json.dumps(sent.body)
+
+
+def test_undo_dispatches_the_undo_workflow_without_a_patch(recorded, release):
+    assert (
+        run(release.apply("orders-api-production", "act-undo", "r2r2r2r2", None, "r1r1r1r1"))
+        == "in_progress"
+    )
+    (sent,) = recorded.to("POST", "/dispatches")
+    assert sent.path.endswith("/aisre-undo.yml/dispatches") and "patch" not in sent.body["inputs"]
+
+
+@pytest.mark.parametrize(
+    "key, answer",
+    [
+        ("act-2", "in_progress"),
+        ("act-0", "applied"),
+        ("act-9", "in_progress"),
+        ("act-8", "in_progress"),
+    ],
+)
+def test_a_key_already_seen_is_never_dispatched_again(recorded, release, key, answer):
+    """ST-38's same-key resend: GitHub would run a second dispatch, so the adapter doesn't send
+    one for a key it can see. A failed run is not "rejected": reconcile reads it."""
+    assert run(release.apply("orders-api-production", key, "r2r2r2r2", "abc123", "r4")) == answer
+    assert recorded.to("POST", "/dispatches") == []
+
+
+def test_a_refused_dispatch_is_rejected_and_an_outage_is_unknown(recorded, release):
+    assert (
+        run(release.apply("orders-api-production", "act-refused", "r2", "abc", "r4")) == "rejected"
+    )
+    with pytest.raises(ConnectionError, match="HTTP 503"):
+        run(release.apply("orders-api-production", "act-outage", "r2", "abc", "r4"))
+
+
+def test_a_patch_too_large_for_the_inputs_is_rejected_unsent(recorded, monkeypatch, release):
+    monkeypatch.setattr(github, "MAX_PATCH_INPUT", 4)
+    assert run(release.apply("orders-api-production", "act-big", "r2", "abc", "r4")) == "rejected"
+    assert recorded.to("POST", "/dispatches") == []
+
+
+def test_history_names_each_deployment_and_its_key(recorded, release):
+    changes = run(release.history("orders-api-production"))
+    assert [(c.kind, c.revision, c.execution_key) for c in changes] == [
+        ("aisre:apply", "r3r3r3r3", "act-2"),
+        ("deploy", "r2r2r2r2", None),
+        ("aisre:undo", "r1r1r1r1", "act-0"),
+    ]
+
+
+def test_the_release_client_writes_only_dispatches_and_never_merges(recorded, release):
+    for method, path in (
+        ("POST", "/repos/example-org/deploys/deployments"),
+        ("POST", "/repos/example-org/other/actions/workflows/x.yml/dispatches"),
+        ("PUT", "/repos/example-org/deploys/pulls/1/merge"),
+    ):
+        with pytest.raises(WriteRefused):
+            release.api.call(method, path, {})
+    assert recorded.sent == []
+
+
+GH = {
+    "repository": "example-org/deploys",
+    "apply_workflow": "aisre-apply.yml",
+    "undo_workflow": "aisre-undo.yml",
+}
+
+
+def test_built_only_outside_production_and_only_with_a_write_credential(monkeypatch):
+    def refuse(*a, **k):
+        raise AssertionError("built with a network call")
+
+    monkeypatch.setattr(urllib.request, "urlopen", refuse)
+    with pytest.raises(ValidationError, match="HG-10"):
+        Settings(env="production", release_adapter="github_actions", release_github=json.dumps(GH))
+    with pytest.raises(ReleaseRefused, match="AISRE_RELEASE_URL"):
+        release_from_settings(
+            Settings(env="test", release_adapter="github_actions", release_github=json.dumps(GH)),
+            lambda d: b"",
+        )
+    with pytest.raises(ValidationError, match="AISRE_RELEASE_GITHUB"):
+        Settings(env="test", release_adapter="github_actions")
+    built = release_from_settings(
+        Settings(
+            env="test",
+            release_adapter="github_actions",
+            release_url=API,
+            release_token=TOKEN,
+            release_github=json.dumps(GH),
+        ),
+        lambda d: b"",
+    )
+    assert isinstance(built, GitHubActionsRelease)
+    with pytest.raises(ReleaseRefused, match="repository"):
+        release_from_settings(
+            Settings(
+                env="test",
+                release_adapter="github_actions",
+                release_url=API,
+                release_token=TOKEN,
+                release_github=json.dumps({**GH, "repository": "no slash"}),
+            ),
+            lambda d: b"",
+        )

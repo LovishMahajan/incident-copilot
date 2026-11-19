@@ -533,7 +533,7 @@ def create_app(
 def approval_path_on(settings: Settings) -> bool:
     """release.remediation_enabled's rule, restated: ST-39 keeps the release module out of the
     API package (tests/unit/test_health.py holds the two equal)."""
-    return settings.env in ("development", "test") and settings.release_adapter == "fake_release"
+    return settings.env in ("development", "test") and settings.release_adapter is not None
 
 
 def api_health(settings: Settings, db: Engine, store: WriteOnceStore | None) -> health.Health:
