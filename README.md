@@ -274,6 +274,12 @@ With `AISRE_RELEASE_ADAPTER=fake_release` (`.env.example`), in development or te
 - **The viewer** shows each decision (who, when, the signing key ID, tagged as a development key), the execution, the verification, watch flags and the rollback, read-only (demo/README.md).
 - **Not done.** No real identity system, secrets manager or release process (T3.1, T3.3); RB-14 not rehearsed (T3.15); the suite not labelled to 400 cases (T3.14). See [the M3 evidence record](docs/layers/layer-13-implementation-planning/milestones/m3.md).
 
+## Pilot readiness (M5)
+
+M5 is the advisory pilot on real incidents (ADR-44). It can't run here: no production, monitoring account, release process, model key or pilot users. What is built is what the pilot needs on its first day (ADR-75); no pilot result exists.
+
+- **Go-live check** (T5.1). `uv run python -m aisre.cli pilot check --service orders-api [--service ...] [--alertmanager FILE]`, run with the production settings in the environment, prints one PASS or FAIL line per check and exits 1 on any FAIL: `AISRE_ENV=production`; settings load; no `AISRE_RELEASE_*` variable (no release or write credential); remediation off (`release.remediation_enabled`); no fake release process, scripted skills, `runc`, development signing key, fake review system, identity directory or verifier monitoring source; a real provider key with the provider's own URL and every task's model alias pinned; evidence sources that load in production and answer every source tool for each named service in `production`; an Alertmanager receiver for each paging role and no fake pager. It names variables, never their values. The repository's own settings and `ops/compose/alertmanager.yml` fail it, as they should.
+
 ## Demo viewer
 
 A read-only page for showing an investigation to people who won't run the CLI (ADR-70). It is a showcase tool, not the product dashboard, and it is never deployed. The `demo-viewer` Compose service (nginx 1.30.6, `demo/nginx.conf`) serves the static files in `demo/` (no build step) on http://127.0.0.1:58080 (`AISRE_DEMO_VIEWER_PORT`) and proxies to the API and the fake token issuer on the same origin. With the stack up and the dev seed applied, open the page, pick a persona and press **Start reference incident**, or open an incident by ID (also as `http://127.0.0.1:58080/#<incident-id>`).
