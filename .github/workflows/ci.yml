@@ -52,7 +52,7 @@ jobs:
           uv run mypy --follow-imports=silent \
             src/aisre/config.py src/aisre/cli.py src/aisre/notify \
             src/aisre/reliability/otlp.py src/aisre/reliability/audit_jobs.py \
-            src/aisre/reliability/temporal_telemetry.py \
+            src/aisre/reliability/temporal_telemetry.py src/aisre/reliability/health.py \
             src/aisre/record src/aisre/api \
             src/aisre/workflow/relay.py src/aisre/workflow/worker.py \
             src/aisre/workflow/record_activities.py src/aisre/workflow/scripted.py \

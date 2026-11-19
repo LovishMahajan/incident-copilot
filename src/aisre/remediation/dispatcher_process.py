@@ -43,7 +43,7 @@ from aisre.config import Settings
 from aisre.evidence.snapshots import S3Snapshots
 from aisre.record import make_engine
 from aisre.record.execution import PgFence, PgLedger, PgTrustedStore
-from aisre.reliability import telemetry
+from aisre.reliability import health, telemetry
 from aisre.remediation.action import (
     MATRIX,
     ApprovalError,
@@ -254,6 +254,22 @@ def from_settings(settings: Settings, engine: Engine) -> DispatcherActivities:
     )
 
 
+def dispatcher_health(settings: Settings, engine: Engine, client: Any) -> health.Health:
+    """T4.5 (12.5): readiness is the database, the schema version, the configuration and the
+    write fence (globally fenced: alive, but not ready to write). Probes are PostgreSQL,
+    Temporal and the release process, every 15 s."""
+    readiness = {
+        "database": health.database(engine),
+        "schema_version": health.schema_version(engine),
+        "configuration": health.present("release URL", settings.release_url),
+        "write_fence": health.write_fence(engine),
+    }
+    dependencies = {"postgresql": health.database(engine), "temporal": health.temporal(client)}
+    if settings.release_url:
+        dependencies["release_process"] = health.http_ok(f"{settings.release_url}/healthz")
+    return health.Health("dispatcher", readiness, dependencies)
+
+
 async def run(settings: Settings, stop: asyncio.Event) -> None:
     engine = make_engine(settings.dispatcher_database_url)
     acts = from_settings(settings, engine)
@@ -266,7 +282,7 @@ async def run(settings: Settings, stop: asyncio.Event) -> None:
     try:
         async with Worker(client, task_queue=act.DISPATCHER_QUEUE, activities=acts.all()):
             log.info("dispatcher on %s (fake release process, ADR-73)", act.DISPATCHER_QUEUE)
-            await stop.wait()
+            await dispatcher_health(settings, engine, client).run(stop)  # T4.5, until stopped
     finally:
         engine.dispose()
         if metrics is not None:

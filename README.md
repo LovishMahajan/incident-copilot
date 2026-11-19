@@ -36,7 +36,7 @@ Settings come from `AISRE_*` environment variables (`src/aisre/config.py`). Copy
 
 ## Build and test the schema
 
-`db/schema.sql` is frozen: Alembic's `0001_baseline` (in `db/migrations/`, configured by `alembic.ini` at the root) applies it unchanged, and every later change is a new migration. Migrations run as the owning role, from `AISRE_MIGRATION_DATABASE_URL`, and record their version in the `aisre_migrations` schema. `schema-tests.sql` runs as a superuser straight after. 226 of 226 checks pass on PostgreSQL 17.12 after migration `0010_m3_change_author`, migrated from empty on a throwaway server (2026-11-19; the same 226 after `0008_m2_review_ref`, 223 of 223 on 16.16 and 17.12 before it; 16.16 not rerun since).
+`db/schema.sql` is frozen: Alembic's `0001_baseline` (in `db/migrations/`, configured by `alembic.ini` at the root) applies it unchanged, and every later change is a new migration. Migrations run as the owning role, from `AISRE_MIGRATION_DATABASE_URL`, and record their version in the `aisre_migrations` schema. `schema-tests.sql` runs as a superuser straight after. 226 of 226 checks pass on PostgreSQL 17.12 after migration `0011_m4_schema_version_read`, migrated from empty on a throwaway server (2026-11-19; the same 226 after `0008_m2_review_ref`, 223 of 223 on 16.16 and 17.12 before it; 16.16 not rerun since).
 
 ```
 psql -U postgres -c "CREATE ROLE aisre_owner LOGIN CREATEROLE"
@@ -125,6 +125,8 @@ uv run python -m aisre.cli incident close $ID --note "fixed by hand"   # sends t
 Writes send a fresh `Idempotency-Key` unless `--key` gives one. A refusal prints the API's problem document on standard error and exits 1. The fence and restore commands ADR-69 gives the CLI aren't there yet.
 
 **Telemetry and the audit copy** (T1.19, T1.20). The API and the worker send spans to the collector (`OTEL_EXPORTER_OTLP_ENDPOINT`; `docker compose logs otel-collector` shows each batch) and serve `/metrics` on `AISRE_METRICS_PORT` (9464) inside the Compose network, which Prometheus scrapes as jobs `api` and `worker`. Both write the write-once audit copy (`AISRE_AUDIT_STORE_*`) to the `aisre-audit` bucket: timeline events every minute, audit log lines as they happen, each object under COMPLIANCE retention for `AISRE_AUDIT_STORE_LOCK_DAYS` (1 locally), so not even MinIO's root user can delete it until then. `docker compose down -v` still removes it with the volume. Without the `AISRE_AUDIT_STORE_*` settings there is no copy, and the weekly check verifies the chain only. Every one of these settings is in `src/aisre/config.py`.
+
+**Readiness and probes** (T4.5, Artifact 12.5). `/livez` is only that the API answers. `/readyz` checks the database, the schema version (the Alembic head the code expects, `aisre.reliability.health.SCHEMA_HEAD`), the configuration and, with the approval path on, the approval signing key; never Temporal, the model provider or the collector. The worker and the dispatcher run the same checks (the dispatcher's also include the global write fence) and publish them as `aisre_process_ready{process}` on `/metrics`; they have no HTTP probe of their own, and Compose's health check for the worker is still `--check-alive`. Every 15 s each process probes what it uses and sets `aisre_dependency_up{dependency}`: postgresql, temporal (worker, dispatcher), object_store (API, worker), release_process (dispatcher).
 
 **Integration tests** run from the host against the stack, with test settings. The owner URL lets the audit copy's tamper tests (ST-31, ST-32) run; without it they skip:
 
