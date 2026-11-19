@@ -1,10 +1,16 @@
 # Artifact 12.1, 12.3 (T1.1): the local Prometheus. Loads the platform's alert rules from
 # ops/alerts.yml and scrapes the OpenTelemetry collector, and the API's and worker's own
 # `/metrics` (T1.19), served on AISRE_METRICS_PORT (9464) inside the Compose network only.
-# No Alertmanager yet (T4.6), so alerts show as firing in Prometheus and go nowhere.
+# From T4.6, firing alerts go to Alertmanager (ops/compose/alertmanager.yml), which routes them
+# by role to the FAKE pager (ADR-74): never through the Notifier or PostgreSQL.
 global:
   scrape_interval: 15s
   evaluation_interval: 15s
+
+alerting:
+  alertmanagers:
+    - static_configs:
+        - targets: ["alertmanager:9093"]
 
 rule_files:
   - /etc/prometheus/alerts.yml

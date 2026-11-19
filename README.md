@@ -71,6 +71,8 @@ docker compose down -v           # stop and delete the data
 | Fake monitoring source | http://127.0.0.1:59300 (`/v1/scenarios`) |
 | Fake review system (M2) | http://127.0.0.1:59400 (`/v1/repos/orders-api`, any bearer token; `/_fake/pulls`) |
 | Demo viewer (ADR-70) | http://127.0.0.1:58080 (read-only page; see Demo viewer below) |
+| Alertmanager (M4) | http://127.0.0.1:59093 (routes Prometheus's alerts by role) |
+| Fake pager (M4, ADR-74) | http://127.0.0.1:59600 (`GET /v1/pages`: every page, by role) |
 
 **Sign-in** (`src/aisre/api/auth.py`, T1.3). Every `/v1` call sends `Authorization: Bearer <token>`. The API verifies the token against the issuer's keys (`AISRE_OIDC_ISSUER`, `AISRE_OIDC_AUDIENCE`, `AISRE_OIDC_JWKS_URL`); in the stack that is the fake issuer, which mints any identity for local use. Roles come from the token's `groups`: `aisre:<role>` on every service, or `aisre:<role>:<service>` on one, with ADR-50's roles (`viewer`, `responder`, `approver`, `incident_lead`, `monitoring`, `platform_admin`). Writes also need an `Idempotency-Key` of 8 to 128 characters:
 
@@ -129,6 +131,15 @@ Writes send a fresh `Idempotency-Key` unless `--key` gives one. A refusal prints
 **Readiness and probes** (T4.5, Artifact 12.5). `/livez` is only that the API answers. `/readyz` checks the database, the schema version (the Alembic head the code expects, `aisre.reliability.health.SCHEMA_HEAD`), the configuration and, with the approval path on, the approval signing key; never Temporal, the model provider or the collector. The worker and the dispatcher run the same checks (the dispatcher's also include the global write fence) and publish them as `aisre_process_ready{process}` on `/metrics`; they have no HTTP probe of their own, and Compose's health check for the worker is still `--check-alive`. Every 15 s each process probes what it uses and sets `aisre_dependency_up{dependency}`: postgresql, temporal (worker, dispatcher), object_store (API, worker), release_process (dispatcher).
 
 **The investigation queue** (T4.3). `acquire_investigation_slot` is real from M4 (`aisre.workflow.queue_activities`, `aisre.record.queue`): each incident queues in `investigation_queue` under its run, at most 5 run at once, the next slot goes by severity (confirmed, else proposed, else last) then age, and one service never holds more than 4. A queued incident tells on-call once (`queued`); beyond 50 waiting the incident lead is told (`queue_overflow`) and `AisreQueueDepthHigh` pages them. Nothing is dropped; the row goes when the incident leaves `investigating`. `tests/integration/test_queue.py` runs a burst of 60 through the activity in seconds.
+
+**Paging and fault tests** (T4.6, T4.1, T4.2, ADR-74). Prometheus sends alerts to Alertmanager (`ops/compose/alertmanager.yml`), which routes them by role (Platform owner, Incident lead, Security lead) to the FAKE pager (`ops/fakes/pager.py`): never through the Notifier or PostgreSQL. `curl -s http://127.0.0.1:59600/v1/pages` lists what reached each role. `tests/integration/test_alert_rules.py` fires every rule in `ops/alerts.yml` under promtool. Tests that stop or kill Compose services are marked `fault`, are left out of the default and `-m integration` runs, take several minutes each, and put every service back up and healthy when they end; run them on their own, with the integration settings above:
+
+```
+AISRE_ENV=test AISRE_DATABASE_URL=... AISRE_DISPATCHER_DATABASE_URL=... AISRE_TEMPORAL_ADDRESS=127.0.0.1:7233 \
+  uv run pytest -q -m fault -s
+```
+
+ADR-74 lists the alerts this stack can't fire from a real fault, and why.
 
 **Integration tests** run from the host against the stack, with test settings. The owner URL lets the audit copy's tamper tests (ST-31, ST-32) run; without it they skip:
 
