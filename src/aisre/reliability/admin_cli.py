@@ -17,12 +17,13 @@ from collections.abc import Callable, Mapping
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import IO, Any
+from uuid import UUID
 
 from sqlalchemy.exc import SQLAlchemyError
 
 from aisre.api.tokens import Claims, InvalidToken, TokenVerifier, VerifierUnavailable
 from aisre.config import Settings
-from aisre.record import make_engine
+from aisre.record import corpus, make_engine
 from aisre.reliability import admin
 from aisre.reliability.fence import Actor
 from aisre.remediation.action import EVERY_SERVICE, Role, roles_from_groups
@@ -94,6 +95,9 @@ def run(
         )
         print(json.dumps(report), file=out)
         return
+    if who == ("document", "purge-text"):
+        purge_text(args, env, settings, verify, out)
+        return
     engine = make_engine(settings.database_url)
     try:
         if who == ("fence", "show"):
@@ -133,6 +137,39 @@ def run(
         print(json.dumps(admin.show(engine)), file=out)
     finally:
         engine.dispose()
+
+
+def purge_text(
+    args: argparse.Namespace,
+    env: Mapping[str, str],
+    settings: Settings,
+    verify: Verify | None,
+    out: IO[str],
+) -> None:
+    """T4.11: built behind the decision. No policy is decided (HG-08), so without
+    AISRE_LEGAL_DELETION_DECISION naming the recorded decision this refuses before connecting."""
+    decision = env.get("AISRE_LEGAL_DELETION_DECISION")
+    if not decision:
+        raise admin.Refused(
+            "the legal deletion policy is not decided (T4.11, HG-08): "
+            "set AISRE_LEGAL_DELETION_DECISION to the recorded decision"
+        )
+    by = actor(
+        env.get("AISRE_TOKEN"), verify or verifier(settings), (Role.SECURITY_LEAD,), "AISRE_TOKEN"
+    )
+    if by.role != Role.SECURITY_LEAD.value:
+        raise admin.Refused("only the security lead removes document text")
+    if settings.retention_database_url is None:
+        raise admin.Refused("set AISRE_RETENTION_DATABASE_URL: only aisre_retention may")
+    engine = make_engine(settings.retention_database_url)
+    try:
+        with engine.begin() as conn:
+            marked = corpus.purge_document_text(
+                conn, UUID(args.document_id), f"{args.reason} ({decision}; {by.subject})"
+            )
+    finally:
+        engine.dispose()
+    print(json.dumps({"document_id": args.document_id, "evidence_marked": marked}), file=out)
 
 
 def main(args: argparse.Namespace, env: Mapping[str, str], out: IO[str]) -> int:

@@ -36,6 +36,9 @@ ADR-74). Refused (exit 1) if either is missing, invalid or holds the wrong role:
     restore report                      reconcile actions not final against the release process
     restore complete [--decide A=O]     reconcile, then lift the restore fence (lead signs,
                                         platform admin runs); --decide is the lead's decision
+    document purge-text ID --reason R   remove a document version's text (security lead), as
+                                        AISRE_RETENTION_DATABASE_URL; refused until the legal
+                                        deletion policy is recorded in AISRE_LEGAL_DELETION_DECISION
 """
 
 from __future__ import annotations
@@ -145,7 +148,7 @@ def run(args: argparse.Namespace, api: Api, out: IO[str]) -> None:
         print(json.dumps(api.call("POST", base + "/closure", body, h)[2]), file=out)
 
 
-ADMIN = ("fence", "backup", "restore")
+ADMIN = ("fence", "backup", "restore", "document")
 
 
 def admin_parsers(top: Any) -> None:
@@ -175,6 +178,11 @@ def admin_parsers(top: Any) -> None:
     rs.add_parser("report", help="Reconcile actions not final, by lookup only")
     r = rs.add_parser("complete", help="Reconcile, then lift the restore fence")
     r.add_argument("--decide", action="append", default=[], metavar="ACTION=OUTCOME")
+    document = top.add_parser("document", help="Runbook text (T4.11, behind the legal decision)")
+    ds = document.add_subparsers(dest="command", required=True)
+    d = ds.add_parser("purge-text", help="Remove one document version's text (security lead)")
+    d.add_argument("document_id")
+    d.add_argument("--reason", required=True)
 
 
 def parser() -> argparse.ArgumentParser:
