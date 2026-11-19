@@ -36,7 +36,7 @@ Settings come from `AISRE_*` environment variables (`src/aisre/config.py`). Copy
 
 ## Build and test the schema
 
-`db/schema.sql` is frozen: Alembic's `0001_baseline` (in `db/migrations/`, configured by `alembic.ini` at the root) applies it unchanged, and every later change is a new migration. Migrations run as the owning role, from `AISRE_MIGRATION_DATABASE_URL`, and record their version in the `aisre_migrations` schema. `schema-tests.sql` runs as a superuser straight after. 226 of 226 checks pass on PostgreSQL 17.12 after migration `0011_m4_schema_version_read`, migrated from empty on a throwaway server (2026-11-19; the same 226 after `0008_m2_review_ref`, 223 of 223 on 16.16 and 17.12 before it; 16.16 not rerun since).
+`db/schema.sql` is frozen: Alembic's `0001_baseline` (in `db/migrations/`, configured by `alembic.ini` at the root) applies it unchanged, and every later change is a new migration. Migrations run as the owning role, from `AISRE_MIGRATION_DATABASE_URL`, and record their version in the `aisre_migrations` schema. `schema-tests.sql` runs as a superuser straight after. 226 of 226 checks pass on PostgreSQL 17.11 after migration `0012_m4_document_text_purge`, migrated from empty on a throwaway server, and again after a downgrade to 0011 and back (2026-11-19; 226 of 226 on 17.12 after `0011_m4_schema_version_read`; the same 226 after `0008_m2_review_ref`, 223 of 223 on 16.16 and 17.12 before it; 16.16 not rerun since).
 
 ```
 psql -U postgres -c "CREATE ROLE aisre_owner LOGIN CREATEROLE"
@@ -73,6 +73,7 @@ docker compose down -v           # stop and delete the data
 | Demo viewer (ADR-70) | http://127.0.0.1:58080 (read-only page; see Demo viewer below) |
 | Alertmanager (M4) | http://127.0.0.1:59093 (routes Prometheus's alerts by role) |
 | Fake pager (M4, ADR-74) | http://127.0.0.1:59600 (`GET /v1/pages`: every page, by role) |
+| Grafana (M4, T4.7) | http://127.0.0.1:59030 (dashboard "Incident Copilot: percentiles (NFR-27)", provisioned from `ops/grafana/`, anonymous viewer) |
 
 **Sign-in** (`src/aisre/api/auth.py`, T1.3). Every `/v1` call sends `Authorization: Bearer <token>`. The API verifies the token against the issuer's keys (`AISRE_OIDC_ISSUER`, `AISRE_OIDC_AUDIENCE`, `AISRE_OIDC_JWKS_URL`); in the stack that is the fake issuer, which mints any identity for local use. Roles come from the token's `groups`: `aisre:<role>` on every service, or `aisre:<role>:<service>` on one, with ADR-50's roles (`viewer`, `responder`, `approver`, `incident_lead`, `monitoring`, `platform_admin`). Writes also need an `Idempotency-Key` of 8 to 128 characters:
 
@@ -124,22 +125,53 @@ uv run python -m aisre.cli incident cancel $ID --reason "false alarm"
 uv run python -m aisre.cli incident close $ID --note "fixed by hand"   # sends the incident's ETag as If-Match
 ```
 
-Writes send a fresh `Idempotency-Key` unless `--key` gives one. A refusal prints the API's problem document on standard error and exits 1. The fence and restore commands ADR-69 gives the CLI aren't there yet.
+Writes send a fresh `Idempotency-Key` unless `--key` gives one. A refusal prints the API's problem document on standard error and exits 1. The fence, backup and restore commands (ADR-69) are under "Backups, restore and the fence" below: unlike these, they connect to PostgreSQL.
 
 **Telemetry and the audit copy** (T1.19, T1.20). The API and the worker send spans to the collector (`OTEL_EXPORTER_OTLP_ENDPOINT`; `docker compose logs otel-collector` shows each batch) and serve `/metrics` on `AISRE_METRICS_PORT` (9464) inside the Compose network, which Prometheus scrapes as jobs `api` and `worker`. Both write the write-once audit copy (`AISRE_AUDIT_STORE_*`) to the `aisre-audit` bucket: timeline events every minute, audit log lines as they happen, each object under COMPLIANCE retention for `AISRE_AUDIT_STORE_LOCK_DAYS` (1 locally), so not even MinIO's root user can delete it until then. `docker compose down -v` still removes it with the volume. Without the `AISRE_AUDIT_STORE_*` settings there is no copy, and the weekly check verifies the chain only. Every one of these settings is in `src/aisre/config.py`.
 
-**Readiness and probes** (T4.5, Artifact 12.5). `/livez` is only that the API answers. `/readyz` checks the database, the schema version (the Alembic head the code expects, `aisre.reliability.health.SCHEMA_HEAD`), the configuration and, with the approval path on, the approval signing key; never Temporal, the model provider or the collector. The worker and the dispatcher run the same checks (the dispatcher's also include the global write fence) and publish them as `aisre_process_ready{process}` on `/metrics`; they have no HTTP probe of their own, and Compose's health check for the worker is still `--check-alive`. Every 15 s each process probes what it uses and sets `aisre_dependency_up{dependency}`: postgresql, temporal (worker, dispatcher), object_store (API, worker), release_process (dispatcher).
+**Readiness and probes** (T4.5, Artifact 12.5). `/livez` is only that the API answers. `/readyz` checks the database, the schema version (the Alembic head the code expects, `aisre.reliability.health.SCHEMA_HEAD`), the configuration and, with the approval path on, the approval signing key; never Temporal, the model provider or the collector. The worker and the dispatcher run the same checks (the dispatcher's also include the global write fence) and publish them as `aisre_process_ready{process}` on `/metrics`; they have no HTTP probe of their own, and Compose's health check for the worker is still `--check-alive`. Every 15 s each process probes what it uses and sets `aisre_dependency_up{dependency}`: postgresql, temporal (worker, dispatcher), object_store (API, worker), release_process (dispatcher). On the same cycle the worker publishes the queue depth and age and the fleet spend, and the dispatcher `aisre_dispatch_fenced{reason}`, so the queue, spend and fence alerts have a source (M4 pass 2).
 
 **The investigation queue** (T4.3). `acquire_investigation_slot` is real from M4 (`aisre.workflow.queue_activities`, `aisre.record.queue`): each incident queues in `investigation_queue` under its run, at most 5 run at once, the next slot goes by severity (confirmed, else proposed, else last) then age, and one service never holds more than 4. A queued incident tells on-call once (`queued`); beyond 50 waiting the incident lead is told (`queue_overflow`) and `AisreQueueDepthHigh` pages them. Nothing is dropped; the row goes when the incident leaves `investigating`. `tests/integration/test_queue.py` runs a burst of 60 through the activity in seconds.
 
-**Paging and fault tests** (T4.6, T4.1, T4.2, ADR-74). Prometheus sends alerts to Alertmanager (`ops/compose/alertmanager.yml`), which routes them by role (Platform owner, Incident lead, Security lead) to the FAKE pager (`ops/fakes/pager.py`): never through the Notifier or PostgreSQL. `curl -s http://127.0.0.1:59600/v1/pages` lists what reached each role. `tests/integration/test_alert_rules.py` fires every rule in `ops/alerts.yml` under promtool. Tests that stop or kill Compose services are marked `fault`, are left out of the default and `-m integration` runs, take several minutes each, and put every service back up and healthy when they end; run them on their own, with the integration settings above:
+**Paging and fault tests** (T4.6, T4.1, T4.2, ADR-74). Prometheus sends alerts to Alertmanager (`ops/compose/alertmanager.yml`), which routes them by role (Platform owner, Incident lead, Security lead) to the FAKE pager (`ops/fakes/pager.py`): never through the Notifier or PostgreSQL. `curl -s http://127.0.0.1:59600/v1/pages` lists what reached each role. `tests/integration/test_alert_rules.py` fires every rule in `ops/alerts.yml` under promtool. Tests that stop or kill Compose services are marked `fault` (load tests `load`), are left out of the default and `-m integration` runs, take several minutes each, and put every service back up and healthy when they end; run them on their own, with the integration settings above:
 
 ```
 AISRE_ENV=test AISRE_DATABASE_URL=... AISRE_DISPATCHER_DATABASE_URL=... AISRE_TEMPORAL_ADDRESS=127.0.0.1:7233 \
   uv run pytest -q -m fault -s
 ```
 
-ADR-74 lists the alerts this stack can't fire from a real fault, and why.
+Pass 2 adds `test_alert_faults_more.py` (a burst of 56 pages AisreQueueDepthHigh to the incident lead and then AisreQueueBacklog; a rejected provider key, a secret in a model answer, the monitoring source down for the circuit breaker, an out-of-band release change, an altered timeline event, and a manual fence held 15 minutes, each paging its role), `test_db_outage_resume.py` (PostgreSQL stopped mid-investigation; the same workflow goes on when it returns) and `test_restore_drill.py` (below). The fake provider answers every request with one script when the key names it (`fake-script-auth-error`, `fake-script-leak-secret`). ADR-74 lists the alerts this stack can't fire from a real fault, and why.
+
+**Backups, restore and the fence** (T4.4, ADR-69, ADR-74). A STAND-IN for production point-in-time recovery: the stack's PostgreSQL archives its WAL to `.aisre-backups/wal` (`archive_command`, at least every 60 s; `AISRE_BACKUP_DIR` moves it), and a restore goes into a separate PostgreSQL, `postgres-restore` (profile `drill`), never into the stack's own data. A stack whose `postgres` container predates this needs `docker compose up -d postgres` once to start archiving. The commands connect to PostgreSQL as `aisre_app` and name the caller by a verified token, a lead's sign-off by a second one (personas `pat`, platform admin, and `ines`, incident lead on every service):
+
+```
+export AISRE_DATABASE_URL=postgresql+psycopg://aisre_app:fake-app-password@127.0.0.1:55432/aisre \
+  AISRE_OIDC_ISSUER=http://token-issuer:8080 AISRE_OIDC_AUDIENCE=aisre-api AISRE_OIDC_JWKS_URL=http://127.0.0.1:59100/jwks
+tok() { curl -s -X POST http://127.0.0.1:59100/token -d "{\"persona\": \"$1\"}" | uv run python -c 'import json, sys; print(json.load(sys.stdin)["access_token"])'; }
+uv run python -m aisre.cli fence show
+AISRE_TOKEN=$(tok ines) uv run python -m aisre.cli fence set --why "bad rollout" [--deployment D]
+AISRE_TOKEN=$(tok pat) AISRE_SIGN_OFF_TOKEN=$(tok ines) uv run python -m aisre.cli fence lift [--deployment D]
+AISRE_TOKEN=$(tok pat) uv run python -m aisre.cli backup take .aisre-backups \
+  --command "docker compose --env-file .env.example exec -T postgres pg_basebackup -U postgres -D /backups/base/{id} -Ft -X fetch -c fast"
+uv run python -m aisre.cli backup check .aisre-backups [--prune]     # days missed in the last week; past 35 days
+AISRE_RESTORE_BACKUP=<id> docker compose --env-file .env.example --profile drill up -d --wait postgres-restore   # port 55433
+AISRE_DATABASE_URL=postgresql+psycopg://aisre_app:fake-app-password@127.0.0.1:55433/aisre AISRE_TOKEN=$(tok pat) uv run python -m aisre.cli restore begin
+AISRE_RELEASE_ADAPTER=fake_release AISRE_RELEASE_URL=http://127.0.0.1:59500 AISRE_RELEASE_TOKEN=fake-release-token \
+  AISRE_DATABASE_URL=...55433/aisre AISRE_TOKEN=$(tok pat) AISRE_SIGN_OFF_TOKEN=$(tok ines) uv run python -m aisre.cli restore complete [--decide ACTION=not_applied]
+docker compose --env-file .env.example --profile drill rm -sfv postgres-restore
+```
+
+`backup take` fences writes (`backup_quiesce`), waits up to 10 minutes for writes in flight, runs the command, writes `marker.json` beside the backup and lifts the fence. `AISRE_RESTORE_TARGET` stops recovery at a point in time. `restore begin` bumps the fence epoch, so every older dispatcher token is refused; `restore complete` reconciles every action not final against the release process by lookup and lifts the restore fence only with none unresolved (or decided with `--decide`), the incident lead's sign-off and the platform admin running it. `-m fault tests/integration/test_restore_drill.py` runs all of it and prints the timings; not scheduled nightly, not stored on a second host, no object-store manifest (ADR-74).
+
+**Retention and encryption** (T4.8, ADR-57). With `AISRE_RETENTION_DATABASE_URL` (`.env.example`), the worker runs `aisre-retention` daily as `aisre_retention`: expired object-store content with every version, incidents closed over a year ago, expired dead letters and idempotency keys, skipping what an open incident holds; `aisre_retention_overdue{class}` is the audit query after each run. A volume created before this has the role without a password: `docker compose exec postgres psql -U postgres -c "ALTER ROLE aisre_retention PASSWORD 'fake-retention-password'"`. `uv run python -m aisre.reliability.encryption_audit` checks TLS on every configured connection and default bucket encryption; on this stack every in-transit check fails and PostgreSQL's storage encryption is `unknown` (not visible from SQL), so NFR-19 is not met locally.
+
+**Spend** (T4.9). The worker publishes today's and this month's spend (`aisre_budget_{daily,monthly}_spent_micros`) and pending reconciliation every 15 s; `test_spend_thresholds.py` crosses daily 80/100 and monthly 50/80/100 on the fake provider's token counts in a far-future month, with the limits scaled to one call, so the stack's real day stays untouched.
+
+**Dashboards** (T4.7, NFR-27). Grafana 12.2 in Compose, provisioned from `ops/grafana/` (data sources Prometheus and PostgreSQL, the latter as `aisre_app` with the fake password, local only): queue wait, each step, each evidence source (`aisre_evidence_call_seconds`), each model call at p50/p95/p99 from histograms; human wait and end to end by nearest rank in SQL. `test_grafana_dashboard.py` runs every panel's query through Grafana.
+
+**Load** (T4.10). `-m load` runs `test_intake_load.py`: 200 alerts a minute for a minute (10x an assumed peak of 20 a minute, NFR-16's burst: ADR-74), `AISRE_LOAD_SECONDS=600` for the long form. Measured on one Mac, with everything on it.
+
+**Legal deletion of runbook text** (T4.11, migration 0012). `purge_document_text` blanks one document version's body and chunks as `aisre_retention`, keeping the hashes, and marks the evidence citing it. The policy isn't decided (HG-08): `aisre document purge-text` refuses until `AISRE_LEGAL_DELETION_DECISION` names the recorded decision.
 
 **Integration tests** run from the host against the stack, with test settings. The owner URL lets the audit copy's tamper tests (ST-31, ST-32) run; without it they skip:
 
@@ -152,7 +184,7 @@ AISRE_TEMPORAL_ADDRESS=127.0.0.1:7233 \
 uv run pytest -q -m integration
 ```
 
-The `integration` tests expect the Compose worker as `.env.example` configures it: scripted skills for what isn't built, real evidence from the fake monitoring source, and the real model skills against the fake provider. Tests that drive an incident themselves open it with no undelivered start row, so the Compose relay never starts it (the `quiet` fixture in `tests/integration/conftest.py`). With the Test Runner running on the host (M2), the reference incident goes on to be drafted, tested and proposed as a draft pull request. The dispatcher's URL lets the M3 tests connect as `aisre_dispatcher`. On 2026-11-19, after M3 pass 2: 200 passed, 3 skipped (`paid`, and the gVisor `system` run).
+The `integration` tests expect the Compose worker as `.env.example` configures it: scripted skills for what isn't built, real evidence from the fake monitoring source, and the real model skills against the fake provider. Tests that drive an incident themselves open it with no undelivered start row, so the Compose relay never starts it (the `quiet` fixture in `tests/integration/conftest.py`). With the Test Runner running on the host (M2), the reference incident goes on to be drafted, tested and proposed as a draft pull request. The dispatcher's URL lets the M3 tests connect as `aisre_dispatcher`. On 2026-11-19, after M4 pass 2: 217 passed, 3 skipped (`paid`, and the gVisor `system` run). The M4 record is [milestones/m4.md](docs/layers/layer-13-implementation-planning/milestones/m4.md).
 
 **The honesty variant** (Run 2 of the reference incident: `release.json` and `config-diff.txt` withheld). The fake monitoring source serves a scenario with files withheld when its name says so, `reference-incident:without=release.json,config-diff.txt`, and the change history then answers 404, a gap. Restart the worker pointed at it, post the alert, and the incident goes `open` → `investigating` → `inconclusive` → `handed_over`, its diagnosis starting "Root cause not established"; restart without the override to go back:
 

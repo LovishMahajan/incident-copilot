@@ -627,7 +627,7 @@ A task with no dependency can start now. Tasks are tracked in GitHub Issues (pro
 | `test_st31_update_or_delete_needs_postgresql` | T1.20 |
 | `test_st32_privileged_edit_needs_postgresql_and_the_write_once_store` | T1.20 |
 | `test_st33_the_collector_that_calls_the_flagger_and_shows_the_flag_does_not_exist` | T1.12 |
-| `test_st38_retry_with_the_same_key_while_applying_is_not_implemented` | T4.1 |
+| `test_st38_retry_with_the_same_key_while_applying_is_not_implemented` (removed: the retry is implemented and tested, T4.1) | T4.1 |
 | `test_st39_api_route_needs_the_api` | T3.9 |
 | `test_st40_release_reconciliation_job_is_not_implemented` | T3.11 |
 
