@@ -129,6 +129,7 @@ class LedgerEntry:
     started_at: Optional[datetime] = None
     external_ref: Optional[str] = None
     notes: list[str] = field(default_factory=list)
+    attempt_id: Optional[str] = None  # the row's ID, once stored (record.execution.PgLedger)
 
 
 LATE_APPLY = "late_apply"  # deployment_blocks.reason; the other is `unresolved`
@@ -204,6 +205,14 @@ class Ledger:
             b.execution_key == e.execution_key and b.reason == LATE_APPLY for b in self.blocks
         ):
             self.blocks.append(DeploymentBlock(e.deployment, e.execution_key, LATE_APPLY))
+
+    def clear_late_apply(self, execution_key: str, resolution: OutcomeResolution) -> bool:
+        """A person's resolution of a late apply's block; it stays on the block (ADR-69)."""
+        for b in self.blocks:
+            if b.execution_key == execution_key and b.reason == LATE_APPLY and not b.cleared:
+                b.cleared, b.resolution = True, resolution
+                return True
+        return False
 
     def begin(self, e: LedgerEntry) -> Optional[str]:
         """Check 9 and the intent write, as one transaction: there is no await between them, and
@@ -560,9 +569,8 @@ class Dispatcher:
             if b.execution_key == action.action_id and b.reason == LATE_APPLY
         ]
         if late:  # attempts are final after not_applied: the resolution stays on the block
-            late[0].cleared, late[0].resolution = (
-                True,
-                OutcomeResolution(subject, outcome, observed_revision, reason),
+            self.ledger.clear_late_apply(
+                action.action_id, OutcomeResolution(subject, outcome, observed_revision, reason)
             )
             return DispatchResult(
                 Outcome(outcome), f"late apply resolved by {subject}", action.action_id
