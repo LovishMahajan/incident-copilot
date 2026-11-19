@@ -53,6 +53,14 @@ class CountingLedger(BudgetLedger):
         return await super().pending_reconciliation()
 
 
+async def skip(e, span: timedelta, step: timedelta = timedelta(hours=1)) -> None:
+    """Skips `span` in steps: one day of minute sweeps in a single sleep can outlast the test
+    server's RPC timeout on a loaded machine (1,440 runs behind one call)."""
+    while span > timedelta(0):
+        await e.sleep(min(step, span))
+        span -= step
+
+
 def env():
     return WorkflowEnvironment.start_time_skipping(
         test_server_existing_path=TEST_SERVER, data_converter=act.DATA_CONVERTER
@@ -76,12 +84,13 @@ async def test_expiry_runs_every_minute_and_reconciliation_every_day():
             await ensure_budget_jobs(e.client, QUEUE)
             await e.sleep(timedelta(minutes=10, seconds=30))
             assert ledger.expiries == 11 and ledger.reconciliations == 1
-            await e.sleep(timedelta(days=1))
-            assert ledger.reconciliations == 2 and ledger.expiries >= 11 + 24 * 60
+            await skip(e, timedelta(days=1))
+            # One a minute; the sweep due as the last step ends may still be in flight.
+            assert ledger.reconciliations == 2 and ledger.expiries >= 11 + 24 * 60 - 1
             # Called again, as on every worker start: the running jobs are kept, not doubled.
             await ensure_budget_jobs(e.client, QUEUE)
             before = ledger.reconciliations
-            await e.sleep(timedelta(days=1))
+            await skip(e, timedelta(days=1))
             assert ledger.reconciliations == before + 1
 
 
