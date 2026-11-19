@@ -66,11 +66,11 @@ def test_no_two_factor_is_read_as_such(issuer, verifier):
         ({"iss": "http://evil.test"}, "wrong_issuer"),
         ({"aud": "someone-else"}, "wrong_audience"),
         ({"aud": ["x", "y"]}, "wrong_audience"),
-        ({"exp": int(time.time()) - LEEWAY_S - 5}, "expired"),
-        ({"iat": int(time.time()) + 600, "exp": int(time.time()) + 900}, "not_yet_valid"),
-        ({"nbf": int(time.time()) + 600}, "not_yet_valid"),
+        (lambda: {"exp": int(time.time()) - LEEWAY_S - 5}, "expired"),
+        (lambda: {"iat": int(time.time()) + 600, "exp": int(time.time()) + 900}, "not_yet_valid"),
+        (lambda: {"nbf": int(time.time()) + 600}, "not_yet_valid"),
         ({"nbf": "soon"}, "missing_claim:nbf"),
-        ({"exp": int(time.time()) + 7200}, "lifetime_too_long"),
+        (lambda: {"exp": int(time.time()) + 7200}, "lifetime_too_long"),
         ({"sub": ""}, "missing_claim:sub"),
         ({"groups": "aisre:responder"}, "missing_claim:groups"),
         ({"org_id": "not-a-uuid"}, "missing_claim:org_id"),
@@ -79,6 +79,9 @@ def test_no_two_factor_is_read_as_such(issuer, verifier):
     ],
 )
 def test_bad_claims_are_refused(issuer, verifier, change, reason):
+    # Times are read when the test runs, not at collection: a long suite or a
+    # sleeping machine would otherwise let "600 s from now" pass.
+    change = change() if callable(change) else change
     refused(verifier, issuer.sign(issuer.claims("alice") | change), reason)
 
 
