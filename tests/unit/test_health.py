@@ -1,6 +1,6 @@
 """T4.5 (Artifact 12.5, WR-22, WR-23): readiness checks and dependency probes.
 
-The checks run against stand-ins here; tests/integration/test_health.py runs them on the
+The checks run against stand-ins here; tests/integration/test_readiness_stack.py runs them on the
 Compose stack and reads the gauges from each process's /metrics.
 """
 
