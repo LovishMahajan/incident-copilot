@@ -123,3 +123,38 @@ def test_run_probes_until_stopped():
 
     asyncio.run(go())
     assert len(calls) >= 4
+
+
+def test_the_api_reads_the_approval_path_as_the_release_module_does():
+    from aisre.api.app import approval_path_on
+    from aisre.config import Settings
+    from aisre.remediation.release import remediation_enabled
+
+    for env in ("development", "test", "staging"):
+        for adapter in (None, "fake_release"):
+            try:
+                s = Settings(env=env, release_adapter=adapter)
+            except ValueError:
+                continue
+            assert approval_path_on(s) == remediation_enabled(s)
+
+
+def test_probes_log_changes_only(caplog):
+    state = {"up": False}
+
+    async def flaky() -> None:
+        if not state["up"]:
+            raise ConnectionError("refused")
+
+    h = health.Health("worker", {}, {"postgresql": flaky})
+    with caplog.at_level("WARNING", logger="aisre.reliability.health"):
+        asyncio.run(h.probe())  # the first result is the gauge's, not a change
+        asyncio.run(h.probe())
+        state["up"] = True
+        asyncio.run(h.probe())
+        state["up"] = False
+        asyncio.run(h.probe())
+    assert [r.getMessage().split(":")[0] for r in caplog.records] == [
+        "dependency postgresql back up",
+        "dependency postgresql down",
+    ]

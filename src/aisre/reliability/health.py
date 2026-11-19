@@ -169,6 +169,7 @@ class Health:
         self.process = process
         self.readiness = dict(readiness)
         self.dependencies = dict(dependencies or {})
+        self._last: dict[str, bool] = {}
 
     async def ready(self) -> Report:
         """Runs the readiness checks once and sets aisre_process_ready{process}."""
@@ -179,11 +180,17 @@ class Health:
     async def probe(self) -> dict[str, bool]:
         """Probes every dependency once and sets aisre_dependency_up{dependency}."""
         failed = await _run(self.dependencies)
-        for name in self.dependencies:
-            telemetry.dependency_up.labels(dependency=name).set(0 if name in failed else 1)
-        for name, why in failed.items():
-            log.warning("dependency %s down: %s", name, why)
-        return {n: n not in failed for n in self.dependencies}
+        now = {n: n not in failed for n in self.dependencies}
+        for name, up in now.items():
+            telemetry.dependency_up.labels(dependency=name).set(1 if up else 0)
+            before = self._last.get(name)
+            if before is not None and before != up:  # changes only; the gauge has the rest
+                if up:
+                    log.warning("dependency %s back up", name)
+                else:
+                    log.warning("dependency %s down: %s", name, failed[name])
+        self._last = now
+        return now
 
     async def run(self, stop: asyncio.Event, every: timedelta = PROBE_EVERY) -> None:
         """Readiness and probes every `every` until `stop` is set."""
