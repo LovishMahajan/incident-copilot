@@ -21,9 +21,21 @@ replays the first answer only when the key is given. Output is the API's JSON, o
 per line for the timeline. Exit status: 0 on success, 1 when the API refuses (its problem
 document goes to standard error), 2 on a usage error.
 
-Fence and restore (ADR-69 gives them to the CLI, run by a Platform admin, with a lead's
-sign-off to lift a manual fence) are not here yet: they need the caller checked against
-ADR-50 and the lead's sign-off recorded, and no API route or signed record carries either.
+Fence, backup and restore (ADR-69, T4.4) are the exception: no API route carries them, so
+these connect to PostgreSQL directly (AISRE_DATABASE_URL) and the rules are applied here, by
+aisre.reliability.admin. The caller is AISRE_TOKEN, verified against AISRE_OIDC_*; a lead's
+sign-off is a second verified token, AISRE_SIGN_OFF_TOKEN (a stand-in for a signed record,
+ADR-74). Refused (exit 1) if either is missing, invalid or holds the wrong role:
+
+    fence show                          the epoch and every active fence reason
+    fence set --why W [--deployment D]  a manual fence (incident lead or platform admin)
+    fence lift [--deployment D]         platform admin, with an incident lead's sign-off
+    backup take DIR [--command C]       quiesced base backup and its marker (platform admin)
+    backup check DIR [--prune]          days missed in the last week; prune past 35 days
+    restore begin                       first write on a restored database (platform admin)
+    restore report                      reconcile actions not final against the release process
+    restore complete [--decide A=O]     reconcile, then lift the restore fence (lead signs,
+                                        platform admin runs); --decide is the lead's decision
 """
 
 from __future__ import annotations
@@ -133,9 +145,42 @@ def run(args: argparse.Namespace, api: Api, out: IO[str]) -> None:
         print(json.dumps(api.call("POST", base + "/closure", body, h)[2]), file=out)
 
 
+ADMIN = ("fence", "backup", "restore")
+
+
+def admin_parsers(top: Any) -> None:
+    fence = top.add_parser("fence", help="The production-write fence (ADR-69, 12.5)")
+    fs = fence.add_subparsers(dest="command", required=True)
+    fs.add_parser("show", help="The epoch and the active fence reasons")
+    f = fs.add_parser("set", help="Set a manual fence (incident lead or platform admin)")
+    f.add_argument("--why", required=True)
+    f.add_argument("--deployment")
+    f = fs.add_parser("lift", help="Lift a manual fence (platform admin, a lead signs off)")
+    f.add_argument("--deployment")
+    backup = top.add_parser("backup", help="Backups (12.6, NFR-46)")
+    bs = backup.add_subparsers(dest="command", required=True)
+    b = bs.add_parser("take", help="A quiesced base backup and its marker")
+    b.add_argument("dest")
+    b.add_argument(
+        "--command", dest="backup_command", help="Default AISRE_BACKUP_COMMAND; {id}, {dest}"
+    )
+    b.add_argument("--id")
+    b = bs.add_parser("check", help="Days without a backup; backups past 35 days")
+    b.add_argument("dest")
+    b.add_argument("--days", type=int, default=7)
+    b.add_argument("--prune", action="store_true")
+    restore = top.add_parser("restore", help="Restore steps run on the restored database")
+    rs = restore.add_subparsers(dest="command", required=True)
+    rs.add_parser("begin", help="New fence epoch and the restore fence (platform admin)")
+    rs.add_parser("report", help="Reconcile actions not final, by lookup only")
+    r = rs.add_parser("complete", help="Reconcile, then lift the restore fence")
+    r.add_argument("--decide", action="append", default=[], metavar="ACTION=OUTCOME")
+
+
 def parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(prog="aisre", description="The AI SRE platform's CLI.")
     top = p.add_subparsers(dest="noun", required=True)
+    admin_parsers(top)
     incident = top.add_parser("incident", help="Incidents")
     sub = incident.add_subparsers(dest="command", required=True)
     s = sub.add_parser("submit", help="Submit an alert or an IncidentCreate from a JSON file")
@@ -162,7 +207,12 @@ def main(
     out: IO[str] | None = None,
 ) -> int:
     args = parser().parse_args(argv)
-    api = Api(os.environ if environ is None else environ)
+    env = os.environ if environ is None else environ
+    if args.noun in ADMIN:
+        from aisre.reliability import admin_cli  # PostgreSQL, only for these commands
+
+        return admin_cli.main(args, env, out or sys.stdout)
+    api = Api(env)
     try:
         run(args, api, out or sys.stdout)
     except ApiRefused as e:
