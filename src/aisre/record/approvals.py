@@ -78,6 +78,14 @@ def load_action(
     )
 
 
+def change_author(conn: Connection, action_id: UUID) -> str | None:
+    """Who made the change the action reverts (ADR-49), as the Patch Proposer recorded it."""
+    found = conn.execute(
+        text("SELECT change_author FROM actions WHERE action_id = :a"), {"a": action_id}
+    ).scalar_one_or_none()
+    return None if found is None else str(found)
+
+
 def impact(conn: Connection, action_id: UUID) -> ImpactFacts:
     """ADR-49's inputs, from trusted storage: confirmed severity, criticality, how many
     deployments the same patch is proposed for, and a rollback's parent kind."""

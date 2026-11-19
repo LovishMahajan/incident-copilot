@@ -117,6 +117,7 @@ class Repo:
             "sha": commit,
             "parents": parents,
             "message": str(self.git("log", "-1", "--format=%s", commit)),
+            "author": str(self.git("log", "-1", "--format=%an", commit)),
             "refs": self.refs_at(commit),
             "files": files,
         }
