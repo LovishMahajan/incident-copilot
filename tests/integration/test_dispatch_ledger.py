@@ -36,7 +36,7 @@ from aisre.remediation.action import (
     Directory,
     development_verify_keys,
 )
-from aisre.remediation.dispatcher import Dispatcher, Outcome, TargetState
+from aisre.remediation.dispatcher import Dispatcher, LedgerState, Outcome, TargetState
 from aisre.remediation.release import FakeReleaseClient
 
 pytestmark = pytest.mark.integration
@@ -267,6 +267,46 @@ class Late:
 
     async def lookup(self, deployment: str, key: str) -> None:
         return None
+
+
+def test_fr55_a_late_apply_puts_the_block_back_and_only_the_incident_lead_clears_it(
+    app_engine, dispatcher_engine, approved
+):
+    service, incident_id, action_id, blobs = approved
+    store = PgTrustedStore(dispatcher_engine, blobs)
+    base = store.action(str(action_id)).base_revision
+    d = dispatcher(dispatcher_engine, service, Late(base), blobs, timeout=0.2)
+    res = asyncio.run(d.execute(str(action_id)))
+    assert res.outcome == Outcome.NOT_APPLIED  # reconciled: nothing found, base still running
+    assert attempts(app_engine, action_id) == [(1, "unknown", False), (2, "not_applied", True)]
+    first = d.ledger.get(str(action_id))
+    assert first is not None
+    late = d._record(  # the first call's answer lands now
+        type(first)(**{**first.__dict__, "attempt_no": 1, "state": LedgerState.STARTED}),
+        LedgerState.APPLIED,
+        "release process: applied",
+    )
+    assert late.outcome == Outcome.UNKNOWN and "blocked" in late.reason
+    with app_engine.connect() as conn:
+        blocks = conn.execute(
+            text(
+                "SELECT reason, cleared_at IS NULL FROM deployment_blocks WHERE action_id = :a"
+                " ORDER BY opened_at"
+            ),
+            {"a": action_id},
+        ).all()
+    assert [tuple(b) for b in blocks] == [("unresolved", False), ("late_apply", True)]
+    now = datetime.now(UTC)
+    with pytest.raises(ApprovalError, match="forbidden"):
+        d.resolve_outcome(
+            str(action_id), subject="user:priya", outcome="applied", observed_revision="r",
+            reason="saw it", auth_time=now, mfa=True,
+        )  # fmt: skip
+    done = d.resolve_outcome(
+        str(action_id), subject="user:lee", outcome="applied",
+        observed_revision="cfg-42+patch", reason="the change did land", auth_time=now, mfa=True,
+    )  # fmt: skip
+    assert done.outcome == Outcome.APPLIED and d.ledger.unresolved("orders-api-production") == []
 
 
 def test_fr53_an_unanswered_write_blocks_until_settled_and_a_person_needs_a_fresh_sign_in(
