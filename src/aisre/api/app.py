@@ -46,6 +46,7 @@ from fastapi.concurrency import run_in_threadpool
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse, StreamingResponse
 from sqlalchemy import Engine
+from sqlalchemy.exc import OperationalError
 from starlette.exceptions import HTTPException
 
 from aisre.api import audit, observe
@@ -565,6 +566,19 @@ def _install_errors(app: FastAPI) -> None:
     async def http_error(request: Request, exc: HTTPException) -> Response:
         code = {404: "not_found", 405: "method_not_allowed"}.get(exc.status_code, "http_error")
         return problem_response(request, ApiError(exc.status_code, code, str(exc.detail)))
+
+    @app.exception_handler(OperationalError)
+    async def record_unavailable(request: Request, exc: OperationalError) -> Response:
+        """12.5: with PostgreSQL down the API answers 503, never acknowledging what it didn't
+        store; on-call handles incidents by hand until it returns (T4.2)."""
+        err = ApiError(
+            503,
+            "record_unavailable",
+            "Incident Record unavailable",
+            "The incident record can't be written now; retry, and page on-call directly.",
+            headers={"Retry-After": "30"},
+        )
+        return problem_response(request, err)
 
     @app.exception_handler(Exception)
     async def unexpected(request: Request, exc: Exception) -> Response:
