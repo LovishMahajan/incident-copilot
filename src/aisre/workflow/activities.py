@@ -225,6 +225,7 @@ class ApprovalRequestOut:
     )
     # tested, the one exception to ADR-64's "when testing ends" (ADR-48)
     conditional_approval: bool = False  # on a rollback's request: one was signed with the fix
+    action_digest: Optional[str] = None  # the digest sealed when testing ended (ADR-64)
 
 
 @dataclass

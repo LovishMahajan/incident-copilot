@@ -418,7 +418,10 @@ class IncidentWorkflow:
         await self._to(
             I.AWAITING_APPROVAL, "tested; approval requested", action_to=A.AWAITING_APPROVAL
         )
-        out = await self._request_approval(self.action_id, self.action_digest)
+        out = await self._request_approval(self.action_id, self.action_digest or "")
+        if out.action_digest:  # sealed by the record when testing ended (ADR-64)
+            self.action_digest = out.action_digest
+            self.awaited = (self.action_id, self.action_digest)
         if out.rollback_action_id:
             self.rollback_id, self.rollback_digest = out.rollback_action_id, out.rollback_digest
             self.rollback_state = A.PROPOSED  # withdrawn unless a `failed` verdict needs it

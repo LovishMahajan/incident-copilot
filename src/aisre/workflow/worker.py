@@ -35,6 +35,12 @@ through the review system. Otherwise `draft_patch` stays scripted (`no_allowed_f
 and M1. `run_sandbox_test` is not registered here: it runs in the Test Runner, on its own queue,
 the only process with Docker (ADR-71, aisre.remediation.test_runner).
 
+Approvals (M3, T3.2, ADR-73): `request_approval`, `escalate_approval` and
+`close_approval_request` are real (aisre.workflow.approval_activities). With
+`AISRE_RELEASE_ADAPTER=fake_release` in development or test, `load_incident` reports remediation
+enabled, so a tested fix asks for approval instead of handing over; the worker never holds the
+release URL or token, which are the dispatcher process's (aisre.remediation.dispatcher_process).
+
 Budget jobs (T1.21): the worker registers BudgetJobWorkflow with the ledger's expiry and
 reconciliation activities, over PostgreSQL, and starts both jobs if they aren't running
 (aisre.workflow.budget_jobs).
@@ -93,9 +99,11 @@ from aisre.record.audit_copy import store_from_settings
 from aisre.reliability import telemetry
 from aisre.reliability.audit_jobs import AuditJobActivities, ensure_audit_jobs
 from aisre.reliability.temporal_telemetry import interceptors
+from aisre.remediation.release import remediation_enabled
 from aisre.remediation.review import ReviewActivities, client_from_settings
 from aisre.workflow import activities as act
 from aisre.workflow import scripted
+from aisre.workflow.approval_activities import ApprovalActivities
 from aisre.workflow.budget_jobs import BudgetJobWorkflow, ensure_budget_jobs
 from aisre.workflow.record_activities import EvidenceActivities, RecordActivities
 from aisre.workflow.relay import Relay
@@ -188,7 +196,8 @@ def investigation_activities(
     """Real record, evidence, skill and Notifier activities, then the scripts if enabled for
     what is still missing, then the interfaces for the rest."""
     chosen = (
-        RecordActivities(engine).all()
+        RecordActivities(engine, remediation_enabled(settings)).all()
+        + ApprovalActivities(engine).all()
         + evidence_activities(settings, engine)
         + skill_activities(settings, engine, transport)
         + review_activities(settings, engine)
