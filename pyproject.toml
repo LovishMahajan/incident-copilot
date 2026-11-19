@@ -121,6 +121,7 @@ module = [
     "aisre.remediation.review",
     "aisre.remediation.release",
     "aisre.workflow.approval_activities",
+    "aisre.remediation.dispatcher_process",
 ]
 # `strict = true` here applies to every module, so name the flags --strict sets.
 disallow_any_generics = true

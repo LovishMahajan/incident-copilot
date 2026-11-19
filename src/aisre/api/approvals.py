@@ -64,6 +64,7 @@ from aisre.remediation.action import (
     Perm,
     Signer,
     record_decision,
+    request_stop,
 )
 
 SOURCE = "/aisre/api/approvals"
@@ -469,6 +470,43 @@ class Approvals:
         raise ApiError(
             STATUS.get(e.code, 409), e.code, "Decision refused", str(e).split(": ", 1)[-1] or None
         )
+
+
+def stop_check(caller: Caller) -> Callable[[Connection, Any], None]:
+    """T3.5, FR-56: a cancel while a fix waits for approval or dispatch is a stop, checked by
+    `action.request_stop` on each open fix of the incident: the caller's groups must give the
+    cancel permission on its service. Once intent is recorded there is nothing left to stop, and
+    the cancel waits for the outcome (FR-35); a rollback is never stopped (ADR-69)."""
+
+    def check(conn: Connection, inc: Any) -> None:
+        rows = conn.execute(
+            text(
+                "SELECT a.action_id, EXISTS (SELECT 1 FROM execution_attempts e "
+                "WHERE e.action_id = a.action_id) FROM actions a WHERE a.incident_id = :i "
+                "AND a.kind <> 'rollback' AND a.status IN ('awaiting_approval', 'approved')"
+            ),
+            {"i": inc.incident_id},
+        ).all()
+        for action_id, intent in rows:
+            action = rec.load_action(conn, action_id)
+            assert action is not None
+            directory = Directory().add_groups(
+                caller.caller_id, caller.groups, action.target.service
+            )
+            try:
+                request_stop(
+                    action=action,
+                    subject=caller.caller_id,
+                    reason="cancellation",
+                    now=_now(),
+                    directory=directory,
+                    intent_recorded=bool(intent),
+                )
+            except ApprovalError as e:
+                if e.code != "execution_started":
+                    raise ApiError(STATUS.get(e.code, 403), e.code, "Stop refused") from None
+
+    return check
 
 
 def _security_codes() -> set[str]:

@@ -77,7 +77,9 @@ from pathlib import Path
 from typing import Any, cast
 
 from sqlalchemy import Engine
+from temporalio import activity
 from temporalio.client import Client
+from temporalio.exceptions import ApplicationError
 from temporalio.worker import Interceptor, Worker
 
 from aisre.agent.skills.activities import ModelSkills
@@ -107,7 +109,11 @@ from aisre.workflow.approval_activities import ApprovalActivities
 from aisre.workflow.budget_jobs import BudgetJobWorkflow, ensure_budget_jobs
 from aisre.workflow.record_activities import EvidenceActivities, RecordActivities
 from aisre.workflow.relay import Relay
-from aisre.workflow.workflow import IncidentWorkflow, ReconciliationWorkflow
+from aisre.workflow.workflow import (
+    IncidentWorkflow,
+    OutcomeResolutionWorkflow,
+    ReconciliationWorkflow,
+)
 
 ALIVE_FILE = Path(tempfile.gettempdir()) / "aisre-worker.alive"
 ALIVE_WITHIN = timedelta(seconds=30)
@@ -203,6 +209,8 @@ def investigation_activities(
         + review_activities(settings, engine)
         + (notifier or Notifier(engine)).activities()
     )
+    if remediation_enabled(settings):
+        chosen.append(verify_recovery_not_built)
     if settings.scripted_skills:
         if settings.env == "production":
             raise RuntimeError("scripted skills are refused when AISRE_ENV is production")
@@ -213,6 +221,15 @@ def investigation_activities(
     # activities.py isn't strict: its list is typed as plain functions.
     interfaces = cast(Sequence[Callable[..., Any]], act.ALL_INVESTIGATION_ACTIVITIES)
     return chosen + [a for a in interfaces if activity_name(a) not in names]
+
+
+@activity.defn(name="verify_recovery")
+async def verify_recovery_not_built(inp: act.VerifyIn) -> act.VerifyOut:
+    """The seam for T3.8 (pass 2): until the Recovery Verifier exists, an applied fix gets no
+    verdict at once, never a retry loop, so the workflow hands over saying a person decides."""
+    raise ApplicationError(
+        "verify_recovery is not built yet (T3.8): no verdict", type="NotBuilt", non_retryable=True
+    )
 
 
 def budget_job_activities(engine: Engine) -> list[Callable[..., Any]]:
@@ -228,7 +245,12 @@ def build_worker(
     return Worker(
         client,
         task_queue=act.INVESTIGATION_QUEUE,
-        workflows=[IncidentWorkflow, ReconciliationWorkflow, BudgetJobWorkflow],
+        workflows=[
+            IncidentWorkflow,
+            ReconciliationWorkflow,
+            BudgetJobWorkflow,
+            OutcomeResolutionWorkflow,
+        ],
         activities=activities,
         interceptors=worker_interceptors,
     )

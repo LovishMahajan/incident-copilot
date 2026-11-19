@@ -1043,6 +1043,24 @@ class IncidentWorkflow:
         await self._to(I.CANCELLED, reason, action_to=action_to)
 
 
+@workflow.defn(name="OutcomeResolutionWorkflow")
+class OutcomeResolutionWorkflow:
+    """T3.16: started through the outbox by POST /v1/actions/{id}/outcome-resolutions, as
+    `incident-<id>-resolution-<key>`. One activity, on the dispatcher's queue, never retried:
+    a refusal is the answer."""
+
+    @workflow.run
+    async def run(self, inp: act.ResolutionIn) -> str:
+        out = await workflow.execute_activity(
+            act.resolve_outcome,
+            inp,
+            task_queue=act.DISPATCHER_QUEUE,
+            start_to_close_timeout=timedelta(seconds=60),
+            retry_policy=RetryPolicy(maximum_attempts=3, non_retryable_error_types=["Refused"]),
+        )
+        return out.outcome
+
+
 @workflow.defn(name="ReconciliationWorkflow")
 class ReconciliationWorkflow:
     """Started by the aisre-reconciliation schedule (8.9): runs the one read-only activity."""

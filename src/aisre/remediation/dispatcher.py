@@ -17,7 +17,7 @@ import hashlib
 from dataclasses import dataclass, field, replace
 from datetime import datetime, timedelta
 from enum import Enum
-from typing import Optional, Protocol
+from typing import Any, Optional, Protocol
 
 from aisre.remediation.action import (
     TAMPERED,
@@ -81,7 +81,8 @@ class TrustedStore(Protocol):
 class WriteFence(Protocol):
     """fence.FenceState: one switch, plus per-deployment fences. Layer 12 owns it."""
 
-    epoch: int
+    @property
+    def epoch(self) -> int: ...
 
     def writes_allowed(self, deployment: str, token_epoch: int) -> tuple[bool, str]: ...
 
@@ -226,6 +227,19 @@ class Ledger:
         return None
 
 
+class LedgerStore(Protocol):
+    """What the dispatcher needs of a ledger: Ledger here, record.execution.PgLedger in use."""
+
+    events: Any
+
+    def get(self, key: str) -> Optional[LedgerEntry]: ...
+    def put(self, e: LedgerEntry) -> None: ...
+    def unresolved(self, deployment: str) -> list[DeploymentBlock]: ...
+    def block_late_apply(self, e: LedgerEntry) -> None: ...
+    def clear_late_apply(self, execution_key: str, resolution: OutcomeResolution) -> bool: ...
+    def begin(self, e: LedgerEntry) -> Optional[str]: ...
+
+
 @dataclass(frozen=True)
 class DispatchResult:
     outcome: Outcome
@@ -247,7 +261,7 @@ class Dispatcher:
         self,
         store: TrustedStore,
         release: ReleaseProcess,
-        ledger: Ledger,
+        ledger: LedgerStore,
         keys,
         directory: Directory,
         policy: ApprovalPolicy,

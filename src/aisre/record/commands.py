@@ -25,6 +25,7 @@ Versioned changes take the `If-Match` version (ADR-64) and compare it under the 
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Any
@@ -170,12 +171,21 @@ def add_note(conn: Connection, inc: Locked, caller_id: str, note: str) -> Done:
     return Done(inc.incident_id, inc.version, seq, {})
 
 
-def cancel(conn: Connection, inc: Locked, caller_id: str, reason: str) -> Done:
-    """A person's stop (ADR-69), and the signal that stops the run."""
+def cancel(
+    conn: Connection,
+    inc: Locked,
+    caller_id: str,
+    reason: str,
+    check: Callable[[Connection, Locked], None] | None = None,
+) -> Done:
+    """A person's stop (ADR-69), and the signal that stops the run. `check` is the Approval
+    Service's `action.request_stop` over the incident's open actions (T3.5)."""
     if inc.status not in CANCELLABLE:
         raise Conflict(
             "not_cancellable", f"The incident is {inc.status.value}; nothing is left to cancel."
         )
+    if check is not None:
+        check(conn, inc)
     stop_request_id = uuid7()
     conn.execute(
         insert(stop_requests).values(

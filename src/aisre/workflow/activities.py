@@ -244,6 +244,21 @@ class DispatchOut:
 
 
 @dataclass
+class ResolutionIn:
+    """POST /v1/actions/{id}/outcome-resolutions, checked by the API, for the dispatcher to write
+    (ADR-73: only its role writes attempts and blocks). `auth_time` is ISO 8601, from the token."""
+
+    action_id: str
+    subject: str
+    outcome: str  # applied | not_applied
+    observed_revision: str
+    reason: str
+    auth_time: str
+    mfa: bool
+    request_key: str  # idempotency: the API's request
+
+
+@dataclass
 class VerifyIn:
     action_id: str
     attempt_id: str
@@ -588,6 +603,14 @@ async def reconcile_execution(inp: DispatchIn) -> DispatchOut:
     raise NotImplementedError
 
 
+@activity.defn(name="resolve_outcome")
+async def resolve_outcome(inp: ResolutionIn) -> DispatchOut:
+    """Trusted Dispatcher (11.11, T3.16): record the incident lead's outcome, which clears the
+    deployment's block. Re-checks the lead's rights, sign-in and two-factor. Refusals are not
+    retried. Implementation: aisre.remediation.dispatcher_process."""
+    raise NotImplementedError
+
+
 @activity.defn(name="verify_recovery")
 async def verify_recovery(inp: VerifyIn) -> VerifyOut:
     """Recovery Verifier: reads monitoring directly for the hold period. Heartbeats. The
@@ -629,5 +652,5 @@ ALL_INVESTIGATION_ACTIVITIES = [
     hand_over,
     reconcile_workflows,
 ]
-ALL_DISPATCHER_ACTIVITIES = [dispatch_change, reconcile_execution]
+ALL_DISPATCHER_ACTIVITIES = [dispatch_change, reconcile_execution, resolve_outcome]
 ALL_TEST_RUNNER_ACTIVITIES = [run_sandbox_test]  # with the reaper's reap_sandboxes (ADR-71)
