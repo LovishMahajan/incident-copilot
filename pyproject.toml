@@ -102,6 +102,7 @@ module = [
     "aisre.reliability.health",
     "aisre.reliability.admin",
     "aisre.reliability.admin_cli",
+    "aisre.reliability.encryption_audit",
     "aisre.record",
     "aisre.record.*",
     "aisre.api",
@@ -129,6 +130,7 @@ module = [
     "aisre.verification.verifier",
     "aisre.workflow.reconciliation",
     "aisre.workflow.queue_activities",
+    "aisre.workflow.retention_jobs",
 ]
 # `strict = true` here applies to every module, so name the flags --strict sets.
 disallow_any_generics = true

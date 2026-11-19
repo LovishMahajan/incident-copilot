@@ -19,6 +19,7 @@ import urllib.request
 from datetime import UTC, datetime
 from typing import Protocol
 from urllib.parse import quote, urlsplit
+from xml.etree import ElementTree  # noqa: S405 (the configured object store's own answer)
 
 from pydantic import SecretStr
 
@@ -75,7 +76,13 @@ class S3Snapshots:
         self.timeout_s = timeout_s
 
     def signed_headers(
-        self, method: str, path: str, body: bytes, media_type: str, now: datetime
+        self,
+        method: str,
+        path: str,
+        body: bytes,
+        media_type: str,
+        now: datetime,
+        query: str = "",
     ) -> dict[str, str]:
         amz_date, day = now.strftime("%Y%m%dT%H%M%SZ"), now.strftime("%Y%m%d")
         payload = hashlib.sha256(body).hexdigest()
@@ -87,7 +94,15 @@ class S3Snapshots:
         }
         names = ";".join(sorted(headers))
         canonical = "\n".join(
-            [method, path, "", *(f"{k}:{headers[k]}" for k in sorted(headers)), "", names, payload]
+            [
+                method,
+                path,
+                query,
+                *(f"{k}:{headers[k]}" for k in sorted(headers)),
+                "",
+                names,
+                payload,
+            ]
         )
         scope = f"{day}/{self.region}/s3/aws4_request"
         to_sign = "\n".join(
@@ -130,3 +145,36 @@ class S3Snapshots:
             raise SnapshotFailed(f"object store refused the read: HTTP {e.code}") from None
         except (urllib.error.URLError, OSError) as e:
             raise SnapshotFailed(f"object store unreachable: {type(e).__name__}") from None
+
+    def _call(self, method: str, path: str, query: dict[str, str]) -> bytes:
+        q = "&".join(f"{quote(k, safe='')}={quote(v, safe='')}" for k, v in sorted(query.items()))
+        headers = self.signed_headers(
+            method, path, b"", "application/octet-stream", datetime.now(UTC), q
+        )
+        headers.pop("host")
+        url = self.endpoint + path + (f"?{q}" if q else "")
+        req = urllib.request.Request(url, method=method, headers=headers)
+        try:
+            with urllib.request.urlopen(req, timeout=self.timeout_s) as resp:
+                return bytes(resp.read())
+        except urllib.error.HTTPError as e:
+            raise SnapshotFailed(f"object store refused the {method}: HTTP {e.code}") from None
+        except (urllib.error.URLError, OSError) as e:
+            raise SnapshotFailed(f"object store unreachable: {type(e).__name__}") from None
+
+    def delete(self, key: str) -> int:
+        """T4.8 (12.7): deletes the object and every version of it, so nothing is left in a
+        versioned bucket; returns how many versions went. Absent is not an error."""
+        bucket = "/" + quote(self.bucket, safe="/-_.~")
+        listing = self._call("GET", bucket, {"versions": "", "prefix": key})
+        ns = {"s3": "http://s3.amazonaws.com/doc/2006-03-01/"}
+        versions = [
+            v.findtext("s3:VersionId", default="", namespaces=ns)
+            for tag in ("s3:Version", "s3:DeleteMarker")
+            for v in ElementTree.fromstring(listing).findall(tag, ns)
+            if v.findtext("s3:Key", default="", namespaces=ns) == key
+        ]
+        path = "/" + quote(f"{self.bucket}/{key}", safe="/-_.~")
+        for version in versions:
+            self._call("DELETE", path, {"versionId": version} if version else {})
+        return len(versions)

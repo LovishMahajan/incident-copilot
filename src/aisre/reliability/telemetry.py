@@ -258,6 +258,12 @@ production_writes_fenced = Gauge(
     ["reason"],
     registry=REGISTRY,
 )
+retention_overdue = Gauge(
+    "aisre_retention_overdue",
+    "Items past their retention period still kept, after the last retention run (12.7)",
+    ["class"],
+    registry=REGISTRY,
+)
 clock_drift = Gauge(
     "aisre_clock_drift_seconds", "Absolute clock drift on the dispatcher host", registry=REGISTRY
 )
