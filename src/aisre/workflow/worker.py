@@ -119,6 +119,7 @@ from aisre.workflow import activities as act
 from aisre.workflow import scripted
 from aisre.workflow.approval_activities import ApprovalActivities
 from aisre.workflow.budget_jobs import BudgetJobWorkflow, ensure_budget_jobs
+from aisre.workflow.queue_activities import QueueActivities
 from aisre.workflow.reconciliation import ReconciliationActivities
 from aisre.workflow.record_activities import EvidenceActivities, RecordActivities
 from aisre.workflow.relay import Relay
@@ -217,13 +218,15 @@ def investigation_activities(
     """Real record, evidence, skill and Notifier activities, then the scripts if enabled for
     what is still missing, then the interfaces for the rest. With a Temporal client, the
     workflow reconciliation job's activity is real too (T3.10)."""
+    notifier = notifier or Notifier(engine)
     chosen = (
         RecordActivities(engine, remediation_enabled(settings)).all()
+        + QueueActivities(engine, notifier).all()  # T4.3: the real queue
         + ApprovalActivities(engine).all()
         + evidence_activities(settings, engine)
         + skill_activities(settings, engine, transport)
         + review_activities(settings, engine)
-        + (notifier or Notifier(engine)).activities()
+        + notifier.activities()
         + (ReconciliationActivities(engine, client).all() if client is not None else [])
     )
     if remediation_enabled(settings):

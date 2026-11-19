@@ -47,6 +47,7 @@ markers = [
     "integration: needs PostgreSQL and Temporal; skips when they are unreachable",
     "system: needs the Compose stack and the gVisor host",
     "paid: calls a paid provider; needs AISRE_TEST_PROVIDER_KEY and AISRE_PAID_TESTS=1",
+    "fault: stops or kills this project's Compose services, minutes long; only with -m fault",
 ]
 
 [tool.ruff]
@@ -125,6 +126,7 @@ module = [
     "aisre.remediation.dispatcher_process",
     "aisre.verification.verifier",
     "aisre.workflow.reconciliation",
+    "aisre.workflow.queue_activities",
 ]
 # `strict = true` here applies to every module, so name the flags --strict sets.
 disallow_any_generics = true
