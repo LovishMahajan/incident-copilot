@@ -8,6 +8,8 @@ the caller's own roles don't allow, and every refusal is the API's (ADR-50).
     incident timeline ID [--follow]     the timeline; --follow streams it until it ends (SSE)
     incident cancel ID --reason R       POST .../cancellation
     incident close ID [--note N]        POST .../closure, with the incident's ETag as If-Match
+    incident review ID FILE [--key K]   POST .../incident-review: the incident review's findings
+                                        (an IncidentReviewCreate; Incident lead, once; ADR-75)
 
 Settings come from the environment:
 
@@ -145,6 +147,11 @@ def run(args: argparse.Namespace, api: Api, out: IO[str]) -> None:
     elif args.command == "cancel":
         made = api.call("POST", base + "/cancellation", {"reason": args.reason}, key(args.key))
         print(json.dumps(made[2]), file=out)
+    elif args.command == "review":
+        with open(args.file, encoding="utf-8") as f:
+            body = json.load(f)
+        made = api.call("POST", base + "/incident-review", body, key(args.key))
+        print(json.dumps(made[2]), file=out)
     elif args.command == "close":
         _, headers, _ = api.call("GET", base)
         body = {"note": args.note} if args.note else {}
@@ -207,6 +214,10 @@ def parser() -> argparse.ArgumentParser:
     c.add_argument("id")
     c.add_argument("--reason", required=True)
     c.add_argument("--key")
+    r = sub.add_parser("review", help="Record the incident review's findings (incident lead)")
+    r.add_argument("id")
+    r.add_argument("file")
+    r.add_argument("--key")
     cl = sub.add_parser("close", help="Accept the outcome and close (incident lead)")
     cl.add_argument("id")
     cl.add_argument("--note")

@@ -106,6 +106,7 @@ services:
       AISRE_APP_PASSWORD: ${AISRE_APP_PASSWORD:?copy .env.example to .env}
       AISRE_DISPATCHER_PASSWORD: ${AISRE_DISPATCHER_PASSWORD:?copy .env.example to .env}
       AISRE_RETENTION_PASSWORD: ${AISRE_RETENTION_PASSWORD:-}
+      AISRE_REPORTING_PASSWORD: ${AISRE_REPORTING_PASSWORD:-}
       TEMPORAL_DB_PASSWORD: ${TEMPORAL_DB_PASSWORD:?copy .env.example to .env}
     volumes:
       - pgdata:/var/lib/postgresql/data

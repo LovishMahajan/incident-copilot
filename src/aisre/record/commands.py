@@ -13,6 +13,8 @@ signal or a start (Artifact 7.7): nothing here talks to Temporal.
                      severity, and a lead_decision signal
     close            recovered or handed_over -> closed, version + 1, status_changed and
                      closed events, and a lead_decision signal so the run ends
+    incident review  handed_over, recovered or closed; once. An incident_reviews row naming the
+                     current diagnosis, and a note_added event saying it was recorded (ADR-75)
     reinvestigate    handed_over only. A reinvestigation_requested event naming run N, a
                      lead_decision signal to the run that handed over, and a start of
                      `incident-<id>-r<N>`. The new run moves the incident handed_over ->
@@ -31,12 +33,25 @@ from datetime import UTC, datetime
 from typing import Any
 from uuid import UUID
 
-from sqlalchemy import Column, Connection, Table, Text, column, func, insert, select, table, update
+from sqlalchemy import (
+    Column,
+    Connection,
+    Table,
+    Text,
+    column,
+    func,
+    insert,
+    select,
+    table,
+    text,
+    update,
+)
 from sqlalchemy.dialects.postgresql import UUID as PgUUID
 
 from aisre.contracts import (
     CancellationRequestedData,
     IncidentClosedData,
+    IncidentReviewCreate,
     IncidentStatus,
     IncidentStatusChangedData,
     NoteAddedData,
@@ -260,6 +275,67 @@ def close(conn: Connection, inc: Locked, caller_id: str, note: str | None, if_ma
     )
     _lead_signal(conn, inc, "close", caller_id)
     return Done(inc.incident_id, version, seq, {})
+
+
+REVIEWABLE = frozenset({S.handed_over, S.recovered, S.closed})
+
+
+def record_review(
+    conn: Connection, inc: Locked, caller_id: str, review: IncidentReviewCreate
+) -> Done:
+    """ADR-75: the incident review's findings, once, against the incident's current diagnosis.
+    Confirming or refuting a proposed cause needs one to have been proposed, and is required
+    when one was."""
+    if inc.status not in REVIEWABLE:
+        raise Conflict(
+            "not_reviewable",
+            f"The incident is {inc.status.value}; a review is recorded once a person owns it.",
+        )
+    diagnosis = conn.execute(
+        text(
+            "SELECT diagnosis_id, COALESCE(final_outcome, outcome)::text FROM diagnoses "
+            "WHERE incident_id = :i ORDER BY revision DESC LIMIT 1"
+        ),
+        {"i": inc.incident_id},
+    ).first()
+    named = diagnosis is not None and diagnosis[1] == "established"
+    if named != (review.proposed_cause_confirmed is not None):
+        raise Conflict(
+            "proposed_cause",
+            "Give proposed_cause_confirmed exactly when the diagnosis named a cause"
+            f" (it {'did' if named else 'did not'}).",
+        )
+    written = conn.execute(
+        text(
+            "INSERT INTO incident_reviews (incident_id, diagnosis_id, cause, cause_category, "
+            "cause_identified_at, proposed_cause_confirmed, should_have_handed_over, "
+            "engineer_hours, fix_reversed, reviewed_by) VALUES (:i, :d, :cause, "
+            "CAST(:category AS hypothesis_category), :at, :confirmed, :handover, :hours, "
+            ":reversed, :by) ON CONFLICT (incident_id) DO NOTHING RETURNING incident_id"
+        ),
+        {
+            "i": inc.incident_id,
+            "d": diagnosis[0] if diagnosis else None,
+            "cause": review.cause,
+            "category": review.cause_category.value,
+            "at": review.cause_identified_at,
+            "confirmed": review.proposed_cause_confirmed,
+            "handover": review.should_have_handed_over,
+            "hours": review.engineer_hours,
+            "reversed": review.fix_reversed,
+            "by": caller_id,
+        },
+    ).first()
+    if written is None:
+        raise Conflict("already_reviewed", "This incident's review is already recorded.")
+    verdict = {
+        None: "no cause was proposed",
+        True: "the proposed cause is confirmed",
+        False: "the proposed cause is not confirmed",
+    }[review.proposed_cause_confirmed]
+    note = f"Incident review recorded: {verdict}."
+    seq = _event(conn, inc, NOTE_ADDED, caller_id, NoteAddedData(note=note))
+    return Done(inc.incident_id, inc.version, seq, {})
 
 
 def reinvestigate(

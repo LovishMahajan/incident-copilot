@@ -12,6 +12,7 @@
     GET  /v1/incidents/{id}/audit/export       signed JSON, from the write-once copy (T1.20)
     POST /v1/incidents/{id}/notes, /cancellation, /severity-confirmation, /closure,
          /reinvestigations                     aisre.api.commands (T1.6)
+    POST /v1/incidents/{id}/incident-review    the review's findings, once (M5, ADR-75)
     GET  /v1/actions/{id}/approval-request, /approvals; POST /approvals, /rejections,
          /revocations                          aisre.api.approvals (T3.2)
     GET  /livez, /readyz
@@ -69,6 +70,7 @@ from aisre.contracts import (
     EvidenceKind,
     EvidenceRecord,
     IncidentAccepted,
+    IncidentReviewCreate,
     IncidentView,
     NoteCreate,
     Page,
@@ -280,6 +282,29 @@ def create_app(
             lambda c, inc: cmd.close(c, inc, caller.caller_id, body.note, version),
             status=200,
             if_match=version,
+        )
+
+    @app.post(
+        "/v1/incidents/{incident_id}/incident-review", status_code=201, **requires(Perm.CLOSE)
+    )
+    def record_review(
+        request: Request,
+        incident_id: UUID,
+        body: IncidentReviewCreate,
+        caller: CallerDep,
+        idempotency_key: KeyDep = None,
+    ) -> JSONResponse:
+        """ADR-75: the incident review's findings for the pilot measures (Artifact 1.6). The
+        Incident lead, as for closing (ADR-50); once per incident (409 after)."""
+        return commands.run(
+            request,
+            caller,
+            incident_id,
+            Perm.CLOSE,
+            idempotency_key,
+            body,
+            lambda c, inc: cmd.record_review(c, inc, caller.caller_id, body),
+            status=201,
         )
 
     @app.post(

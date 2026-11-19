@@ -166,6 +166,7 @@ API_WRITES = {
     ("POST", "/v1/incidents/{incident_id}/severity-confirmation"),
     ("POST", "/v1/incidents/{incident_id}/closure"),
     ("POST", "/v1/incidents/{incident_id}/reinvestigations"),
+    ("POST", "/v1/incidents/{incident_id}/incident-review"),  # M5, ADR-75: a record, no change
     ("POST", "/v1/actions/{action_id}/approvals"),
     ("POST", "/v1/actions/{action_id}/rejections"),
     ("POST", "/v1/actions/{action_id}/revocations"),
