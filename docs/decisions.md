@@ -632,6 +632,17 @@ M4 asks that a page reach a person (Q13.46) and that each alert fire in a fault 
 - **Owner:** Platform owner. **Reversal:** Low: the pager is three URLs in one file; the fault tests are tests. **Revisit when:** a paging service and rotas are chosen (ADR-69), before M4 can be accepted. Anything shown only through these stand-ins is Partial, never Met.
 - **Resolves:** building and testing M4's paging path and fault tests without a paging service, rotas or a second host.
 
+### ADR-75: Pilot readiness for M5 (2026-11-19, Proposed)
+
+M5 is a live advisory pilot on real incidents (Artifact 13.4, T5.1 to T5.7). None of it can run on the development host: no production, no monitoring account, no release process access, no model key and no pilot users. M5 builds what the pilot needs so that it can start when those are ready. Nothing here is a pilot result, and the Release B decision (T5.7) is not written.
+
+| Topic | Decision |
+| --- | --- |
+| Evidence sources per service | `AISRE_EVIDENCE_SOURCES` keeps its `"sources"` map (tool or `"*"` to an adapter) as the platform-wide fallback, and adds `"services"`: the same map keyed by `service` or `service/environment`. The most specific scope that names the tool, or has a `"*"`, answers: service and environment, then service, then platform. A service no scope covers has no source, so each call is a gap (ADR-54), never another service's source. Tool names are checked against `SOURCE_TOOLS` (the registry's READ tools less the two the corpus answers), so a misspelt tool is refused at start, not silently a gap. The adapter receives the same call as before; adapters still drop anything labelled with another service (FR-44) |
+
+- **Owner:** Platform owner. **Reversal:** Low: configuration, a check command and reports. **Revisit when:** the pilot's systems and people are named, before T5.1 starts.
+- **Resolves:** building M5's go-live check, measures and templates without a production environment.
+
 ## Not conflicts
 
 | Claim | Finding |

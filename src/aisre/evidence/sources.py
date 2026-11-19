@@ -3,8 +3,9 @@
 An adapter holds the source's address (and, for a real source, its narrow credential, never
 shown to the model: ST-17) and answers one tool call with records in the platform's own shape,
 below, so the collector and the fact rules (aisre.evidence.facts) never see a vendor's format.
-Which adapter answers which tool is configuration (`SourceSet.from_config`): a real source is
-one more class in ADAPTERS and one more entry in the configuration, nothing else.
+Which adapter answers which tool, for which service and environment, is configuration
+(`SourceSet.from_config`, ADR-75): a real source is one more class in ADAPTERS and one more
+entry in the configuration, nothing else.
 
 Every adapter is read-only, stays inside the call's service, environment and window (it asks
 the source for that scope and drops anything else it is sent: FR-44, ST-22), and raises
@@ -34,7 +35,7 @@ import re
 import urllib.error
 import urllib.request
 from collections.abc import Callable, Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from typing import Any, Protocol
 from urllib.parse import urlencode
@@ -315,38 +316,86 @@ def _change(body: dict[str, Any]) -> Record:
 
 
 # ---------------------------------------------------------------------------
-# Configuration: which adapter answers which tool
+# Configuration: which adapter answers which tool, for which service
 # ---------------------------------------------------------------------------
 ADAPTERS: dict[str, Callable[..., Source]] = {"fake_monitoring": FakeMonitoringSource}
 LOCAL_ONLY = {"fake_monitoring"}
+# The READ tools a source answers: every READ tool in aisre.agent.tool_registry but the two
+# the corpus answers (search_runbooks, search_past_incidents). A unit test keeps them equal.
+SOURCE_TOOLS = (
+    "get_alert",
+    "get_metric",
+    "get_logs",
+    "get_traces",
+    "get_changes",
+    "get_error_groups",
+    "get_dependency_health",
+)
+ToolSources = Mapping[str, Source]
 
 
 @dataclass(frozen=True)
 class SourceSet:
-    """Tool name -> source; `"*"` answers any tool not named. `replay_as_of` is for replaying a
-    recorded scenario only: the collector treats it as "now", so data after the scenario's
-    evidence cut-off stays hidden (tests/fixtures/reference-incident/README.md)."""
+    """Tool name -> source; `"*"` answers any tool not named. `services` holds the same map per
+    service (key `service`) or per service and environment (key `service/environment`). The
+    most specific scope that names the tool, or failing that has a `"*"`, answers: the service
+    and environment, then the service, then the platform-wide `sources`. A service no scope
+    covers has no source, and the collector records a gap: never another service's source.
 
-    sources: Mapping[str, Source]
+    `replay_as_of` is for replaying a recorded scenario only: the collector treats it as "now",
+    so data after the scenario's evidence cut-off stays hidden
+    (tests/fixtures/reference-incident/README.md)."""
+
+    sources: ToolSources
     replay_as_of: datetime | None = None
+    services: Mapping[str, ToolSources] = field(default_factory=dict)
 
-    def for_tool(self, tool: str) -> Source | None:
-        return self.sources.get(tool) or self.sources.get("*")
+    def for_tool(
+        self, tool: str, service: str | None = None, environment: str | None = None
+    ) -> Source | None:
+        scopes: list[ToolSources] = []
+        if service is not None:
+            if environment is not None and f"{service}/{environment}" in self.services:
+                scopes.append(self.services[f"{service}/{environment}"])
+            if service in self.services:
+                scopes.append(self.services[service])
+        scopes.append(self.sources)
+        for scope in scopes:
+            if found := scope.get(tool) or scope.get("*"):
+                return found
+        return None
 
     @classmethod
     def from_config(cls, config: Mapping[str, Any], *, production: bool = False) -> SourceSet:
-        """`{"sources": {"*" | tool: {"adapter": name, ...its arguments}}, "replay_as_of": ...}`.
-        In production, local-only adapters and replay are refused."""
-        sources: dict[str, Source] = {}
-        for tool, spec in config.get("sources", {}).items():
-            spec = dict(spec)
-            name = spec.pop("adapter")
-            if name not in ADAPTERS:
-                raise ValueError(f"unknown evidence adapter {name!r}")
-            if production and name in LOCAL_ONLY:
-                raise ValueError(f"evidence adapter {name!r} is for local use only")
-            sources[tool] = ADAPTERS[name](**spec)
+        """`{"sources": {"*" | tool: {"adapter": name, ...its arguments}}, "services":
+        {service | "service/environment": {"*" | tool: {...}}}, "replay_as_of": ...}`. Either
+        map may be absent. In production, local-only adapters and replay are refused."""
+        unknown = set(config) - {"sources", "services", "replay_as_of"}
+        if unknown:
+            raise ValueError(f"unknown evidence configuration keys: {sorted(unknown)}")
+        services: dict[str, ToolSources] = {}
+        for scope, tools in config.get("services", {}).items():
+            service, _, environment = scope.partition("/")
+            if not service or "/" in environment or scope.endswith("/"):
+                raise ValueError(f"evidence scope {scope!r}: `service` or `service/environment`")
+            services[scope] = _tool_sources(tools, production)
+        sources = _tool_sources(config.get("sources", {}), production)
         replay = config.get("replay_as_of")
         if production and replay:
             raise ValueError("replay_as_of is for replaying scenarios, never production")
-        return cls(sources, parse_time(replay) if replay else None)
+        return cls(sources, parse_time(replay) if replay else None, services)
+
+
+def _tool_sources(tools: Mapping[str, Any], production: bool) -> dict[str, Source]:
+    out: dict[str, Source] = {}
+    for tool, spec in tools.items():
+        if tool != "*" and tool not in SOURCE_TOOLS:
+            raise ValueError(f"no evidence source answers {tool!r}")
+        spec = dict(spec)
+        name = spec.pop("adapter")
+        if name not in ADAPTERS:
+            raise ValueError(f"unknown evidence adapter {name!r}")
+        if production and name in LOCAL_ONLY:
+            raise ValueError(f"evidence adapter {name!r} is for local use only")
+        out[tool] = ADAPTERS[name](**spec)
+    return out
