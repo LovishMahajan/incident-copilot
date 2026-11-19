@@ -12,6 +12,8 @@
     GET  /v1/incidents/{id}/audit/export       signed JSON, from the write-once copy (T1.20)
     POST /v1/incidents/{id}/notes, /cancellation, /severity-confirmation, /closure,
          /reinvestigations                     aisre.api.commands (T1.6)
+    GET  /v1/actions/{id}/approval-request, /approvals; POST /approvals, /rejections,
+         /revocations                          aisre.api.approvals (T3.2)
     GET  /livez, /readyz
 
 Intake (aisre.api.intake) is one transaction (Artifact 7.7): the idempotency key, then the
@@ -46,6 +48,8 @@ from sqlalchemy import Engine, text
 from starlette.exceptions import HTTPException
 
 from aisre.api import audit, observe
+from aisre.api.approvals import Approvals
+from aisre.api.approvals import register as register_approvals
 from aisre.api.auth import Authenticator, Caller, current_caller
 from aisre.api.commands import Commands, parse_if_match
 from aisre.api.export import ExportSigner, audit_document, timeline_document
@@ -74,7 +78,7 @@ from aisre.record import commands as cmd
 from aisre.record import load_incident, make_engine, reads, timeline, uuid7
 from aisre.record.audit_copy import WriteOnceStore, store_from_settings
 from aisre.reliability import telemetry
-from aisre.remediation.action import Perm
+from aisre.remediation.action import Perm, Signer, development_signer
 
 REQUEST_ID_HEADER = "X-Request-ID"
 TIMELINE_PAGE_MAX = 500
@@ -402,6 +406,8 @@ def create_app(
             },
         )
 
+    register_approvals(app, Approvals(db, approval_signer(settings)))
+
     streams = Streams(db, stream_timing)
 
     @app.get("/v1/incidents/{incident_id}/timeline/stream", **requires(Perm.READ))
@@ -487,6 +493,13 @@ def create_app(
         return {"status": "ready"}
 
     return app
+
+
+def approval_signer(settings: Settings) -> Signer | None:
+    """ADR-73: the development signing key, when set (Settings refuses it outside development
+    and test). Without one, the approval writes answer 503."""
+    key = settings.approval_signing_key
+    return development_signer(key.get_secret_value()) if key is not None else None
 
 
 def _not_found(incident_id: UUID) -> ApiError:

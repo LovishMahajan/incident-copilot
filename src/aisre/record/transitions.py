@@ -34,6 +34,7 @@ from uuid import UUID, uuid5
 from sqlalchemy import Connection, Row, delete, select, update
 
 from aisre.contracts import IncidentHandedOverData, IncidentStatus, IncidentStatusChangedData
+from aisre.record import approvals
 from aisre.record.incidents import append_event
 from aisre.record.tables import (
     actions,
@@ -236,6 +237,12 @@ def _seq_of(conn: Connection, event_id: UUID) -> int | None:
 def _move_action(
     conn: Connection, incident_id: UUID, action_id: UUID, a_from: str | None, a_to: str
 ) -> None:
+    # Testing ends: the two write-once digests go in with the status (ADR-64, M3).
+    sealed = (
+        approvals.seal_digests(conn, action_id)
+        if (a_from, a_to) == ("testing", "awaiting_approval")
+        else {}
+    )
     moved = conn.execute(
         update(actions)
         .where(
@@ -243,7 +250,7 @@ def _move_action(
             actions.c.incident_id == incident_id,
             actions.c.status == a_from,
         )
-        .values(status=a_to, version=actions.c.version + 1)
+        .values(status=a_to, version=actions.c.version + 1, **sealed)
     ).rowcount
     if moved != 1:
         raise ActionMismatch(f"action {action_id} is not {a_from} on incident {incident_id}")

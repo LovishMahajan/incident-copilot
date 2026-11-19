@@ -188,6 +188,8 @@ actions = Table(
     Column("status", action_status, nullable=False),
     Column("version", Integer, nullable=False),
     Column("created_at", Timestamp, nullable=False),
+    Column("action_digest", Text),  # write-once, when testing ends (ADR-64)
+    Column("test_bundle_digest", Text),
 )
 
 investigation_queue = Table(

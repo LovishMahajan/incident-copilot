@@ -61,8 +61,9 @@ log = logging.getLogger(__name__)
 class RecordActivities:
     """The three record activities, for `Worker(activities=...)`: `.all()`."""
 
-    def __init__(self, engine: Engine) -> None:
+    def __init__(self, engine: Engine, remediation: bool = False) -> None:
         self.engine = engine
+        self.remediation = remediation  # release.remediation_enabled(settings), ADR-73
 
     def all(self) -> list[Callable[..., Any]]:
         return [self.load_incident, self.record_transition, self.hand_over]
@@ -83,9 +84,15 @@ class RecordActivities:
         snap = await self._in_transaction(lambda c: rec.snapshot(c, UUID(inp.incident_id)))
         if snap is None:
             return None
-        # remediation_enabled stays False: Release B needs a recorded decision (ADR-44).
+        # False in Release A (ADR-44). True only in development or test with the fake release
+        # process configured (ADR-73): a tested fix then asks for approval.
         return act.IncidentSnapshot(
-            str(snap.incident_id), snap.service, snap.environment, snap.version, snap.status
+            str(snap.incident_id),
+            snap.service,
+            snap.environment,
+            snap.version,
+            snap.status,
+            remediation_enabled=self.remediation,
         )
 
     @activity.defn(name="record_transition")
