@@ -257,7 +257,7 @@ def from_settings(settings: Settings, engine: Engine) -> DispatcherActivities:
 def dispatcher_health(settings: Settings, engine: Engine, client: Any) -> health.Health:
     """T4.5 (12.5): readiness is the database, the schema version, the configuration and the
     write fence (globally fenced: alive, but not ready to write). Probes are PostgreSQL,
-    Temporal and the release process, every 15 s."""
+    Temporal and the release process, every 15 s; `aisre_dispatch_fenced` on the same cycle."""
     readiness = {
         "database": health.database(engine),
         "schema_version": health.schema_version(engine),
@@ -267,7 +267,8 @@ def dispatcher_health(settings: Settings, engine: Engine, client: Any) -> health
     dependencies = {"postgresql": health.database(engine), "temporal": health.temporal(client)}
     if settings.release_url:
         dependencies["release_process"] = health.http_ok(f"{settings.release_url}/healthz")
-    return health.Health("dispatcher", readiness, dependencies)
+    gauges = {"fence": health.fence_gauge(engine)}  # AisreWritesFenced
+    return health.Health("dispatcher", readiness, dependencies, gauges)
 
 
 async def run(settings: Settings, stop: asyncio.Event) -> None:

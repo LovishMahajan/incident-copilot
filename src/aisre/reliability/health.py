@@ -11,6 +11,9 @@ Two things, kept apart (12.5's health checks):
   and sets `aisre_dependency_up{dependency}`: postgresql, temporal, object_store,
   release_process. Each process publishes its own, so a probe still reports while the
   dependency is down. `AisrePostgresDown` (ops/alerts.yml) reads the postgresql one.
+- Gauges (M4 pass 2): state an alert reads that no request path refreshes, published on the
+  same cycle: the queue depth and age and the fleet spend (worker), the write fence
+  (dispatcher). A publisher that fails leaves its gauges as they were and is logged.
 
 A check is an async callable that raises on failure; each runs under PROBE_TIMEOUT. A blocking
 check runs in a thread (`blocking`), so the event loop never waits on a dead dependency.
@@ -31,6 +34,7 @@ from typing import Any
 from sqlalchemy import Engine, text
 
 from aisre.reliability import telemetry
+from aisre.reliability.fence import FenceReason
 
 PROBE_EVERY = timedelta(seconds=15)  # provisional (12.1)
 PROBE_TIMEOUT = timedelta(seconds=3)
@@ -92,6 +96,29 @@ def write_fence(engine: Engine) -> Check:
             reasons = [str(r) for r in active]
         if reasons:
             raise NotReady(f"writes fenced: {', '.join(reasons)}")
+
+    return blocking(read)
+
+
+def fence_gauge(engine: Engine) -> Check:
+    """`aisre_dispatch_fenced{reason}`: 1 for each global fence reason set, 0 for the rest
+    (AisreWritesFenced, RB-11). Reads as aisre_dispatcher."""
+
+    def read() -> None:
+        with engine.connect() as conn:
+            active = {
+                str(r)
+                for r in conn.execute(
+                    text(
+                        "SELECT reason FROM fence_reasons "
+                        "WHERE cleared_at IS NULL AND scope = 'global'"
+                    )
+                ).scalars()
+            }
+        for reason in FenceReason:
+            telemetry.production_writes_fenced.labels(reason=reason.value).set(
+                1 if reason.value in active else 0
+            )
 
     return blocking(read)
 
@@ -162,6 +189,7 @@ class Health:
         process: str,
         readiness: Mapping[str, Check],
         dependencies: Mapping[str, Check] | None = None,
+        gauges: Mapping[str, Check] | None = None,
     ) -> None:
         unknown = set(dependencies or {}) - set(DEPENDENCIES)
         if unknown:
@@ -169,6 +197,7 @@ class Health:
         self.process = process
         self.readiness = dict(readiness)
         self.dependencies = dict(dependencies or {})
+        self.gauges = dict(gauges or {})
         self._last: dict[str, bool] = {}
 
     async def ready(self) -> Report:
@@ -192,10 +221,17 @@ class Health:
         self._last = now
         return now
 
+    async def publish(self) -> dict[str, str]:
+        """Runs every gauge publisher once; returns the ones that failed, and why."""
+        failed = await _run(self.gauges)
+        for name, why in failed.items():
+            log.warning("gauge publisher %s failed: %s", name, why)
+        return failed
+
     async def run(self, stop: asyncio.Event, every: timedelta = PROBE_EVERY) -> None:
-        """Readiness and probes every `every` until `stop` is set."""
+        """Readiness, probes and gauges every `every` until `stop` is set."""
         while not stop.is_set():
-            await asyncio.gather(self.ready(), self.probe())
+            await asyncio.gather(self.ready(), self.probe(), self.publish())
             try:
                 await asyncio.wait_for(stop.wait(), every.total_seconds())
             except TimeoutError:

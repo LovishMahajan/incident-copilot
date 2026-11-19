@@ -34,6 +34,18 @@ QUEUE_ALERT_AT = 50  # NFR-39, provisional: more than this waiting alerts the in
 SEVERITIES = ("sev1", "sev2", "sev3", "sev4", "none")
 
 
+def publish_depth(engine: Engine) -> None:
+    """`aisre_incident_queue_depth` and `aisre_incident_queue_oldest_age_seconds` per severity,
+    from investigation_queue. Every attempt calls it, and the worker's probe cycle too, so the
+    gauges fall back to 0 when the queue drains without another attempt (a cancel)."""
+    with engine.connect() as conn:
+        depth = queue.snapshot(conn)
+    for sev in SEVERITIES:
+        n, age = depth.get(sev, (0, 0.0))
+        telemetry.queue_depth.labels(severity=sev).set(n)
+        telemetry.queue_oldest_age.labels(severity=sev).set(age)
+
+
 class QueueActivities:
     def __init__(self, engine: Engine, notifier: Notifier) -> None:
         self.engine, self.notifier = engine, notifier
@@ -64,12 +76,7 @@ class QueueActivities:
                         detail=f"{grant.waiting} incidents waiting, over {QUEUE_ALERT_AT} (NFR-39)",
                     )
                 )
-        with self.engine.connect() as conn:
-            depth = queue.snapshot(conn)
-        for sev in SEVERITIES:
-            n, age = depth.get(sev, (0, 0.0))
-            telemetry.queue_depth.labels(severity=sev).set(n)
-            telemetry.queue_oldest_age.labels(severity=sev).set(age)
+        publish_depth(self.engine)
         return grant
 
     @activity.defn(name="acquire_investigation_slot")
