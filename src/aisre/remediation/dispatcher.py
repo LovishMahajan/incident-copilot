@@ -597,3 +597,32 @@ class Dispatcher:
             f"resolved by {subject}",
             OutcomeResolution(subject, outcome, observed_revision, reason),
         )
+
+
+# ---------------------------------------------------------------------------
+# Release reconciliation (Artifact 5.2, ST-40, T3.11; provisional)
+# ---------------------------------------------------------------------------
+@dataclass(frozen=True)
+class ReleaseChange:
+    """One entry of the release process's change history."""
+
+    deployment: str
+    at: datetime
+    kind: str  # what the release process calls it, e.g. apply, undo, manual
+    revision: str
+    execution_key: Optional[str]
+
+
+def unmatched_changes(
+    changes: list[ReleaseChange], attempted_keys: set[str], since: datetime
+) -> list[ReleaseChange]:
+    """The daily comparison of the change history against `execution_attempts`: any change since
+    `since` whose key no attempt carries, or that has no key at all, is unmatched, and raises a
+    security alert. The state the history starts from (`start`) is not a change."""
+    return [
+        c
+        for c in changes
+        if c.at >= since
+        and c.kind != "start"
+        and (c.execution_key is None or c.execution_key not in attempted_keys)
+    ]

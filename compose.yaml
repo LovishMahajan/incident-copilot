@@ -305,6 +305,8 @@ services:
       AISRE_RELEASE_TOKEN: ${AISRE_RELEASE_TOKEN:-}
       AISRE_APPROVAL_VERIFY_KEY: ${AISRE_APPROVAL_VERIFY_KEY:-}
       AISRE_IDENTITY_DIRECTORY_URL: ${AISRE_IDENTITY_DIRECTORY_URL:-}
+      # /metrics for Prometheus: dispatch outcomes, unmatched release changes (ST-40).
+      AISRE_METRICS_PORT: ${AISRE_METRICS_PORT:-9464}
       # Read-only use: the patch bytes it hashes and sends (ST-13).
       AISRE_OBJECT_STORE_URL: ${AISRE_OBJECT_STORE_URL:-}
       AISRE_OBJECT_STORE_BUCKET: ${AISRE_OBJECT_STORE_BUCKET:-aisre-artifacts}

@@ -212,6 +212,15 @@ groups:
         annotations:
           summary: "An approval attempt refused on identity, rights or digest (ADR-49, 11.6)"
           runbook: "RB-08 approval backlog"
+      - alert: AisreReleaseChangeUnmatched
+        # ST-40 (T3.11, provisional): the daily release reconciliation found a change in the release
+        # process's history that no execution attempt carries. Each is an aisre.release.unmatched_change
+        # audit line on the dispatcher.
+        expr: max(aisre_release_changes_unmatched) > 0
+        labels: {severity: page, route: security_lead}
+        annotations:
+          summary: "A production change with no matching execution attempt (ST-40)"
+          runbook: "RB-07 unknown action outcome"
       - alert: AisreVerificationFailureRate
         expr: |
           sum(increase(aisre_verification_outcomes_total{verdict="failed"}[7d]))

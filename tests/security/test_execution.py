@@ -492,8 +492,26 @@ def test_st40_control_an_honest_release_is_applied():
     assert rig((a, ds)).run(a.action_id).outcome == Outcome.APPLIED
 
 
-def test_st40_release_reconciliation_job_is_not_implemented():
-    pytest.skip(
-        "The daily comparison of change history with execution_attempts and its security alert (provisional "
-        "control) don't exist in any module, so an unmatched change raises nothing today"
-    )
+def test_st40_the_release_reconciliation_flags_every_change_no_attempt_carries():
+    """T3.11: the daily comparison of the change history with execution_attempts. A platform change
+    whose key an attempt carries is matched; an out-of-band change (no key) and a keyed change no
+    attempt carries are not, and page the Security lead (AisreReleaseChangeUnmatched). The state the
+    history starts from isn't a change, and nothing older than the window is looked at again.
+    Against PostgreSQL and the fake release process: tests/integration/test_reconciliation.py."""
+    from datetime import UTC, datetime
+
+    from aisre.remediation.dispatcher import ReleaseChange, unmatched_changes
+
+    t = datetime(2026, 11, 19, 12, tzinfo=UTC)
+    dep = "orders-api-production"
+    history = [
+        ReleaseChange(dep, t - timedelta(days=3), "manual", "old", None),
+        ReleaseChange(dep, t, "start", "r0", None),
+        ReleaseChange(dep, t + timedelta(minutes=1), "apply", "r1", "a1"),
+        ReleaseChange(dep, t + timedelta(minutes=2), "manual", "r1+manual", None),
+        ReleaseChange(dep, t + timedelta(minutes=3), "apply", "r2", "forged-key"),
+        ReleaseChange(dep, t + timedelta(minutes=4), "undo", "r0", "rb1"),
+    ]
+    found = unmatched_changes(history, {"a1", "rb1"}, t - timedelta(hours=25))
+    assert [(c.kind, c.revision) for c in found] == [("manual", "r1+manual"), ("apply", "r2")]
+    assert unmatched_changes(history[2:3] + history[5:], {"a1", "rb1"}, t) == []
