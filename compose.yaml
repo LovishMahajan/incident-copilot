@@ -90,6 +90,16 @@ x-app-wiring: &app-wiring
 services:
   postgres:
     image: postgres:17.12
+    # M4 T4.4 (ADR-74): WAL archived to a local folder, the stand-in for production
+    # point-in-time recovery. A segment is archived at least every 60 s (the RPO bound here).
+    command:
+      - postgres
+      - -c
+      - archive_mode=on
+      - -c
+      - archive_command=mkdir -p /backups/wal && test ! -f /backups/wal/%f && cp %p /backups/wal/%f
+      - -c
+      - archive_timeout=60
     environment:
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?copy .env.example to .env}
       AISRE_OWNER_PASSWORD: ${AISRE_OWNER_PASSWORD:?copy .env.example to .env}
@@ -99,6 +109,7 @@ services:
     volumes:
       - pgdata:/var/lib/postgresql/data
       - ./ops/compose/postgres-init.sh:/docker-entrypoint-initdb.d/10-aisre.sh:ro
+      - ${AISRE_BACKUP_DIR:-./.aisre-backups}:/backups
     ports:
       - "127.0.0.1:${AISRE_POSTGRES_PORT:-55432}:5432"
     healthcheck:
@@ -108,6 +119,30 @@ services:
       interval: 2s
       timeout: 5s
       retries: 30
+
+  postgres-restore:
+    # M4 T4.4 restore drill only (`--profile drill`, ADR-74): a separate PostgreSQL that
+    # recovers one base backup and the archived WAL into its own throwaway data directory,
+    # then promotes. It never touches the stack's data; `rm -sfv postgres-restore` removes it.
+    image: postgres:17.12
+    profiles: [drill]
+    user: postgres
+    entrypoint: ["bash", "/restore.sh"]
+    environment:
+      AISRE_RESTORE_BACKUP: ${AISRE_RESTORE_BACKUP:-}
+      AISRE_RESTORE_WAL: ${AISRE_RESTORE_WAL:-wal}
+      AISRE_RESTORE_TARGET: ${AISRE_RESTORE_TARGET:-}
+    volumes:
+      - ${AISRE_BACKUP_DIR:-./.aisre-backups}:/backups:ro
+      - ./ops/compose/pg-restore.sh:/restore.sh:ro
+    ports:
+      - "127.0.0.1:${AISRE_RESTORE_PORT:-55433}:5432"
+    healthcheck:
+      # Healthy once recovery has ended and the server is promoted.
+      test: ["CMD-SHELL", "psql -h 127.0.0.1 -U postgres -tAc 'SELECT NOT pg_is_in_recovery()' | grep -q t"]
+      interval: 2s
+      timeout: 5s
+      retries: 150
 
   temporal-schema:
     image: temporalio/admin-tools:1.32.2

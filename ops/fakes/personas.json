@@ -6,6 +6,8 @@
     "lee": {"groups": ["aisre:incident_lead:orders-api"]},
     "rin": {"groups": ["aisre:responder:orders-api"]},
     "vic": {"groups": ["aisre:viewer"]},
+    "ines": {"groups": ["aisre:incident_lead"]},
+    "pat": {"groups": ["aisre:platform_admin"]},
     "synthetic-engineer-a": {"groups": ["aisre:approver:orders-api"]}
   }
 }
