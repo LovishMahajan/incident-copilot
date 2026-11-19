@@ -1410,13 +1410,15 @@ function renderFix() {
             el("dd", {
               text: test
                 ? `${humanize(test.outcome)} · failure reproduced first: ${test.reproduced ? "yes" : "no"} · ${ISOLATION_NOTE[test.isolation] || test.isolation}`
-                : a.status === "testing" ? "Running" : "Not run",
+                : a.status === "testing" ? "Running" : a.kind === "rollback" ? "Not run: a rollback restores the revision that ran before (ADR-48)" : "Not run",
             }),
             el("dt", { text: "Pull request" }),
             el("dd", {
               text: a.patch && a.patch.review_ref
                 ? `${a.patch.review_ref}, a draft in the review system. People review, merge and deploy it; the platform never merges.`
-                : "None: a draft pull request is opened only for a fix whose test passed.",
+                : APPROVAL_PATH.has(a.status) || a.kind === "rollback"
+                  ? "None: on the approval path the tested patch itself is approved and applied (ADR-73)."
+                  : "None: a draft pull request is opened only for a fix whose test passed.",
             }),
           ]),
           renderLifecycle(a),
