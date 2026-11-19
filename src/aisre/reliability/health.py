@@ -39,7 +39,7 @@ from aisre.reliability.fence import FenceReason
 PROBE_EVERY = timedelta(seconds=15)  # provisional (12.1)
 PROBE_TIMEOUT = timedelta(seconds=3)
 # The Alembic head this code expects. tests/unit/test_health.py holds it to db/migrations.
-SCHEMA_HEAD = "0012_m4_document_text_purge"
+SCHEMA_HEAD = "0013_m5_incident_reviews"
 DEPENDENCIES = ("postgresql", "temporal", "object_store", "release_process")
 
 Check = Callable[[], Awaitable[None]]

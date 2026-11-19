@@ -18,6 +18,7 @@ from uuid import UUID
 
 from pydantic import (
     AnyHttpUrl,
+    AwareDatetime,
     BaseModel,
     ConfigDict,
     Field,
@@ -584,6 +585,23 @@ class ClosureCreate(Strict):
     """POST /v1/incidents/{incident_id}/closure. Accepts the outcome and closes."""
 
     note: LongText | None = None
+
+
+class IncidentReviewCreate(Strict):
+    """POST /v1/incidents/{incident_id}/incident-review (ADR-75): the incident review's findings
+    for Artifact 1.6's pilot measures, written once by the Incident lead. The diagnosis judged
+    is the incident's current one, read by the platform. `proposed_cause_confirmed` is given
+    exactly when that diagnosis named a cause; `fix_reversed` only when a fix was applied."""
+
+    cause: LongText = Field(description="The cause the responders found")
+    cause_category: HypothesisCategory
+    cause_identified_at: AwareDatetime = Field(description="When the responders identified it")
+    proposed_cause_confirmed: bool | None = None
+    should_have_handed_over: bool = Field(
+        description="The evidence did not support naming a cause (ADR-65 under-escalation)"
+    )
+    engineer_hours: float | None = Field(default=None, ge=0, le=99999)
+    fix_reversed: bool | None = None
 
 
 class ReinvestigationCreate(Strict):

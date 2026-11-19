@@ -127,8 +127,8 @@ jobs:
           uv run alembic upgrade head
           n=$($PSQL -U postgres -d aisre -tA -c "SELECT count(*) FROM information_schema.tables
                 WHERE table_schema = 'public' AND table_type = 'BASE TABLE'")
-          echo "public tables: $n (expected 39)"
-          [ "$n" -eq 39 ]
+          echo "public tables: $n (expected 40)"
+          [ "$n" -eq 40 ]
       - name: Run schema-tests.sql
         run: |
           $PSQL -U postgres -d aisre < db/schema-tests.sql | tee schema-tests.log

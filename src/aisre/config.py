@@ -8,7 +8,8 @@ process named in Artifact 6 gets each one.
 
 Database URLs carry passwords, so they are `SecretStr`: they don't appear in a repr or a log.
 Each process reads only the URL for its own role (ADR-51): API and worker `aisre_app`, the
-dispatcher `aisre_dispatcher`, the migration job `aisre_owner`.
+dispatcher `aisre_dispatcher`, the migration job `aisre_owner`, the retention job
+`aisre_retention` and the pilot reports `aisre_reporting` (read-only, ADR-75).
 
 Every setting the processes read is here, under its environment variable's name, including
 OpenTelemetry's own `OTEL_EXPORTER_OTLP_ENDPOINT`; the CLI's `AISRE_API_URL` and `AISRE_TOKEN`
@@ -38,6 +39,7 @@ ENV_VARS: dict[str, str] = {
     "dispatcher_database_url": "AISRE_DISPATCHER_DATABASE_URL",
     "migration_database_url": "AISRE_MIGRATION_DATABASE_URL",
     "retention_database_url": "AISRE_RETENTION_DATABASE_URL",
+    "reporting_database_url": "AISRE_REPORTING_DATABASE_URL",
     "temporal_address": "AISRE_TEMPORAL_ADDRESS",
     "temporal_namespace": "AISRE_TEMPORAL_NAMESPACE",
     "log_level": "AISRE_LOG_LEVEL",
@@ -93,6 +95,7 @@ class Settings(BaseModel):
         "postgresql+psycopg://aisre_owner@127.0.0.1:5432/aisre"
     )
     retention_database_url: SecretStr | None = None  # T4.8: the retention job, as aisre_retention
+    reporting_database_url: SecretStr | None = None  # M5: the pilot reports, as aisre_reporting
     temporal_address: str = Field(default="127.0.0.1:7233", min_length=1)
     temporal_namespace: str = Field(default="default", min_length=1)
     log_level: LogLevel = "INFO"
