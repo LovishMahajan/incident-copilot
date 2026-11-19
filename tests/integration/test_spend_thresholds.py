@@ -23,15 +23,19 @@ from __future__ import annotations
 import asyncio
 import secrets
 from datetime import UTC, datetime, timedelta
+from uuid import UUID
 
 import pytest
 import stack
-from test_budget_ledger import CAPS, Fake, Out, new_incident, nosleep, request
+from sqlalchemy import func, update
+from test_budget_ledger import CAPS, Fake, Out, nosleep, request
+from test_budget_ledger import new_incident as _new_incident
 
 from aisre.gateway.adapters import ClaudeAdapter
 from aisre.gateway.gateway import CLAUDE_PRICES, ModelGateway, cost_micros
 from aisre.gateway.gateway_contracts import ResultStatus, Usage
 from aisre.gateway.ledger import PgBudgetLedger, publish_fleet_spend
+from aisre.record.tables import outbox
 from aisre.reliability import telemetry
 
 PROVIDER = "http://127.0.0.1:59200"
@@ -59,6 +63,16 @@ def fake_provider_usage() -> Usage:
         pytest.skip(f"the fake provider isn't answering on {PROVIDER} ({code})")
     u = reply["usage"]
     return Usage(input_tokens=int(u["input_tokens"]), output_tokens=int(u["output_tokens"]))
+
+
+def new_incident(engine, catalogue) -> str:
+    """test_budget_ledger's, withheld from the Compose relay: nothing investigates these."""
+    iid = _new_incident(engine, catalogue)
+    with engine.begin() as conn:
+        conn.execute(
+            update(outbox).where(outbox.c.incident_id == UUID(iid)).values(delivered_at=func.now())
+        )
+    return iid
 
 
 def gauge(name: str) -> float:
