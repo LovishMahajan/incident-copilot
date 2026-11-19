@@ -33,11 +33,14 @@ Live metrics (M3, T3.1, ADR-73), for the deployment the fake release process hol
 
     GET /v1/live/<deployment>/metrics?start=&end=   one row a minute: requests, HTTP 500s and
                                                     their rate, and the revision running then
+    GET /v1/live/<deployment>/errors?start=&end=    error groups over the same minutes, as an
+                                                    error tracker would group them (T3.17)
 
 Each minute takes the configuration the release process's history says was running then. A
 minute whose `ORDER_TAX_RATE_BPS` isn't an integer fails as the reference application does
 (`int()` on every order, ops/reference-app), at the incident's rate; any other minute is the
-baseline. So applying the config revert brings the rate down and a bad change brings it up,
+baseline. A failing minute's errors are one group, `ValueError` with the value `int()` choked
+on, so a different bad value is a new group. So applying the config revert brings the rate down and a bad change brings it up,
 and what the Verifier reads comes from here, never from the release process's own answer. The
 window defaults to the last 30 minutes and is at most 24 hours. FAKE_MONITORING_RELEASE_URL is
 the release process's base URL; unset, live metrics are 404.
@@ -131,6 +134,7 @@ FAILING_RATE = 0.61  # v2.14.1's rate in the reference incident's metrics.csv
 BASELINE_RATE = 0.0008
 LIVE_DEFAULT = timedelta(minutes=30)
 LIVE_MAX = timedelta(hours=24)
+LIVE_KINDS = ("metrics", "errors")
 
 
 def failing(config: dict[str, str]) -> bool:
@@ -172,8 +176,40 @@ def live_metrics(
     return rows
 
 
-def read_live(release_url: str, deployment: str, query: dict[str, str]) -> Any:
-    """Live metrics for `deployment`. Raises FileNotFoundError or KeyError."""
+def live_errors(
+    history: list[dict[str, Any]], start: datetime, end: datetime
+) -> list[dict[str, Any]]:
+    """Error groups over the minutes live_metrics serves: each failing minute's errors fall in
+    the group of the value `int()` was given, with first and last sighting and a count."""
+    changes = sorted(((_stamp(h["at"]), h) for h in history), key=lambda c: c[0])
+    groups: dict[str, dict[str, Any]] = {}
+    for row in live_metrics(history, start, end):
+        if not row["http_500_total"] or row["rate_500_total"] < FAILING_RATE / 2:
+            continue
+        minute = _stamp(row["minute_utc"])
+        config = [h for at, h in changes if at <= minute + timedelta(seconds=59)][-1]["config"]
+        value = (config or {}).get("ORDER_TAX_RATE_BPS", "")
+        message = f"invalid literal for int() with base 10: '{value}'"
+        g = groups.setdefault(
+            message,
+            {
+                "type": "ValueError",
+                "message": message,
+                "service": "orders-api",
+                "count": 0,
+                "first_seen": row["minute_utc"],
+                "last_seen": row["minute_utc"],
+            },
+        )
+        g["count"] += row["http_500_total"]
+        g["last_seen"] = row["minute_utc"]
+    return sorted(groups.values(), key=lambda g: g["first_seen"])
+
+
+def read_live(
+    release_url: str, deployment: str, query: dict[str, str], kind: str = "metrics"
+) -> Any:
+    """Live metrics or error groups for `deployment`. Raises FileNotFoundError or KeyError."""
     try:
         with urllib.request.urlopen(
             f"{release_url.rstrip('/')}/v1/deployments/{deployment}", timeout=5
@@ -185,7 +221,10 @@ def read_live(release_url: str, deployment: str, query: dict[str, str]) -> Any:
     start = _stamp(query["start"]) if query.get("start") else end - LIVE_DEFAULT
     if not start <= end or end - start > LIVE_MAX:
         raise KeyError("window")
-    return live_metrics(state.get("history") or [], start, end)
+    history = state.get("history") or []
+    return (
+        live_errors(history, start, end) if kind == "errors" else live_metrics(history, start, end)
+    )
 
 
 def _error_groups(records: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -243,10 +282,10 @@ def handler_for(root: Path, release_url: str | None = None) -> type[BaseHTTPRequ
                 return self.reply(200, {"status": "ok"})
             if parts == ["v1", "scenarios"]:
                 return self.reply(200, sorted(scenarios(root)))
-            if len(parts) == 4 and parts[:2] == ["v1", "live"] and parts[3] == "metrics":
+            if len(parts) == 4 and parts[:2] == ["v1", "live"] and parts[3] in LIVE_KINDS:
                 if release_url:
                     try:
-                        return self.reply(200, read_live(release_url, parts[2], query))
+                        return self.reply(200, read_live(release_url, parts[2], query, parts[3]))
                     except (FileNotFoundError, KeyError, ValueError):
                         pass
             if len(parts) == 4 and parts[:2] == ["v1", "scenarios"]:

@@ -73,6 +73,8 @@ ENV_VARS: dict[str, str] = {
     "approval_signing_key": "AISRE_APPROVAL_SIGNING_KEY",
     "approval_verify_key": "AISRE_APPROVAL_VERIFY_KEY",
     "identity_directory_url": "AISRE_IDENTITY_DIRECTORY_URL",
+    "verifier_monitoring_url": "AISRE_VERIFIER_MONITORING_URL",
+    "post_change_watch_seconds": "AISRE_POST_CHANGE_WATCH_SECONDS",
 }
 
 
@@ -161,6 +163,13 @@ class Settings(BaseModel):
     approval_signing_key: SecretStr | None = None
     approval_verify_key: str | None = Field(default=None, min_length=1)
     identity_directory_url: str | None = Field(default=None, pattern=r"^https?://")
+    # The Recovery Verifier (M3, T3.8, T3.17, ADR-66, ADR-73): the monitoring source it reads
+    # directly, never the dispatcher's word (FR-31). Here, Compose's FAKE monitoring source,
+    # whose live metrics follow what the fake release process runs; refused in production. The
+    # post-change watch after the hold period is 60 minutes (provisional, 11.12); tests and the
+    # demo shorten it.
+    verifier_monitoring_url: str | None = Field(default=None, pattern=r"^https?://")
+    post_change_watch_seconds: int = Field(default=3600, ge=60, le=86400)
 
     # Fixed: equal to aisre.workflow.activities.INVESTIGATION_QUEUE, DISPATCHER_QUEUE and
     # TEST_RUNNER_QUEUE.
@@ -194,6 +203,8 @@ class Settings(BaseModel):
             )
         if self.identity_directory_url is not None and self.env == "production":
             raise ValueError("AISRE_IDENTITY_DIRECTORY_URL is the fake issuer's: not production")
+        if self.verifier_monitoring_url is not None and self.env == "production":
+            raise ValueError("AISRE_VERIFIER_MONITORING_URL is the fake monitoring source's")
         return self
 
     @model_validator(mode="after")

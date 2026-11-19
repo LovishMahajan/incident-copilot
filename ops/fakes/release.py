@@ -16,6 +16,9 @@ dispatcher uses (dispatcher.ReleaseProcess), with the action ID as the execution
     GET  /v1/deployments/{dep}/changes/{key}          {"status": applied|failed|in_progress}, or 404
     POST /_fake/deployments/{dep}/config              {"set": {KEY: value}, "revision": ...}: an
                                                       out-of-band change, for tests and the demo
+    POST /_fake/deployments/{dep}/overrides           {"set": {KEY: value}}: a runtime override,
+                                                      on top of the configuration files; {"set":
+                                                      {}} clears them. The revision stays
     POST /_fake/faults                                {"apply_delay_s": n}: answer applies late
     POST /_fake/reset                                 back to the start
 
@@ -25,6 +28,16 @@ what the first did and changes nothing. An apply carries the patch's canonical b
 (`patch`): their SHA-256 must be `patch_sha256`, each file's content must hash to its
 `old_sha256`, and the hunks must give its `new_sha256`, else `rejected`. The deployment must run
 `base_revision`, else `rejected`. An undo puts back a revision this process ran before.
+
+Runtime overrides stand for what a deployment platform sets outside the repository, such as an
+environment variable on the running service. They win over the files, they survive an apply or
+an undo, and the repository (so the sandbox) never sees them. They are how the M3 demo plants
+an ineffective fix honestly (T3.9): with `ORDER_TAX_RATE_BPS=8.25` overridden, the config
+revert passes its sandbox test and changes nothing live. The deployment's `config` is the
+effective one, files then overrides; `overrides` lists them. Each history entry has a `kind`:
+`start`, `apply`, `undo`, `manual` (an out-of-band change) or `override`; only `apply` and
+`undo` carry an execution key. The daily release reconciliation (T3.11) compares them with the
+platform's execution attempts.
 
 FAKE_REVIEW_REPO_SOURCE (or ../reference-app/build_repo.py), FAKE_RELEASE_BRANCH (default
 main), FAKE_RELEASE_TOKEN (required), FAKE_RELEASE_PORT (default 8080). Refuses to start when
@@ -98,15 +111,20 @@ class Release:
         self.changes: dict[str, dict[str, Any]] = {}
         self.history: list[dict[str, Any]] = []
         self.faults: dict[str, float] = {"apply_delay_s": 0.0}
-        self._record(None)
+        self.overrides: dict[str, str] = {}
+        self._record("start", None)
 
-    def _record(self, key: str | None) -> None:
+    def effective(self) -> dict[str, str]:
+        return parse_env(self.files.get(CONFIG, "")) | self.overrides
+
+    def _record(self, kind: str, key: str | None) -> None:
         self.history.append(
             {
                 "at": now_iso(),
+                "kind": kind,
                 "revision": self.revision,
                 "execution_key": key,
-                "config": parse_env(self.files.get(CONFIG, "")),
+                "config": self.effective(),
             }
         )
 
@@ -118,7 +136,8 @@ class Release:
                 "environment": ENVIRONMENT,
                 "revision": self.revision,
                 "in_progress_key": self.in_progress,
-                "config": parse_env(self.files.get(CONFIG, "")),
+                "config": self.effective(),
+                "overrides": dict(self.overrides),
                 "history": copy.deepcopy(self.history),
             }
 
@@ -190,7 +209,7 @@ class Release:
             self.files, self.revision, self.in_progress = dict(files), to, None
             self.snapshots.setdefault(to, dict(files))
             self.changes[key] = {"status": "applied", "kind": kind, "at": now_iso()}
-            self._record(key)
+            self._record(kind, key)
         return 200, {"result": "applied", "revision": to}
 
     def lookup(self, key: str) -> dict[str, Any] | None:
@@ -210,8 +229,18 @@ class Release:
             self.files[CONFIG] = "\n".join(lines) + "\n"
             self.revision = str(body.get("revision") or f"{self.revision}+manual")
             self.snapshots.setdefault(self.revision, dict(self.files))
-            self._record(None)
+            self._record("manual", None)
         return 200, {"revision": self.revision}
+
+    def override(self, body: dict[str, Any]) -> tuple[int, dict[str, Any]]:
+        """A runtime override outside the repository; `{"set": {}}` clears them all."""
+        values = body.get("set")
+        if not isinstance(values, dict):
+            return 422, {"message": "set names the keys to override, or is empty to clear"}
+        with self.lock:
+            self.overrides = {str(k): str(v) for k, v in values.items()} if values else {}
+            self._record("override", None)
+            return 200, {"overrides": dict(self.overrides)}
 
 
 def handler_for(release: Release, token: str) -> type[BaseHTTPRequestHandler]:
@@ -271,6 +300,10 @@ def handler_for(release: Release, token: str) -> type[BaseHTTPRequestHandler]:
                 if p[2] != DEPLOYMENT:
                     return self.reply(404, {"message": "no such deployment"})
                 return self.reply(*release.out_of_band(body))
+            if len(p) == 4 and p[:2] == ["_fake", "deployments"] and p[3] == "overrides":
+                if p[2] != DEPLOYMENT:
+                    return self.reply(404, {"message": "no such deployment"})
+                return self.reply(*release.override(body))
             if len(p) == 4 and p[:2] == ["v1", "deployments"] and p[3] in ("apply", "undo"):
                 if not self.authorised():
                     return None

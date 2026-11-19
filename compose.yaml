@@ -273,6 +273,9 @@ services:
       AISRE_REVIEW_TOKEN: ${AISRE_REVIEW_TOKEN:-}
       # M3 (ADR-73): the adapter alone turns on the approval path. Never the URL or the token.
       AISRE_RELEASE_ADAPTER: ${AISRE_RELEASE_ADAPTER:-}
+      # The Recovery Verifier (T3.8, T3.17): read-only monitoring, and the post-change watch.
+      AISRE_VERIFIER_MONITORING_URL: ${AISRE_VERIFIER_MONITORING_URL:-}
+      AISRE_POST_CHANGE_WATCH_SECONDS: ${AISRE_POST_CHANGE_WATCH_SECONDS:-3600}
     command: ["python", "-m", "aisre.workflow.worker"]
     healthcheck:
       # The worker touches this file after every relay pass (aisre.workflow.worker).
