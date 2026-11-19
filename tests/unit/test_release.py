@@ -160,7 +160,7 @@ def test_undo_restores_the_earlier_revision_and_the_failure_returns(stack, repo)
 def test_a_bad_change_brings_the_error_rate_up(stack):
     release, url, mon = stack
     release.files[CONFIG] = release.files[CONFIG].replace("8.25", "825")
-    release._record(None)
+    release._record("manual", None)
     assert rate(mon) < 0.01
     status, _ = call(
         f"{url}/_fake/deployments/orders-api-production/config",
@@ -224,3 +224,21 @@ def test_no_production_write_exists():
 def test_the_approval_path_needs_the_fake_release_in_development_or_test():
     assert remediation_enabled(Settings(env="test", release_adapter="fake_release"))
     assert not remediation_enabled(Settings(env="test"))
+
+
+def test_a_runtime_override_wins_over_the_files_and_survives_an_apply(stack):
+    """T3.9's honest ineffective fix: an override the repository never sees keeps 8.25 live, so
+    the config revert, which passes in the sandbox, changes nothing; clearing it recovers."""
+    release, url, mon = stack
+    status, _ = call(
+        f"{url}/_fake/deployments/orders-api-production/overrides",
+        {"set": {"ORDER_TAX_RATE_BPS": "8.25"}},
+        token=None,
+    )
+    release.files[CONFIG] = release.files[CONFIG].replace("8.25", "825")
+    release._record("apply", "k1")
+    assert status == 200 and rate(mon) > 0.5
+    assert release.state()["overrides"] == {"ORDER_TAX_RATE_BPS": "8.25"}
+    call(f"{url}/_fake/deployments/orders-api-production/overrides", {"set": {}}, token=None)
+    assert rate(mon) < 0.01
+    assert [h["kind"] for h in release.history] == ["start", "override", "apply", "override"]
