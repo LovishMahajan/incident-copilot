@@ -103,3 +103,14 @@ def token_issuer():
     server = module.serve(issuer)
     yield issuer, f"http://127.0.0.1:{server.server_address[1]}/jwks"
     server.shutdown()
+
+
+@pytest.fixture(autouse=True)
+def _fresh_evidence_breakers():
+    """The evidence collector keeps one circuit breaker per source for the process (T4.2); a
+    test that fails a source many times must not open it for the next test."""
+    from aisre.evidence import collector
+
+    collector._BREAKERS.clear()
+    yield
+    collector._BREAKERS.clear()

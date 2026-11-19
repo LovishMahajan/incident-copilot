@@ -150,6 +150,9 @@ VOID_AUDIENCE = ROLLBACK_AUDIENCE + ["security"]  # a voided approval: ST-01, ST
 class IncidentWorkflowInput:
     incident_id: str
     run: int = 1  # 2 and on for a re-investigation
+    # T4.2: the whole-run limit in seconds, shorter only, for tests (NFR-41). The relay never
+    # sets it, so every run from intake gets WORKFLOW_LIMIT.
+    limit_seconds: Optional[int] = None
 
 
 @dataclass
@@ -285,7 +288,10 @@ class IncidentWorkflow:
         self.state = I(snap.status)  # `handed_over` on a re-investigation run
         if self.state not in (I.OPEN, I.HANDED_OVER):
             return self.state.value  # nothing starts from here
-        limit_timer = asyncio.create_task(self._limit_timer())
+        limit = WORKFLOW_LIMIT
+        if inp.limit_seconds is not None:
+            limit = min(limit, timedelta(seconds=max(inp.limit_seconds, 1)))
+        limit_timer = asyncio.create_task(self._limit_timer(limit))
         try:
             try:
                 await self._lifecycle(snap)
@@ -943,13 +949,11 @@ class IncidentWorkflow:
                     raise Cancelled() from None
                 # A rollback's wait goes on to its own end: the cancel takes effect after it (ADR-69).
 
-    async def _limit_timer(self) -> None:
+    async def _limit_timer(self, limit: timedelta = WORKFLOW_LIMIT) -> None:
         """The whole-run limit (ADR-46). Work stops at the next safe point; a write in flight
         reaches its outcome first. Waits for a person end by themselves."""
         await workflow.sleep(
-            max(
-                WORKFLOW_LIMIT - (workflow.now() - workflow.info().start_time), timedelta(seconds=1)
-            )
+            max(limit - (workflow.now() - workflow.info().start_time), timedelta(seconds=1))
         )
         self.limit_reached = True
         if self.running is not None:
