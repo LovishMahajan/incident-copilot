@@ -334,6 +334,57 @@ def test_a_voided_close_writes_its_event_once_and_an_expiry_its_own(app_engine, 
     assert events(app_engine, incident_id, "aisre.approval.escalated.v1") == []
 
 
+def confirm_severity(app_engine, incident_id, severity="sev3"):
+    with app_engine.begin() as conn:
+        conn.execute(
+            text(
+                "UPDATE incidents SET confirmed_severity = CAST(:s AS severity), "
+                "severity_confirmed_by = 'lee', version = version + 1 WHERE incident_id = :i"
+            ),
+            {"s": severity, "i": incident_id},
+        )
+
+
+def test_st07_the_author_of_the_reverted_change_cannot_approve_it_alone(
+    app_engine, settings, awaiting
+):
+    """ADR-49 on the route: the change's author comes from the record (the Patch Proposer stored
+    the reverted commit's author), never from the caller. With one approver needed, they are
+    refused `self_approval` and the action waits; another approver is not."""
+    org, service, incident_id, action_id, out = awaiting
+    confirm_severity(app_engine, incident_id)  # sev3, not critical: one approver
+    with client_for(settings, app_engine) as c:
+        r = c.post(
+            f"/v1/actions/{action_id}/approvals",
+            json={"action_digest": out.action_digest},
+            headers=headers(org, service, "synthetic-engineer-a",
+                            version=version_of(app_engine, action_id)),
+        )  # fmt: skip
+        assert (r.status_code, r.json().get("code")) == (403, "self_approval"), r.json()
+        with app_engine.connect() as conn:
+            assert rec.decisions(conn, action_id) == []
+        (refused,) = events(app_engine, incident_id, "aisre.approval.refused.v1")
+        assert refused["code"] == "self_approval" and refused["security_alert"] is True
+        ok = c.post(
+            f"/v1/actions/{action_id}/approvals",
+            json={"action_digest": out.action_digest},
+            headers=headers(org, service, "priya", version=version_of(app_engine, action_id)),
+        )
+        assert ok.status_code == 201, ok.json()
+
+
+def test_st07_the_author_can_be_one_of_two_on_a_high_impact_revert(app_engine, settings, awaiting):
+    org, service, _, action_id, out = awaiting  # severity unconfirmed: two approvers (ADR-49)
+    with client_for(settings, app_engine) as c:
+        for who in ("synthetic-engineer-a", "priya"):
+            r = c.post(
+                f"/v1/actions/{action_id}/approvals",
+                json={"action_digest": out.action_digest},
+                headers=headers(org, service, who, version=version_of(app_engine, action_id)),
+            )
+            assert r.status_code == 201, (who, r.json())
+
+
 def test_st39_a_plain_approval_of_a_proposed_rollback_is_refused_at_the_route(
     app_engine, settings, awaiting
 ):

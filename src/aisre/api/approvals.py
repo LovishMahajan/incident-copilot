@@ -96,6 +96,13 @@ EVENT = {
 }
 
 
+def author_subject(author: str | None) -> str | None:
+    """ADR-49, ST-07: the reverted change's author, from the record, as a caller ID. Until an
+    identity system is chosen the repository's author name is their subject (ADR-73), and a
+    caller is `user:<sub>` (aisre.api.auth)."""
+    return f"user:{author}" if author else None
+
+
 class ApprovalRequestView(Strict):
     """FR-25: everything the approver reviews in one read. The diff is the patch's artifact
     (`GET /v1/artifacts/{id}/content`); evidence is cited by ID, readable through the incident."""
@@ -341,6 +348,7 @@ class Approvals:
             approval_id=str(uuid7()),
             presented_digest=body.action_digest,
             proposer_subjects={rec.REQUESTER},
+            change_author=author_subject(rec.change_author(conn, action_id)),
             action_status=locked.status,
             request_open=bool(req and req.closed_at is None),
             intent_recorded=intent,

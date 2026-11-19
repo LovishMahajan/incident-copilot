@@ -123,6 +123,7 @@ def drafted(app_engine, catalogue, quiet, review):
         files_changed=1,
         lines_added=1,
         lines_removed=1,
+        change_author="synthetic-engineer-a",  # the reverted commit's author (ADR-49)
     )
     blobs = MemorySnapshots()
     canonical_key, review_key = rec.patch_keys(new.incident_id, action_id)

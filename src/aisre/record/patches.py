@@ -61,6 +61,7 @@ class NewPatch:
     files_changed: int
     lines_added: int
     lines_removed: int
+    change_author: str | None = None  # who made the reverted change (ADR-49, ST-07)
 
 
 @dataclass(frozen=True)
@@ -112,9 +113,10 @@ def store_patch(conn: Connection, p: NewPatch, now: datetime) -> Stored:
             "INSERT INTO actions (action_id, incident_id, diagnosis_id, kind, target_service_id, "
             "target_environment_id, target_deployment, base_revision, expected_after_revision, "
             "description, expected_effect, risk, undo_plan, recovery_criteria, "
-            "recovery_predicates_digest, hold_seconds, high_impact, policy_version) VALUES "
+            "recovery_predicates_digest, hold_seconds, high_impact, policy_version, "
+            "change_author) VALUES "
             "(:a, :i, :d, CAST(:k AS action_kind), :s, :e, :dep, :base, :after, :desc, :eff, "
-            ":risk, :undo, CAST(:crit AS jsonb), :crit_sha, :hold, false, :pol)"
+            ":risk, :undo, CAST(:crit AS jsonb), :crit_sha, :hold, false, :pol, :author)"
         ),
         {
             "a": p.action_id,
@@ -134,6 +136,7 @@ def store_patch(conn: Connection, p: NewPatch, now: datetime) -> Stored:
             "crit_sha": hashlib.sha256(criteria.encode()).hexdigest(),
             "hold": hold,
             "pol": p.policy_version,
+            "author": p.change_author or None,
         },
     )
     canonical_key, review_key = patch_keys(p.incident_id, p.action_id)
