@@ -105,6 +105,19 @@ def test_the_dispatcher_is_not_ready_while_fenced_and_probes_the_release_process
     h = dispatcher_health(s, object(), object())  # type: ignore[arg-type]
     assert "write_fence" in h.readiness
     assert set(h.dependencies) == {"postgresql", "temporal", "release_process"}
+    assert set(h.gauges) == {"fence"}  # aisre_dispatch_fenced, which AisreWritesFenced reads
+
+
+def test_gauges_publish_every_cycle_and_a_failure_is_only_logged(caplog):
+    published = []
+
+    async def queue() -> None:
+        published.append("queue")
+
+    h = health.Health("worker", {}, {}, {"queue": queue, "spend": fails("db gone")})
+    assert asyncio.run(h.publish()) == {"spend": "NotReady: db gone"}
+    assert published == ["queue"]
+    assert "gauge publisher spend failed" in caplog.text
 
 
 def test_run_probes_until_stopped():
