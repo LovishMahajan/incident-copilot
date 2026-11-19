@@ -598,6 +598,22 @@ def test_breaker_opens_at_half_failures_of_ten_calls_for_thirty_seconds():
     assert b.allow()
 
 
+def test_a_named_breaker_publishes_aisre_circuit_open():
+    """T4.2: AisreCircuitOpen reads this gauge (Artifact 12.3)."""
+    from aisre.reliability import telemetry
+
+    now = [NOON]
+    b = CircuitBreaker(lambda: now[0], 0.5, 10, 60.0, 30.0, dependency="model:test")
+    for _ in range(10):
+        b.record(True)
+    gauge = lambda: telemetry.REGISTRY.get_sample_value(  # noqa: E731
+        "aisre_circuit_open", {"dependency": "model:test"}
+    )
+    assert gauge() == 1
+    now[0] += 30
+    assert b.allow() and gauge() == 0
+
+
 def test_breaker_ignores_calls_outside_the_window():
     now = [NOON]
     b = CircuitBreaker(lambda: now[0], 0.5, 10, 60.0, 30.0)
