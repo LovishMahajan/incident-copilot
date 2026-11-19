@@ -206,7 +206,8 @@ groups:
       - alert: AisreApprovalRefused
         # Identity, rights and digest only: action.SECURITY_ALERT_CODES (tested equal). Every refusal
         # still writes its aisre.approval.refused.v1 event; a retry or a late approval doesn't page.
-        expr: sum(increase(aisre_approval_refused_total{reason=~"digest_mismatch|forbidden|not_found|not_own_approval|reauth_required|self_approval|unauthenticated"}[5m])) > 0
+        # `voided` is a voided approval (aisre.approval.voided.v1, T3.6).
+        expr: sum(increase(aisre_approval_refused_total{reason=~"digest_mismatch|forbidden|not_found|not_own_approval|reauth_required|self_approval|unauthenticated|voided"}[5m])) > 0
         labels: {severity: page, route: security_lead}
         annotations:
           summary: "An approval attempt refused on identity, rights or digest (ADR-49, 11.6)"

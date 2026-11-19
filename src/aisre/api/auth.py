@@ -35,7 +35,7 @@ which require a sign-in within 15 minutes, with two-factor (ADR-49, M3).
 from __future__ import annotations
 
 import re
-from collections.abc import Iterable, Mapping
+from collections.abc import Mapping
 from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Annotated
@@ -47,7 +47,15 @@ from aisre.api import audit
 from aisre.api.problems import ApiError
 from aisre.api.tokens import InvalidToken, TokenVerifier, VerifierUnavailable
 from aisre.config import Settings
-from aisre.remediation.action import MATRIX, Perm, Role
+from aisre.remediation.action import (  # noqa: F401  (re-exported)
+    EVERY_SERVICE,
+    GROUP,
+    GROUP_ROLES,
+    MATRIX,
+    Perm,
+    Role,
+    roles_from_groups,
+)
 
 DEV_CALLER_HEADER = "X-Aisre-Dev-Caller"
 DEV_ORG_HEADER = "X-Aisre-Dev-Org"
@@ -56,32 +64,7 @@ DEV_ORG_ID = UUID("00000000-0000-7000-8000-000000000001")
 DEV_DEFAULT_GROUPS = "aisre:responder"
 ALLOWED_ENVIRONMENTS = frozenset({"development", "test"})
 CALLER_NAME = re.compile(r"^[a-z0-9][a-z0-9._@-]{0,62}$")
-GROUP = re.compile(r"^aisre:(?P<role>[a-z_]+)(?::(?P<service>[a-z0-9][a-z0-9-]{0,62}))?$")
-GROUP_ROLES = frozenset(
-    {
-        Role.VIEWER,
-        Role.RESPONDER,
-        Role.APPROVER,
-        Role.INCIDENT_LEAD,
-        Role.MONITORING,
-        Role.PLATFORM_ADMIN,
-        Role.SECURITY_LEAD,
-    }
-)
-EVERY_SERVICE = "*"
-
 Grants = Mapping[str, frozenset[Role]]  # service slug, or EVERY_SERVICE -> roles
-
-
-def roles_from_groups(groups: Iterable[str]) -> dict[str, frozenset[Role]]:
-    """The roles a caller's groups give, per service. Unknown groups give nothing."""
-    grants: dict[str, set[Role]] = {}
-    for g in groups:
-        m = GROUP.fullmatch(g)
-        if m is None or m["role"] not in {r.value for r in GROUP_ROLES}:
-            continue
-        grants.setdefault(m["service"] or EVERY_SERVICE, set()).add(Role(m["role"]))
-    return {svc: frozenset(roles) for svc, roles in grants.items()}
 
 
 @dataclass(frozen=True)
