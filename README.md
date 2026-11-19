@@ -36,7 +36,7 @@ Settings come from `AISRE_*` environment variables (`src/aisre/config.py`). Copy
 
 ## Build and test the schema
 
-`db/schema.sql` is frozen: Alembic's `0001_baseline` (in `db/migrations/`, configured by `alembic.ini` at the root) applies it unchanged, and every later change is a new migration. Migrations run as the owning role, from `AISRE_MIGRATION_DATABASE_URL`, and record their version in the `aisre_migrations` schema. `schema-tests.sql` runs as a superuser straight after. 226 of 226 checks pass on PostgreSQL 17.12 after migration `0008_m2_review_ref` (2026-11-18; 223 of 223 on 16.16 and 17.12 before it; 16.16 not rerun since).
+`db/schema.sql` is frozen: Alembic's `0001_baseline` (in `db/migrations/`, configured by `alembic.ini` at the root) applies it unchanged, and every later change is a new migration. Migrations run as the owning role, from `AISRE_MIGRATION_DATABASE_URL`, and record their version in the `aisre_migrations` schema. `schema-tests.sql` runs as a superuser straight after. 226 of 226 checks pass on PostgreSQL 17.12 after migration `0010_m3_change_author`, migrated from empty on a throwaway server (2026-11-19; the same 226 after `0008_m2_review_ref`, 223 of 223 on 16.16 and 17.12 before it; 16.16 not rerun since).
 
 ```
 psql -U postgres -c "CREATE ROLE aisre_owner LOGIN CREATEROLE"
