@@ -11,6 +11,8 @@ so the workflow only tracks those in memory. A failed fix is undone by a separat
 action with its own approval and execution key, never by cancellation (ADR-48), and a cancel
 never skips that rollback (ADR-69). The incident's version is only the last one seen: people
 change the record while the workflow runs, so a stale write is reloaded and retried (ADR-69).
+After a verified fix, the post-change watch (11.12, T3.17) runs beside the wait for closure: it
+flags regressions to on-call and the incident lead, linked to the action, and never rolls back.
 
 activities pulls in Pydantic and Layer 9's contracts, so it passes through the sandbox.
 coordinator and states are pure; coordinator is imported plainly so the sandbox checks that.
@@ -69,6 +71,7 @@ WORKFLOW_LIMIT = timedelta(hours=24)
 LIMIT_REASON = "24-hour workflow limit reached"
 TEMPORAL_CANCEL = "temporal-cancel"  # request_id of a cancel that came from Temporal, not a person
 RELEASE_A = "release_a_recommendation"  # start of the hand-over reason for a tested fix (ADR-44)
+MAX_WATCH_ROUNDS = 20  # stretches of the post-change watch: each ends at a new flag or the end
 
 
 # ---------------------------------------------------------------------------
@@ -215,6 +218,8 @@ class IncidentWorkflow:
         self.hypotheses = None
         self.diagnosis = None
         self.critic = None
+        self.verification: Optional[act.VerifyOut] = None  # the last verdict, with its window
+        self.watch = None  # the post-change watch task, after a verified fix (T3.17)
 
     # ----------------------------------------------------------------- signals
     @workflow.signal
@@ -290,6 +295,11 @@ class IncidentWorkflow:
             if I.CANCELLED in INCIDENT_TRANSITIONS[self.state]:
                 await self._finish_cancelled()
             # Already handed over or recovered: a person owns it; cancellation changes nothing.
+        if self.watch is not None:
+            try:
+                await self.watch  # closing doesn't cut the watch short; the 24-hour limit does
+            except (asyncio.CancelledError, Cancelled, HandOverNow, ActivityError):
+                pass
         limit_timer.cancel()
         return self.state.value
 
@@ -464,6 +474,9 @@ class IncidentWorkflow:
         if verdict == "verified":
             await self._to(I.RECOVERED, "recovery held", action_to=A.VERIFIED)
             await self._notify("recovered", ["on_call", "incident_lead"])
+            ver = self.verification
+            if ver is not None and ver.watch_seconds and ver.window_end:
+                self.watch = asyncio.create_task(self._watch(self.action_id, ver))
         elif verdict == "failed":
             await self._roll_back()
         else:  # too little data, or no result: never a rollback
@@ -715,9 +728,48 @@ class IncidentWorkflow:
                 heartbeat_s=60,
                 retry=READ_RETRY,
             )
+            self.verification = ver
             return ver.result
         except ActivityError:
             return None
+
+    async def _watch(self, action_id: str, ver: act.VerifyOut) -> None:
+        """11.12 (T3.17): after the hold, for the watch period, flag new error groups and breaches
+        of the recovery criteria, linked to the action, for a person to judge. Nothing is rolled
+        back and no state changes: it is advice, so a failure ends it quietly."""
+        start = ver.window_end or ""
+        end = datetime.fromisoformat(start.replace("Z", "+00:00")) + timedelta(
+            seconds=ver.watch_seconds
+        )
+        flagged: list[str] = []
+        for n in range(1, MAX_WATCH_ROUNDS + 1):
+            if self.limit_reached:
+                return
+            try:
+                out: act.WatchOut = await self._act(
+                    act.watch_after_change,
+                    act.WatchIn(
+                        action_id,
+                        ver.verification_id,
+                        start,
+                        end.isoformat(),
+                        f"{action_id}:watch:{n}",
+                        list(flagged),
+                    ),
+                    timeout_s=ver.watch_seconds + 300,
+                    heartbeat_s=60,
+                    retry=READ_RETRY,
+                )
+            except ActivityError:
+                return
+            for flag in out.flags:
+                flagged.append(flag.key)
+                try:
+                    await self._notify("watch_flagged", ["on_call", "incident_lead"], flag.detail)
+                except (ActivityError, HandOverNow):
+                    pass  # recorded as a failed notification where it can be
+            if out.done or not out.flags:
+                return
 
     async def _roll_back(self) -> None:
         """Verdict `failed` (ADR-48). The workflow triggers it; the rollback is its own action.
