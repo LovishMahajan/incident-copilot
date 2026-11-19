@@ -779,3 +779,8 @@ a { color: var(--accent); }
 .diff .diff-line.add { background: var(--ok-soft); color: var(--ok); }
 .diff .diff-line.del { background: var(--bad-soft); color: var(--bad); }
 .diff .diff-line.ctx { color: var(--muted); }
+
+/* M3: approvals, execution and verification on the fix card (read-only). */
+.fix-dl .decision { margin-bottom: 4px; }
+.fix-dl .decision .tag { margin-left: 6px; }
+.fix-dl .warn-text { color: var(--warn); }
