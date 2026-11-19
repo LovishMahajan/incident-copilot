@@ -29,6 +29,7 @@ from aisre.api.tokens import TokenVerifier
 from aisre.record import approvals as rec
 from aisre.record import uuid7
 from aisre.record.transitions import Transition, record_transition
+from aisre.reliability import telemetry
 from aisre.remediation.action import (
     development_signer,
     development_verify_keys,
@@ -313,8 +314,17 @@ def test_a_voided_close_writes_its_event_once_and_an_expiry_its_own(app_engine, 
     voided = act.ApprovalRequestIn(
         str(action_id), out.action_digest, "k", act.VOIDED, "patch changed"
     )
+    paged = (
+        telemetry.REGISTRY.get_sample_value("aisre_approval_refused_total", {"reason": "voided"})
+        or 0.0
+    )
     for _ in range(2):
         asyncio.run(env.run(acts.close_approval_request, voided))
+    # ST-01, ST-02, ST-13: counted once, which AisreApprovalRefusedSecurity pages security on.
+    assert (
+        telemetry.REGISTRY.get_sample_value("aisre_approval_refused_total", {"reason": "voided"})
+        == paged + 1
+    )
     rollback = act.ApprovalRequestIn(out.rollback_action_id, out.rollback_digest, "k", "expired")
     asyncio.run(env.run(acts.close_approval_request, rollback))
     (v,) = events(app_engine, incident_id, "aisre.approval.voided.v1")
@@ -322,6 +332,27 @@ def test_a_voided_close_writes_its_event_once_and_an_expiry_its_own(app_engine, 
     assert len(events(app_engine, incident_id, "aisre.approval.expired.v1")) == 1
     asyncio.run(env.run(acts.escalate_approval, voided))  # closed: nothing to escalate
     assert events(app_engine, incident_id, "aisre.approval.escalated.v1") == []
+
+
+def test_st39_a_plain_approval_of_a_proposed_rollback_is_refused_at_the_route(
+    app_engine, settings, awaiting
+):
+    """T3.9: the rollback waits `proposed` until a `failed` verdict; approving it alone through the
+    API is refused and recorded. Only the fix's conditional approval may sign it early, and the
+    dispatcher counts that only after the parent's recorded `failed` verdict (test_rollback.py)."""
+    org, service, incident_id, _, out = awaiting
+    rollback_id = UUID(out.rollback_action_id)
+    with client_for(settings, app_engine) as c:
+        r = c.post(
+            f"/v1/actions/{rollback_id}/approvals",
+            json={"action_digest": out.rollback_digest},
+            headers=headers(org, service, "priya", version=version_of(app_engine, rollback_id)),
+        )
+    assert r.status_code == 409, r.json()
+    with app_engine.connect() as conn:
+        assert rec.decisions(conn, rollback_id) == []
+    (refused,) = events(app_engine, incident_id, "aisre.approval.refused.v1")
+    assert refused["action_id"] == str(rollback_id)
 
 
 def test_the_development_key_ids_match_on_both_sides():
