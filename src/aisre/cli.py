@@ -39,6 +39,8 @@ ADR-74). Refused (exit 1) if either is missing, invalid or holds the wrong role:
     document purge-text ID --reason R   remove a document version's text (security lead), as
                                         AISRE_RETENTION_DATABASE_URL; refused until the legal
                                         deletion policy is recorded in AISRE_LEGAL_DELETION_DECISION
+
+The pilot's commands (M5, ADR-75) are aisre.pilot.cli's: `pilot check`, the go-live check.
 """
 
 from __future__ import annotations
@@ -52,6 +54,8 @@ from collections.abc import Iterator, Mapping, Sequence
 from typing import IO, Any
 from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
+
+from aisre.pilot import cli as pilot_cli
 
 DEFAULT_URL = "http://127.0.0.1:8000"
 TIMEOUT_S = 30
@@ -189,6 +193,7 @@ def parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(prog="aisre", description="The AI SRE platform's CLI.")
     top = p.add_subparsers(dest="noun", required=True)
     admin_parsers(top)
+    pilot_cli.parsers(top)
     incident = top.add_parser("incident", help="Incidents")
     sub = incident.add_subparsers(dest="command", required=True)
     s = sub.add_parser("submit", help="Submit an alert or an IncidentCreate from a JSON file")
@@ -216,6 +221,8 @@ def main(
 ) -> int:
     args = parser().parse_args(argv)
     env = os.environ if environ is None else environ
+    if args.noun == "pilot":
+        return pilot_cli.main(args, env, out or sys.stdout)
     if args.noun in ADMIN:
         from aisre.reliability import admin_cli  # PostgreSQL, only for these commands
 

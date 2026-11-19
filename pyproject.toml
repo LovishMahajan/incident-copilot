@@ -132,6 +132,8 @@ module = [
     "aisre.workflow.reconciliation",
     "aisre.workflow.queue_activities",
     "aisre.workflow.retention_jobs",
+    "aisre.pilot",
+    "aisre.pilot.*",
 ]
 # `strict = true` here applies to every module, so name the flags --strict sets.
 disallow_any_generics = true
