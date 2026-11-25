@@ -1,0 +1,292 @@
+#!/usr/local/bin/python3 -IB
+"""Artifact 11.5 (T2.4): the trusted test harness. Runs inside the sandbox, from the image.
+
+Standard input is a tar from the Test Runner (ADR-71): `run.json` (the run's description and
+the harness plan), `patch.json` (the patch's canonical bytes) and `checkout.tar` (`git archive`
+of the base revision). Nothing else reaches the sandbox, and nothing but the result bundle
+leaves: one JSON line, the last on standard output. Tests never write to that stream.
+
+Order: reproduce first on the base revision. If the original failure doesn't appear, stop:
+the patch is never tested (`not_reproduced`). Otherwise apply the patch to a copy, refuse a
+protected path (except the restorations the launcher allowed, `run.json`'s `restored`, each of
+which must end with exactly the hash given there; ADR-72), check every hash, run the required suites and the reproduction again, and
+compare error signatures. Exit 0 whenever a bundle was written, whatever the tests did.
+"""
+
+import fnmatch
+import hashlib
+import io
+import json
+import os
+import re
+import shutil
+import subprocess
+import sys
+import tarfile
+import time
+import urllib.error
+import urllib.request
+
+HARNESS_VERSION = "harness@1"
+WORKSPACE = "/workspace"
+LOG_CAP = 50 * 1024 * 1024  # Q11.27: returned logs are capped
+SIGNATURE = re.compile(r"^([A-Za-z_][\w.]*(?:Error|Exception|Exit)): ?(.*)$")
+STARTED = time.monotonic()
+logs = []
+
+
+def log(text):
+    if sum(len(x) for x in logs) < LOG_CAP:
+        logs.append(text)
+
+
+def child_env(extra=None):
+    env = {
+        "PATH": "/usr/local/bin:/usr/bin:/bin",
+        "HOME": "/tmp",
+        "LANG": "C.UTF-8",
+        "PYTHONDONTWRITEBYTECODE": "1",
+        "AISRE_SANDBOX": "1",
+    }
+    env.update(extra or {})
+    return env
+
+
+def signatures(text):
+    return {f"{m.group(1)}: {m.group(2)[:200]}" for m in map(SIGNATURE.match, text.splitlines()) if m}
+
+
+# ---------------------------------------------------------------- input
+def unpack():
+    os.makedirs(f"{WORKSPACE}/in", exist_ok=True)
+    with tarfile.open(fileobj=sys.stdin.buffer, mode="r|") as t:
+        t.extractall(f"{WORKSPACE}/in", filter="data")
+    with open(f"{WORKSPACE}/in/run.json", "rb") as f:
+        run = json.load(f)
+    with open(f"{WORKSPACE}/in/patch.json", "rb") as f:
+        patch_bytes = f.read()
+    with tarfile.open(f"{WORKSPACE}/in/checkout.tar") as t:
+        t.extractall(f"{WORKSPACE}/before", filter="data")
+    return run, patch_bytes
+
+
+# ---------------------------------------------------------------- patch
+class PatchError(Exception):
+    pass
+
+
+def protected(path, patterns):
+    rooted = "/" + path
+    return any(
+        fnmatch.fnmatchcase(path, p)
+        or fnmatch.fnmatchcase(rooted, p)
+        or fnmatch.fnmatchcase(rooted, "*/" + p)
+        for p in patterns
+    )
+
+
+def apply_file(text, hunks):
+    old = text.splitlines()
+    out, at = [], 0
+    for h in hunks:
+        start = h["old_start"] - 1 if h["old_lines"] else h["old_start"]
+        if start < at:
+            raise PatchError("hunks overlap or are out of order")
+        out += old[at:start]
+        at = start
+        for line in h["lines"]:
+            tag, body = line[:1], line[1:]
+            if tag in (" ", "-"):
+                if at >= len(old) or old[at] != body:
+                    raise PatchError(f"hunk at line {h['old_start']} does not match the base")
+                at += 1
+                if tag == " ":
+                    out.append(body)
+            elif tag == "+":
+                out.append(body)
+            else:
+                raise PatchError("malformed hunk line")
+    out += old[at:]
+    return "\n".join(out) + ("\n" if text.endswith("\n") or not text else "")
+
+
+def apply_patch(patch, tree, patterns, restored):
+    for f in patch["files"]:
+        path = f["path"]
+        if path.startswith("/") or ".." in path.split("/"):
+            raise PatchError(f"bad path {path}")
+        if protected(path, patterns) and restored.get(path) != f["new_sha256"]:
+            raise PatchError(f"{path} is protected")
+        target = os.path.join(tree, path)
+        with open(target, "rb") as fh:
+            raw = fh.read()
+        if hashlib.sha256(raw).hexdigest() != f["old_sha256"]:
+            raise PatchError(f"{path} differs from the patch's base")
+        new = apply_file(raw.decode(), f["hunks"]).encode()
+        if hashlib.sha256(new).hexdigest() != f["new_sha256"]:
+            raise PatchError(f"{path} after the patch differs from the patch's result")
+        with open(target, "wb") as fh:
+            fh.write(new)
+
+
+# ---------------------------------------------------------------- checks
+def suite(name, tree, start, timeout_s):
+    """One required suite through /harness/suite.py; counts come back on a pipe of its own."""
+    r, w = os.pipe()
+    try:
+        proc = subprocess.Popen(
+            [sys.executable, "-B", "/harness/suite.py", str(w), start],
+            cwd=tree,
+            env=child_env(),
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            pass_fds=(w,),
+        )
+    finally:
+        os.close(w)
+    try:
+        out, _ = proc.communicate(timeout=timeout_s)
+    except subprocess.TimeoutExpired:
+        proc.kill()
+        out, _ = proc.communicate()
+        os.close(r)
+        log(out.decode(errors="replace"))
+        return {"name": name, "required": True, "ran": False, "errors": [f"{name}: over {timeout_s} s"]}, True
+    with os.fdopen(r, "rb") as f:
+        raw = f.read()
+    log(out.decode(errors="replace"))
+    try:
+        counts = json.loads(raw)
+    except ValueError:
+        return {"name": name, "required": True, "ran": False, "errors": [f"{name}: no result"]}, False
+    return {"name": name, "required": True, "ran": True, **counts}, False
+
+
+def call(port, method, path, body):
+    data = None if body is None else json.dumps(body).encode()
+    req = urllib.request.Request(f"http://127.0.0.1:{port}{path}", data=data, method=method)
+    req.add_header("Content-Type", "application/json")
+    try:
+        with urllib.request.urlopen(req, timeout=10) as resp:
+            return resp.status
+    except urllib.error.HTTPError as e:
+        return e.code
+
+
+def reproduce(tree, plan, timeout_s):
+    """The original symptom, from the evidence: start the service with the revision's own
+    configuration, send the failing request. True if the symptom appears; None if the service
+    never became ready, so no comparison is possible. Returns (seen, signatures)."""
+    port = plan["port"]
+    proc = subprocess.Popen(
+        plan["serve"],
+        cwd=tree,
+        env=child_env({"PORT": str(port)}),
+        stdin=subprocess.DEVNULL,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+    )
+    seen = None
+    try:
+        deadline = time.monotonic() + min(timeout_s, 30)
+        while time.monotonic() < deadline and proc.poll() is None:
+            try:
+                if call(port, "GET", plan["ready_path"], None) == 200:
+                    req = plan["request"]
+                    seen = call(port, req["method"], req["path"], req.get("body")) == plan["symptom_status"]
+                    break
+            except OSError:
+                time.sleep(0.1)
+    finally:
+        proc.kill()
+        out, _ = proc.communicate()
+    text = out.decode(errors="replace")
+    log(text)
+    return seen, signatures(text)
+
+
+# ---------------------------------------------------------------- bundle
+def bundle(run, patch_sha256, **kw):
+    b = {
+        "run_id": run.get("run_id", ""),
+        "patch_sha256": patch_sha256,
+        "base_revision": run.get("base_revision", ""),
+        "image_digest": run.get("image_digest", ""),
+        "spec_version": run.get("spec_version", ""),
+        "harness_version": HARNESS_VERSION,
+        "reproduction_before": None,
+        "reproduction_after": None,
+        "suites": [],
+        "new_error_signatures": [],
+        "exit_code": 0,
+        "duration_s": 0.0,
+        "timed_out": False,
+        "log_artifact_sha256": None,
+    }
+    b.update(kw)
+    b["duration_s"] = round(time.monotonic() - STARTED, 3)
+    b["log_artifact_sha256"] = hashlib.sha256("".join(logs).encode()).hexdigest()
+    return b
+
+
+def main():
+    run, patch_bytes = unpack()
+    patch_sha256 = hashlib.sha256(patch_bytes).hexdigest()  # Q11.44: from what was applied
+    plan, per_test_s = run["plan"], run["per_test_s"]
+    before_tree, after_tree = f"{WORKSPACE}/before", f"{WORKSPACE}/after"
+
+    before, before_sigs = reproduce(before_tree, plan["reproduction"], per_test_s)
+    if not before:  # False: not reproduced, testing stops. None: no comparison possible.
+        return bundle(run, patch_sha256, reproduction_before=before)
+
+    shutil.copytree(before_tree, after_tree)
+    try:
+        apply_patch(
+            json.loads(patch_bytes), after_tree, run["protected"], run.get("restored") or {}
+        )
+    except (PatchError, OSError, KeyError, TypeError, ValueError) as e:
+        failed = {"name": "patch", "required": False, "ran": False, "errors": [f"not applied: {e}"]}
+        return bundle(run, patch_sha256, reproduction_before=True, suites=[failed])
+
+    suites = []
+    for name, start in plan["suites"].items():
+        result, hung = suite(name, after_tree, start, per_test_s)
+        suites.append(result)
+        if hung:  # Q11.47: per-test limit; hand over with the hung suite's name
+            return bundle(run, patch_sha256, reproduction_before=True, suites=suites, timed_out=True)
+
+    after, after_sigs = reproduce(after_tree, plan["reproduction"], per_test_s)
+    suites.append(
+        {
+            "name": "reproduction",
+            "required": True,
+            "ran": after is not None,
+            "passed": int(after is False),
+            "failed": int(after is True),
+        }
+    )
+    new = sorted(after_sigs - before_sigs)
+    suites.append(
+        {
+            "name": "error_signature",
+            "required": True,
+            "ran": True,
+            "passed": int(not new),
+            "failed": int(bool(new)),
+        }
+    )
+    return bundle(
+        run,
+        patch_sha256,
+        reproduction_before=True,
+        reproduction_after=after,
+        suites=suites,
+        new_error_signatures=new,
+    )
+
+
+if __name__ == "__main__":
+    result = main()
+    sys.stdout.write("\n" + json.dumps(result) + "\n")
+    sys.stdout.flush()

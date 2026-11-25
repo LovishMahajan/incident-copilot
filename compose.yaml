@@ -22,13 +22,17 @@
 #                         from ops/fakes/provider-scripts (ops/fakes/model_provider.py)
 #   fake-monitoring       FAKE monitoring source serving tests/fixtures scenarios
 #                         (ops/fakes/monitoring.py)
+#   fake-review           FAKE review system (M2, T2.8): the reference repository, built at
+#                         start-up, and draft pull requests, never merged (ops/fakes/review.py)
 # The fakes are for local use only: anyone who reaches the issuer can mint any identity.
 #
 # Wired from M1 (T1.10, T1.17, T1.19, T1.20): the worker runs the real Evidence Collector against
 # fake-monitoring and the Knowledge Retriever over the synthetic runbook corpus, which the
 # one-shot corpus-seed job ingests (tests/fixtures/runbooks). From T1.18, hypothesise, diagnose
 # and review are the real skills, calling fake-provider through the real Anthropic transport
-# (AISRE_PROVIDER_URL, AISRE_PROVIDER_API_KEY); draft_patch stays scripted until M2. To replay
+# (AISRE_PROVIDER_URL, AISRE_PROVIDER_API_KEY). From M2 (T2.8) draft_patch is the real skill too,
+# reading the repository through fake-review and opening the draft pull request there once the
+# Test Runner (on the host, ADR-71) has passed the fix. To replay
 # the reference incident's honesty variant (change history withheld), point the worker at
 # `.../scenarios/reference-incident:without=release.json,config-diff.txt` (README).
 # API and worker send spans to otel-collector and
@@ -206,6 +210,11 @@ services:
       AISRE_OIDC_JWKS_URL: ${AISRE_OIDC_JWKS_URL:-}
       # Unset: each start signs exports with a fresh key (development and test only).
       AISRE_EXPORT_SIGNING_KEY: ${AISRE_EXPORT_SIGNING_KEY:-}
+      # Read-only use: a patch's diff for GET /v1/artifacts/{id}/content (M2). Unset: not served.
+      AISRE_OBJECT_STORE_URL: ${AISRE_OBJECT_STORE_URL:-}
+      AISRE_OBJECT_STORE_BUCKET: ${AISRE_OBJECT_STORE_BUCKET:-aisre-artifacts}
+      AISRE_OBJECT_STORE_ACCESS_KEY: ${AISRE_OBJECT_STORE_ACCESS_KEY:-}
+      AISRE_OBJECT_STORE_SECRET_KEY: ${AISRE_OBJECT_STORE_SECRET_KEY:-}
     command:
       ["uvicorn", "--factory", "aisre.api.app:create_app", "--host", "0.0.0.0", "--port", "8000"]
     ports:
@@ -231,6 +240,8 @@ services:
         condition: service_healthy
       fake-provider:
         condition: service_healthy
+      fake-review:
+        condition: service_healthy
     environment:
       <<: *app-wiring
       AISRE_ENV: ${AISRE_ENV:-development}
@@ -249,6 +260,11 @@ services:
       # The real skills through the Model Gateway (T1.18). No key: scripted, if enabled.
       AISRE_PROVIDER_URL: ${AISRE_PROVIDER_URL:-}
       AISRE_PROVIDER_API_KEY: ${AISRE_PROVIDER_API_KEY:-}
+      # The review system (T2.8, ADR-72): the repository at its base revision, and draft pull
+      # requests. Unset: draft_patch stays scripted.
+      AISRE_REVIEW_ADAPTER: ${AISRE_REVIEW_ADAPTER:-}
+      AISRE_REVIEW_URL: ${AISRE_REVIEW_URL:-}
+      AISRE_REVIEW_TOKEN: ${AISRE_REVIEW_TOKEN:-}
     command: ["python", "-m", "aisre.workflow.worker"]
     healthcheck:
       # The worker touches this file after every relay pass (aisre.workflow.worker).
@@ -393,6 +409,26 @@ services:
     ports:
       - "127.0.0.1:${AISRE_FAKE_MONITORING_PORT:-59300}:8080"
     healthcheck: *fake-health
+
+  fake-review:
+    # git is needed to build and read the repository, so this fake has its own small image.
+    build:
+      context: ./ops/fakes
+      dockerfile: review.Dockerfile
+    image: aisre-fake-review:dev
+    user: "65534:65534"
+    command: ["python", "/opt/fakes/review.py"]
+    environment:
+      FAKE_REVIEW_REPO_SOURCE: /opt/reference-app/build_repo.py
+      # `tolerant` for M2's not_reproduced case: the branch whose head doesn't fail (README).
+      FAKE_REVIEW_DEFAULT_BRANCH: ${FAKE_REVIEW_DEFAULT_BRANCH:-main}
+    volumes:
+      - ./ops/fakes:/opt/fakes:ro
+      - ./ops/reference-app:/opt/reference-app:ro
+    ports:
+      - "127.0.0.1:${AISRE_FAKE_REVIEW_PORT:-59400}:8080"
+    healthcheck: *fake-health
+    restart: unless-stopped
 
   demo-viewer:
     # ADR-70: the read-only demo viewer, a static page (demo/) that starts the reference

@@ -201,8 +201,8 @@ INSERT INTO artifacts (artifact_id, org_id, incident_id, kind, storage_key, cont
 INSERT INTO patches (patch_id, action_id, base_revision, diff_artifact_id, patch_sha256, files_changed, lines_added, lines_removed)
   VALUES (gen_random_uuid(), :act, 'r42', :art2, :h_c, 1, 1, 1);
 UPDATE actions SET status = 'testing', version = version + 1 WHERE action_id = :act;
-INSERT INTO test_runs (test_run_id, action_id, patch_sha256, reproduced, outcome, started_at, finished_at)
-  VALUES (gen_random_uuid(), :act, :h_c, true, 'passed', now(), now());
+INSERT INTO test_runs (test_run_id, action_id, patch_sha256, reproduced, outcome, started_at, finished_at, isolation)
+  VALUES (gen_random_uuid(), :act, :h_c, true, 'passed', now(), now(), 'gvisor');
 UPDATE actions SET status = 'awaiting_approval', version = version + 1, action_digest = :h_d, test_bundle_digest = :h_a
   WHERE action_id = :act;
 UPDATE incidents SET status = 'awaiting_approval', version = version + 1 WHERE incident_id = :inc;
@@ -306,10 +306,15 @@ SELECT pg_temp.must_fail('D4 UPDATE on approval_decisions', $$UPDATE approval_de
 SELECT pg_temp.must_fail('D5 DELETE on approval_decisions', $$DELETE FROM approval_decisions$$, 'append-only');
 SELECT pg_temp.must_fail('D6 UPDATE on evidence', $$UPDATE evidence SET summary = 'x'$$, 'append-only');
 SELECT pg_temp.must_fail('D7 DELETE on evidence', $$DELETE FROM evidence$$, 'append-only');
-SELECT pg_temp.must_fail('D8 UPDATE on patches', $$UPDATE patches SET review_ref = 'x'$$, 'append-only');
+SELECT pg_temp.must_fail('D8 UPDATE on patches', $$UPDATE patches SET base_revision = 'x'$$, 'frozen');
+SELECT pg_temp.must_pass('D8a a patch records its pull request once (ADR-72)', $$UPDATE patches SET review_ref = 'orders-api#1'$$);
+SELECT pg_temp.must_fail('D8b review_ref is write-once', $$UPDATE patches SET review_ref = 'orders-api#2'$$, 'write-once');
 SELECT pg_temp.must_fail('D9 DELETE on patches', $$DELETE FROM patches$$, 'append-only');
 SELECT pg_temp.must_fail('D10 UPDATE on test_runs', $$UPDATE test_runs SET reproduced = false$$, 'append-only');
 SELECT pg_temp.must_fail('D11 DELETE on test_runs', $$DELETE FROM test_runs$$, 'append-only');
+SELECT pg_temp.must_fail('D11a a test run names its isolation (ADR-71)', format(
+  $$INSERT INTO test_runs (test_run_id, action_id, patch_sha256, reproduced, outcome, started_at, finished_at, isolation)
+    VALUES (gen_random_uuid(), %L, %L, true, 'passed', now(), now(), 'none')$$, :act, :h_c), 'test_runs_isolation');
 SELECT pg_temp.must_fail('D12 UPDATE on model_attempts', $$UPDATE model_attempts SET model = 'x'$$, 'append-only');
 SELECT pg_temp.must_fail('D13 DELETE on model_attempts', $$DELETE FROM model_attempts$$, 'append-only');
 SELECT pg_temp.must_fail('D14 UPDATE on artifacts', $$UPDATE artifacts SET redacted = false$$, 'append-only');

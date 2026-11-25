@@ -59,7 +59,8 @@ jobs:
             src/aisre/gateway/ledger.py src/aisre/gateway/transport.py \
             src/aisre/gateway/jobs.py src/aisre/workflow/budget_jobs.py \
             src/aisre/evidence src/aisre/retrieval/corpus.py src/aisre/agent/skills \
-            src/aisre/evaluation/seed.py src/aisre/evaluation/runner.py
+            src/aisre/evaluation/seed.py src/aisre/evaluation/runner.py \
+            src/aisre/remediation/test_runner.py src/aisre/remediation/review.py
       - name: Types, report-only on src
         run: |
           set +e

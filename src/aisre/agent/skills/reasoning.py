@@ -31,6 +31,7 @@ from aisre.agent.agent_contracts import (
     EvidenceKind,
     HypothesesOut,
     HypothesisDraft,
+    PatchProposal,
     SkillContext,
     SkillFailure,
     SkillUsage,
@@ -47,11 +48,13 @@ from aisre.retrieval.context import PromptRegistry, PromptVersion, assemble
 
 # The live version of each prompt the M1 skills use (10.12): reviewed configuration, changed by
 # a pull request that activates a new file. Rollback is the previous number.
-ACTIVE_PROMPTS = {"hypothesise": 1, "diagnose": 1, "critique": 1}
+# draft_patch is at 2 (T2.8): v1 never ran, and v2 says what the data blocks now hold (ADR-63).
+ACTIVE_PROMPTS = {"hypothesise": 1, "diagnose": 1, "critique": 1, "draft_patch": 2}
 SCHEMAS: dict[str, type[BaseModel]] = {
     "HypothesesOut": HypothesesOut,
     "DiagnosisDraft": DiagnosisDraft,
     "CriticVerdict": CriticVerdict,
+    "PatchProposal": PatchProposal,
 }
 # Context for evidence, under the gateway's 16,000-token input limit (ADR-61), leaving room for
 # instructions and the output schema. Extra items (hypotheses, a draft) come out of it.
@@ -59,7 +62,12 @@ CONTEXT_BUDGET = 11_000
 MAX_ITEM_TOKENS = 1_400  # a metric's minutes after the change must survive truncation
 # Each is reserved per attempt against the incident's 20,000 output tokens (Limits), so a step's
 # three attempts and the rest of the run fit; a truncated answer gets one retry at twice this.
-MAX_OUTPUT_TOKENS = {"hypothesise": 4_000, "diagnose": 6_000, "critique": 3_000}
+MAX_OUTPUT_TOKENS = {
+    "hypothesise": 4_000,
+    "diagnose": 6_000,
+    "critique": 3_000,
+    "draft_patch": 6_000,
+}
 MAX_STEP_ATTEMPTS = 3  # the gateway's, per step (ADR-27): re-asking spends the same three
 
 FAILURE_CODES = {

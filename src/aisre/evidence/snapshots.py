@@ -7,6 +7,7 @@ them (ADR-57); the retention job deletes them.
 
 `S3Snapshots` speaks the S3 API (MinIO locally, T1.1) with AWS Signature Version 4, from the
 standard library, so no SDK is needed for one PUT. Keys are `evidence/<incident>/<evidence>.json`.
+`get` reads an object back: the Test Runner reads a patch's canonical bytes this way (M2, T2.6).
 """
 
 from __future__ import annotations
@@ -38,6 +39,12 @@ class MemorySnapshots:
 
     def put(self, key: str, body: bytes, media_type: str) -> None:
         self.objects[key] = body
+
+    def get(self, key: str) -> bytes:
+        try:
+            return self.objects[key]
+        except KeyError:
+            raise SnapshotFailed(f"no object {key}") from None
 
 
 def snapshot_key(incident_id: str, evidence_id: str) -> str:
@@ -106,5 +113,20 @@ class S3Snapshots:
                 return
         except urllib.error.HTTPError as e:
             raise SnapshotFailed(f"object store refused the snapshot: HTTP {e.code}") from None
+        except (urllib.error.URLError, OSError) as e:
+            raise SnapshotFailed(f"object store unreachable: {type(e).__name__}") from None
+
+    def get(self, key: str) -> bytes:
+        path = "/" + quote(f"{self.bucket}/{key}", safe="/-_.~")
+        headers = self.signed_headers(
+            "GET", path, b"", "application/octet-stream", datetime.now(UTC)
+        )
+        headers.pop("host")
+        req = urllib.request.Request(self.endpoint + path, method="GET", headers=headers)
+        try:
+            with urllib.request.urlopen(req, timeout=self.timeout_s) as resp:
+                return bytes(resp.read())
+        except urllib.error.HTTPError as e:
+            raise SnapshotFailed(f"object store refused the read: HTTP {e.code}") from None
         except (urllib.error.URLError, OSError) as e:
             raise SnapshotFailed(f"object store unreachable: {type(e).__name__}") from None

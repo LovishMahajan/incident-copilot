@@ -4,22 +4,46 @@ The launcher is platform code (owned by the security lead). It builds every sand
 fixed, versioned specification; nothing in a patch or a model output can add mounts, devices,
 capabilities, network or environment variables (Q11.33, Q11.34). The launcher also applies the
 two limits `docker run` has no flag for, the workspace size and the wall clock, and owns cleanup.
+
+ADR-71 (T2.2, T2.4, T2.5): the runtime comes from settings (`sandbox_spec`): `runsc` (gVisor),
+or `runc` only when the environment is development or test, with every other flag unchanged and
+every result labelled with its isolation (`isolation`). The checkout reaches the sandbox on
+standard input (`build_payload`): `git archive` of the exact base commit, the patch's canonical
+bytes and the run description, never a mounted path. A patch touching a protected path is
+refused before anything starts (`refuse_protected`), by the same rule the draft is checked with
+(patch.check_paths, ADR-72): a deployment file is allowed only as an exact restoration by a
+config revert, with the facts read here from the Test Runner's own mirror (`revert_facts`), and
+the harness gets the restored files' hashes and checks them again. The image is the one built
+from `ops/sandbox/`, named by digest.
 """
 
 from __future__ import annotations
 
 import hashlib
+import io
 import json
+import logging
 import re
 import subprocess
+import tarfile
 import threading
 import time
 from dataclasses import dataclass, field
 from datetime import datetime
 from enum import Enum
-from typing import Optional
+from pathlib import Path
+from typing import Any, Optional
 
 from aisre.agent.validation import mask_secrets
+from aisre.remediation.patch import (
+    PROTECTED,
+    FileChangeFacts,
+    PatchRejected,
+    RevertFacts,
+    check_paths,
+)
+
+log = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True)
@@ -38,12 +62,19 @@ class SandboxSpec:
     per_test_s: int = 120  # Q11.47 (each test)
     user: str = "65534:65534"  # Q11.20 (nobody; never root)
     network: str = "none"  # Q11.21, ADR-60 (no network; nothing else is accepted)
+    environment: str = "production"  # ADR-71: `runc` only when this is development or test
 
 
 STOP_GRACE_S = 10  # Q11.28: stop, then kill after this
 REAP_INTERVAL_S = 300  # Q11.30: the Test Runner schedules reap() this often
 REAP_AGE_S = 3600  # Q11.30, FR-23: nothing labelled survives past this
+REAP_MARGIN_S = 300  # ADR-71: the scheduled reaper removes what is past its wall clock plus this
 MAX_SANDBOXES = 3  # ADR-56: at most this many run at once on the test host (provisional)
+MIN_RUN_S = 60  # a queued run stops waiting while this much of its budget is left to run in
+
+# ADR-71: what each runtime proves. A `development-runc` result proves the flow, never isolation.
+ISOLATION = {"runsc": "gvisor", "runc": "development-runc"}
+DEVELOPMENT_ENVS = ("development", "test")
 
 
 class SpecRejected(Exception):
@@ -54,20 +85,57 @@ class SandboxBusy(Exception):
     """No slot came free in time. Nothing was started, so nothing needs cleaning up."""
 
 
+class SandboxCancelled(Exception):
+    """Cancelled before the container started. Whatever was created has been removed."""
+
+
+def sandbox_spec(environment: str, runtime: str, image: str) -> SandboxSpec:
+    """ADR-71: the spec from settings. `runsc` anywhere; `runc` only in development and test,
+    refused otherwise like scripted skills. The image must be named by digest, never a tag."""
+    if runtime not in ISOLATION:
+        raise SpecRejected(f"unknown sandbox runtime {runtime!r}")
+    if runtime == "runc" and environment not in DEVELOPMENT_ENVS:
+        raise SpecRejected(f"the runc sandbox runtime is refused when AISRE_ENV is {environment}")
+    if not _pinned(image):
+        raise SpecRejected("the sandbox image must be named by digest")
+    return SandboxSpec(image=image, runtime=runtime, environment=environment)
+
+
+def isolation(spec: SandboxSpec) -> str:
+    """The label every result carries (ADR-71)."""
+    return ISOLATION[spec.runtime]
+
+
+def _pinned(image: str) -> bool:
+    """A registry digest (`name@sha256:<hex>`) or a local content-addressed image ID."""
+    return bool(
+        re.fullmatch(r"[\w./:-]+@sha256:[0-9a-f]{64}|sha256:[0-9a-f]{64}", image)
+        or ("@sha256:" in image and not image.startswith("-"))  # the reference placeholder
+    )
+
+
 class SandboxLimiter:
-    """The cap on sandboxes running at once, held by the one Test Runner process on the test host.
-    A run waits for a slot; the launcher never starts a fourth."""
+    """The cap on sandboxes running at once, in one Test Runner process (unit tests, and a
+    single process). Across processes the Test Runner uses PgSandboxSlots (ADR-71), which has
+    the same two methods. A run waits for a slot; the launcher never starts a fourth."""
 
     def __init__(self, limit: int = MAX_SANDBOXES):
         self.limit = limit
         self._slots = threading.BoundedSemaphore(limit)
 
-    def acquire(self, wait_s: float) -> bool:
-        return (
-            self._slots.acquire(timeout=wait_s)
-            if wait_s > 0
-            else self._slots.acquire(blocking=False)
-        )
+    def acquire(self, wait_s: float, cancel: Optional[threading.Event] = None) -> bool:
+        deadline = time.monotonic() + wait_s
+        while True:
+            left = deadline - time.monotonic()
+            got = (
+                self._slots.acquire(timeout=min(left, 1.0))
+                if left > 0
+                else self._slots.acquire(blocking=False)
+            )
+            if got:
+                return True
+            if left <= 0 or (cancel is not None and cancel.is_set()):
+                return False
 
     def release(self) -> None:
         self._slots.release()
@@ -78,10 +146,13 @@ LIMITER = SandboxLimiter()
 
 def launch_args(spec: SandboxSpec, run_id: str, workspace_volume: str) -> list[str]:
     """The exact container command the trusted launcher runs. Built only from SandboxSpec."""
+    if spec.runtime not in ISOLATION:
+        raise SpecRejected(f"unknown sandbox runtime {spec.runtime!r}")
     args = [
         "docker",
         "run",
         "--rm",
+        "--interactive",  # the checkout arrives on standard input (ADR-71)
         "--name",
         f"aisre-test-{run_id}",
         f"--runtime={spec.runtime}",
@@ -100,11 +171,12 @@ def launch_args(spec: SandboxSpec, run_id: str, workspace_volume: str) -> list[s
         f"--stop-timeout={STOP_GRACE_S}",  # refuses --pid=private and --uts=private
         "--label=aisre.sandbox=1",
         f"--label=aisre.run={run_id}",
+        f"--label=aisre.isolation={isolation(spec)}",
         "--env=AISRE_SANDBOX=1",  # the only variables: no secrets, ever (Q11.22)
         spec.image,
         "/harness/run",  # trusted harness from the image, not the workspace
     ]
-    validate_args(args)
+    validate_args(args, development=spec.environment in DEVELOPMENT_ENVS)
     return args
 
 
@@ -132,14 +204,14 @@ def volume_args(spec: SandboxSpec, run_id: str) -> list[str]:
 # Every token launch_args may emit between `docker run` and the image. Anything else is refused,
 # so a new way to weaken the launch fails here without anyone having listed it (Q11.23, Q11.31).
 _ALLOWED_ARGS = re.compile(
-    r"--rm|--name|aisre-test-[\w-]+|--runtime=runsc|--network=none|--read-only"
+    r"--rm|--interactive|--name|aisre-test-[\w-]+|--runtime=(?:runsc|runc)|--network=none|--read-only"
     r"|--tmpfs=/tmp:rw,noexec,nosuid,nodev,size=\d+m|--mount=type=volume,src=[\w-]+,dst=/workspace"
     r"|--cpus=[\d.]+|--memory=\w+|--memory-swap=\w+|--pids-limit=\d+|--user=0*[1-9]\d*:0*[1-9]\d*"
     r"|--cap-drop=ALL|--security-opt=no-new-privileges|--ipc=private|--stop-timeout=\d+"
     r"|--label=aisre\.sandbox=1|--label=aisre\.run=[\w-]+|--env=AISRE_SANDBOX=1"
+    r"|--label=aisre\.isolation=(?:gvisor|development-runc)"
 )
 _REQUIRED_ARGS = (
-    "--runtime=runsc",
     "--network=none",
     "--read-only",
     "--cap-drop=ALL",
@@ -148,9 +220,11 @@ _REQUIRED_ARGS = (
 )
 
 
-def validate_args(args: list[str]) -> None:
+def validate_args(args: list[str], *, development: bool = False) -> None:
     """Defence in depth: an allow-list, so only what launch_args builds can run, whatever the
-    spelling (Q11.23, Q11.31). The list ends with the pinned image and the trusted harness."""
+    spelling (Q11.23, Q11.31). The list ends with the pinned image and the trusted harness.
+    Exactly one runtime: `runsc`, or `runc` only for a development or test spec, and the
+    isolation label must say which (ADR-71)."""
     if args[:2] != ["docker", "run"] or len(args) < 4:
         raise SpecRejected("the launcher runs only `docker run`")
     for a in args[2:-2]:
@@ -158,11 +232,19 @@ def validate_args(args: list[str]) -> None:
             raise SpecRejected(
                 f"option not on the allow-list: {a.split('=')[0]}"
             )  # never the value
-    if "@sha256:" not in args[-2] or args[-2].startswith("-") or args[-1] != "/harness/run":
+    if not _pinned(args[-2]) or args[-1] != "/harness/run":
         raise SpecRejected("a pinned image and the trusted harness are required")
     missing = [a for a in _REQUIRED_ARGS if a not in args]
     if missing:
         raise SpecRejected(f"required: {', '.join(missing)} (ADR-60)")
+    runtimes = [a.split("=", 1)[1] for a in args if a.startswith("--runtime=")]
+    labels = [a for a in args if a.startswith("--label=aisre.isolation=")]
+    if len(runtimes) != 1 or len(labels) != 1:
+        raise SpecRejected("exactly one runtime and one isolation label are required")
+    if runtimes[0] == "runc" and not development:
+        raise SpecRejected("the runc runtime is for development and test only (ADR-71)")
+    if labels[0] != f"--label=aisre.isolation={ISOLATION[runtimes[0]]}":
+        raise SpecRejected("the isolation label must match the runtime (ADR-71)")
     if not any(a.startswith("--user=") for a in args):
         raise SpecRejected("sandbox must not run as root")
 
@@ -258,7 +340,7 @@ def classify(b: Optional[ResultBundle], expected_patch_sha256: str) -> TestOutco
 
 
 # ---------------------------------------------------------------------------
-# The launcher's run, and cleanup (Q11.27, Q11.28, Q11.30)
+# The harness's bundle
 # ---------------------------------------------------------------------------
 def read_bundle(stdout: str, exit_code: int) -> Optional[ResultBundle]:
     """The bundle is the last line of the harness's output, the only channel left: `--rm` removes
@@ -283,6 +365,199 @@ def read_bundle(stdout: str, exit_code: int) -> Optional[ResultBundle]:
         return None
 
 
+# ---------------------------------------------------------------------------
+# What the sandbox receives (ADR-71): protected paths, the checkout, the harness plan
+# ---------------------------------------------------------------------------
+# patch.PROTECTED, the one list: the launcher refuses these before anything starts, and the
+# harness refuses them again, except the restorations check_paths allowed (ADR-72).
+MAX_PATCH_BYTES = 1024 * 1024
+REVISION = re.compile(r"[\w][\w./-]{0,199}")
+
+# The harness plan per repository: the required suites, and the reproduction built from the
+# evidence (Q11.38): start the service at the revision with its own configuration, send the
+# failing request, expect the symptom. Platform data, never from the patch or the model.
+HARNESS_PLANS: dict[str, dict[str, Any]] = {
+    "orders-api": {
+        "suites": {
+            "unit": "tests/unit",
+            "integration": "tests/integration",
+            "smoke": "tests/smoke",
+        },
+        "reproduction": {
+            "serve": ["python", "-B", "-m", "orders.app"],
+            "port": 18080,
+            "ready_path": "/healthz",
+            "request": {
+                "method": "POST",
+                "path": "/v1/orders",
+                "body": {"items": [{"sku": "sku-1", "qty": 1, "unit_price": "100.00"}]},
+            },
+            "symptom_status": 500,
+        },
+    }
+}
+
+
+def refuse_protected(
+    canonical: dict[str, Any], revert: RevertFacts | None = None
+) -> dict[str, str]:
+    """T2.4, T2.10: a patch touching a protected path is refused before any volume or container
+    exists. `canonical` is Patch.canonical(), as the Test Runner reads it from storage; `revert`
+    is what its `reverted_commit` changed, from the mirror (revert_facts). Returns the restored
+    protected files, path -> new_sha256, for the harness."""
+    files = [
+        (str(f.get("path", "")), str(f.get("old_sha256", "")), str(f.get("new_sha256", "")))
+        for f in canonical.get("files") or []
+    ]
+    try:
+        return check_paths(
+            str(canonical.get("action_kind", "")), files, canonical.get("reverted_commit"), revert
+        )
+    except PatchRejected as e:
+        raise PatchRejected(e.code, f"{e.detail}; nothing was started") from None
+
+
+def _blob_sha256(repo: Path, rev: str, path: str, *, run=subprocess.run) -> str | None:
+    git = ["git", "-C", str(repo), "-c", "core.hooksPath=/dev/null"]
+    found = run([*git, "cat-file", "-e", f"{rev}:{path}"], capture_output=True)
+    if found.returncode != 0:
+        return None
+    body = run([*git, "cat-file", "blob", f"{rev}:{path}"], check=True, capture_output=True)
+    return hashlib.sha256(body.stdout).hexdigest()
+
+
+def revert_facts(repo: Path, commit: str, *, run=subprocess.run) -> RevertFacts:
+    """What `commit` changed, from the Test Runner's own mirror: each path with its content hash
+    at the commit's first parent and at the commit (patch.RevertFacts). A root commit has no
+    parent, so nothing it added can be restored."""
+    if not REVISION.fullmatch(commit):
+        raise SpecRejected("not a revision name")
+    git = ["git", "-C", str(repo), "-c", "core.hooksPath=/dev/null"]
+    full = run(
+        [*git, "rev-parse", "--verify", "--quiet", "--end-of-options", f"{commit}^{{commit}}"],
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout.strip()
+    parents = run(
+        [*git, "rev-list", "--parents", "-n", "1", full], check=True, capture_output=True, text=True
+    ).stdout.split()[1:]
+    names = run(
+        [*git, "diff-tree", "-r", "--root", "--no-commit-id", "--name-only", "-z", full],
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout.split("\0")
+    files = {
+        name: FileChangeFacts(
+            _blob_sha256(repo, parents[0], name, run=run) if parents else None,
+            _blob_sha256(repo, full, name, run=run),
+        )
+        for name in names
+        if name
+    }
+    return RevertFacts(full, files)
+
+
+def checkout(repo: Path, base_revision: str, *, run=subprocess.run) -> tuple[str, bytes]:
+    """T2.2: the exact base commit, as `git archive` of the Test Runner's own mirror. No `.git`,
+    no history, no remote, no credential. Returns the full commit ID and the tar."""
+    if not REVISION.fullmatch(base_revision):
+        raise SpecRejected("not a revision name")
+    git = ["git", "-C", str(repo), "-c", "core.hooksPath=/dev/null"]
+    commit = run(
+        [
+            *git,
+            "rev-parse",
+            "--verify",
+            "--quiet",
+            "--end-of-options",
+            f"{base_revision}^{{commit}}",
+        ],
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout.strip()
+    tar = run([*git, "archive", "--format=tar", commit], check=True, capture_output=True).stdout
+    return commit, tar
+
+
+def build_payload(
+    spec: SandboxSpec,
+    run_id: str,
+    commit: str,
+    checkout_tar: bytes,
+    canonical_patch: bytes,
+    plan: dict[str, Any],
+    restored: dict[str, str] | None = None,
+) -> bytes:
+    """The tar piped to the harness: run.json, patch.json (the patch's canonical bytes, which the
+    harness hashes itself) and checkout.tar. `restored` is refuse_protected's answer: the protected
+    files the patch may restore, with the hash each must have afterwards. Refused if it can't fit
+    the workspace."""
+    run_json = {
+        "run_id": run_id,
+        "base_revision": commit,
+        "image_digest": spec.image,
+        "spec_version": spec.spec_version,
+        "per_test_s": spec.per_test_s,
+        "protected": PROTECTED,
+        "restored": restored or {},
+        "plan": plan,
+    }
+    if len(canonical_patch) > MAX_PATCH_BYTES:
+        raise SpecRejected("the patch is too large")
+    buf = io.BytesIO()
+    with tarfile.open(fileobj=buf, mode="w", format=tarfile.PAX_FORMAT) as t:
+        for name, data in (
+            ("run.json", json.dumps(run_json).encode()),
+            ("patch.json", canonical_patch),
+            ("checkout.tar", checkout_tar),
+        ):
+            info = tarfile.TarInfo(name)
+            info.size, info.mode = len(data), 0o444
+            t.addfile(info, io.BytesIO(data))
+    payload = buf.getvalue()
+    if 3 * len(payload) > spec.workspace_mb * 1024 * 1024:  # unpacked, before and after copies
+        raise SpecRejected("the checkout does not fit the workspace")
+    return payload
+
+
+# ---------------------------------------------------------------------------
+# The launcher's run, kill and cleanup (Q11.27, Q11.28, Q11.30)
+# ---------------------------------------------------------------------------
+def timed_out_bundle(
+    spec: SandboxSpec,
+    run_id: str,
+    expected_patch_sha256: str,
+    base_revision: str,
+    exit_code: Optional[int],
+    duration_s: float,
+) -> ResultBundle:
+    return ResultBundle(
+        run_id=run_id,
+        patch_sha256=expected_patch_sha256,
+        base_revision=base_revision,
+        image_digest=spec.image,
+        spec_version=spec.spec_version,
+        harness_version="",
+        reproduction_before=None,
+        reproduction_after=None,
+        suites=(),
+        new_error_signatures=(),
+        exit_code=exit_code,
+        duration_s=duration_s,
+        timed_out=True,
+        log_artifact_sha256=None,
+    )
+
+
+def kill(run_id: str, *, run=subprocess.run) -> None:
+    """Cancellation (WR-15): kill the run's container now. The run's own `finally` removes it
+    and its volume; calling this before the container exists does nothing."""
+    run(["docker", "kill", f"aisre-test-{run_id}"], capture_output=True, timeout=30)
+
+
 def run_sandbox(
     spec: SandboxSpec,
     run_id: str,
@@ -291,27 +566,51 @@ def run_sandbox(
     *,
     popen=subprocess.Popen,
     run=subprocess.run,
-    limiter: SandboxLimiter = LIMITER,
+    limiter: Any = LIMITER,
     slot_wait_s: float = 0,
+    payload: Optional[bytes] = None,
+    budget_s: Optional[float] = None,
+    cancel: Optional[threading.Event] = None,
 ) -> Optional[ResultBundle]:
     """The Test Runner's launcher step: a slot, workspace, run under the wall clock, cleanup. On the
     deadline it writes the bundle itself, or classify would see none and call a timeout a crash.
-    With every slot taken it waits `slot_wait_s`, then raises SandboxBusy before creating anything."""
-    if not limiter.acquire(slot_wait_s):
+    With every slot taken it waits `slot_wait_s`, then raises SandboxBusy before creating anything.
+
+    `budget_s` (T2.6): the queued wait and the run share it, so a run that waited gets the rest,
+    never more than `wall_clock_s`; it stops waiting while MIN_RUN_S is left. `payload` goes to
+    the harness on standard input. `cancel`, once set, stops a wait or a start (SandboxCancelled);
+    a running container is stopped by `kill`."""
+    queued = time.monotonic()
+    if budget_s is not None:
+        slot_wait_s = max(0.0, budget_s - MIN_RUN_S)
+    if not limiter.acquire(slot_wait_s, cancel):
+        if cancel is not None and cancel.is_set():
+            raise SandboxCancelled(run_id)
         raise SandboxBusy(f"{limiter.limit} sandboxes are already running")
+    wall: float = spec.wall_clock_s
+    if budget_s is not None:
+        wall = min(wall, budget_s - (time.monotonic() - queued))
     name, volume = f"aisre-test-{run_id}", workspace_volume(run_id)
     started = time.monotonic()
     try:
         run(volume_args(spec, run_id), check=True, capture_output=True)
+        if cancel is not None and cancel.is_set():
+            raise SandboxCancelled(run_id)
         proc = popen(
             launch_args(spec, run_id, volume),
+            stdin=subprocess.PIPE if payload is not None else subprocess.DEVNULL,
             stdout=subprocess.PIPE,
-            stderr=subprocess.DEVNULL,
-            text=True,
+            stderr=subprocess.PIPE,
         )
+        sent = {} if payload is None else {"input": payload}
         try:
-            out, _ = proc.communicate(timeout=spec.wall_clock_s)
-            return read_bundle(out, proc.returncode)
+            out, err = proc.communicate(timeout=wall, **sent)
+            text = out.decode(errors="replace") if isinstance(out, bytes) else out
+            bundle = read_bundle(text, proc.returncode)
+            if bundle is None and err:
+                tail = err.decode(errors="replace") if isinstance(err, bytes) else err
+                log.warning("sandbox %s gave no bundle: %s", run_id, mask_secrets(tail[-500:]))
+            return bundle
         except subprocess.TimeoutExpired:
             try:
                 run(
@@ -323,21 +622,13 @@ def run_sandbox(
             except subprocess.TimeoutExpired:
                 proc.kill()  # a stuck stop; the reaper removes what's left
                 proc.communicate()
-            return ResultBundle(
-                run_id=run_id,
-                patch_sha256=expected_patch_sha256,
-                base_revision=base_revision,
-                image_digest=spec.image,
-                spec_version=spec.spec_version,
-                harness_version="",
-                reproduction_before=None,
-                reproduction_after=None,
-                suites=(),
-                new_error_signatures=(),
-                exit_code=proc.returncode,
-                duration_s=time.monotonic() - started,
-                timed_out=True,
-                log_artifact_sha256=None,
+            return timed_out_bundle(
+                spec,
+                run_id,
+                expected_patch_sha256,
+                base_revision,
+                proc.returncode,
+                time.monotonic() - started,
             )
     finally:  # also on cancellation; a failure here is the reaper's
         try:
@@ -347,18 +638,17 @@ def run_sandbox(
             limiter.release()
 
 
-def _older(lines: str, now: datetime) -> list[str]:
-    """Names from "<name> <RFC 3339 time>" lines, for those past REAP_AGE_S."""
+def _older(lines: str, now: datetime, max_age_s: float = REAP_AGE_S) -> list[str]:
+    """Names from "<name> <RFC 3339 time>" lines, for those past `max_age_s`."""
     pairs = [line.split(None, 1) for line in lines.splitlines() if line.strip()]
     return [
-        n
-        for n, t in pairs
-        if (now - datetime.fromisoformat(t.strip())).total_seconds() > REAP_AGE_S
+        n for n, t in pairs if (now - datetime.fromisoformat(t.strip())).total_seconds() > max_age_s
     ]
 
 
-def reap(now: datetime, *, run=subprocess.run) -> int:
-    """Q11.30: remove containers and volumes labelled aisre.sandbox=1 older than 60 minutes. Returns
+def reap(now: datetime, *, run=subprocess.run, max_age_s: float = REAP_AGE_S) -> int:
+    """Q11.30: remove containers and volumes labelled aisre.sandbox=1 older than `max_age_s`, at
+    most 60 minutes; the scheduled job passes the wall clock plus REAP_MARGIN_S (ADR-71). Returns
     how many were left over, for aisre_sandboxes_leftover, which should be zero. `now` is timezone-aware."""
 
     def docker(*args: str) -> str:
@@ -367,13 +657,17 @@ def reap(now: datetime, *, run=subprocess.run) -> int:
     label = "label=aisre.sandbox=1"
     containers = docker("ps", "--all", "--quiet", "--filter", label).split()
     stale = (
-        _older(docker("inspect", "--format={{.Id}} {{.Created}}", *containers), now)
+        _older(docker("inspect", "--format={{.Id}} {{.Created}}", *containers), now, max_age_s)
         if containers
         else []
     )
     volumes = docker("volume", "ls", "--quiet", "--filter", label).split()
     stale_volumes = (
-        _older(docker("volume", "inspect", "--format={{.Name}} {{.CreatedAt}}", *volumes), now)
+        _older(
+            docker("volume", "inspect", "--format={{.Name}} {{.CreatedAt}}", *volumes),
+            now,
+            max_age_s,
+        )
         if volumes
         else []
     )

@@ -154,3 +154,48 @@ def quiet(app_engine):
         return str(made.incident_id)
 
     return open_quietly
+
+
+ROOT = HERE.parents[1]
+
+
+@pytest.fixture(scope="session")
+def sandbox_image() -> str:
+    """M2 (ADR-71): the harness image from ops/sandbox, built here, by its ID. Skips without
+    Docker. The sandboxes these tests start run under runc and prove the flow, not isolation."""
+    import subprocess
+
+    try:
+        subprocess.run(["docker", "info"], check=True, capture_output=True, timeout=20)
+    except (OSError, subprocess.SubprocessError) as e:
+        pytest.skip(f"Docker unavailable for the sandbox: {type(e).__name__}")
+    built = subprocess.run(
+        [
+            "docker",
+            "build",
+            "--quiet",
+            "--label",
+            "aisre.harness.image=1",
+            str(ROOT / "ops/sandbox"),
+        ],
+        check=True,
+        capture_output=True,
+        text=True,
+        timeout=600,
+    )
+    return built.stdout.strip()
+
+
+@pytest.fixture(scope="session")
+def reference_repo(tmp_path_factory) -> tuple[Path, dict[str, str]]:
+    """The runnable orders-api (T2.3) as a git repository: (path, tag -> commit)."""
+    import importlib.util
+
+    spec = importlib.util.spec_from_file_location(
+        "build_repo", ROOT / "ops/reference-app/build_repo.py"
+    )
+    assert spec and spec.loader
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    dest = tmp_path_factory.mktemp("reference") / "orders-api"
+    return dest, module.build(dest)

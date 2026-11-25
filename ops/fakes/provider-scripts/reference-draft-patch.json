@@ -1,0 +1,26 @@
+{
+  "match": [
+    "You draft one remediation candidate",
+    "ORDER_TAX_RATE_BPS=8.25"
+  ],
+  "note": "SYNTHETIC answer from the fake model provider (local use only), for the reference incident: the config revert of cfg-42, returning to cfg-41.",
+  "answer": {
+    "params": {
+      "service": "orders-api",
+      "action_kind": "config_revert",
+      "target_ref": "cfg-41"
+    },
+    "files": [
+      {
+        "path": "deploy/production.env",
+        "new_content": "# orders-api production configuration (synthetic, for the reference incident)\nSERVICE_NAME=orders-api\nLOG_LEVEL=INFO\nHTTP_PORT=8080\nHTTP_WORKERS=4\nORDERS_DB_HOST=orders-db.internal\nORDERS_DB_NAME=orders\nPAYMENTS_URL=http://payments.internal\nINVENTORY_URL=http://inventory.internal\nORDER_CURRENCY=USD\nORDER_MAX_ITEMS=50\nORDER_RESERVATION_TTL_SECONDS=900\nORDER_ROUNDING_DIGITS=2\nORDER_TAX_RATE_BPS=825\nORDERS_DB_POOL_SIZE=20\nORDERS_DB_TIMEOUT_MS=2000\nPAYMENTS_TIMEOUT_MS=3000\n",
+        "rationale": "ORDER_TAX_RATE_BPS is in basis points and compute_totals parses it with int(); the change set it to 8.25, which raises ValueError on every order. This puts back 825, its value before the change.",
+        "evidence_ids": [
+          "{{ref:(?s)^\\[change }}",
+          "{{ref:(?s)^\\[log .*ValueError}}"
+        ]
+      }
+    ],
+    "summary": "Revert ORDER_TAX_RATE_BPS in deploy/production.env from 8.25 back to 825, undoing the configuration change in release 2.14.1. The service reads the rate in basis points with int(), so 8.25 fails every order with HTTP 500; 825 is the value it ran with before. Nothing else changes."
+  }
+}

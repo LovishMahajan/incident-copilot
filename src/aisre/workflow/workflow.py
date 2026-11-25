@@ -68,6 +68,7 @@ STALE_RETRIES = 5  # reloads of the incident version for one write (ADR-69)
 WORKFLOW_LIMIT = timedelta(hours=24)
 LIMIT_REASON = "24-hour workflow limit reached"
 TEMPORAL_CANCEL = "temporal-cancel"  # request_id of a cancel that came from Temporal, not a person
+RELEASE_A = "release_a_recommendation"  # start of the hand-over reason for a tested fix (ADR-44)
 
 
 # ---------------------------------------------------------------------------
@@ -87,6 +88,13 @@ TOOL_RETRY = RetryPolicy(
     maximum_attempts=3,
 )
 NO_RETRY = RetryPolicy(maximum_attempts=1)  # forbidden: the sandbox and production writes
+REVIEW_RETRY = RetryPolicy(
+    initial_interval=timedelta(seconds=2),
+    backoff_coefficient=2.0,
+    maximum_interval=timedelta(seconds=20),
+    maximum_attempts=3,
+    non_retryable_error_types=["PullRequestRefused", "NotTested", "PatchChanged"],
+)  # the review system dedupes on the key, so a retry opens nothing twice
 MODEL_RETRY = RetryPolicy(
     maximum_attempts=2
 )  # failures return as values; this is one re-run for a lost worker
@@ -349,10 +357,14 @@ class IncidentWorkflow:
                     "sandbox unavailable; untested draft handed over", action_to=A.WITHDRAWN
                 )
             if candidate_no == 1:
-                await self._to(I.TESTING, "patch drafted", action_to=A.TESTING)
+                await self._to(
+                    I.TESTING, "patch drafted; sandbox test requested", action_to=A.TESTING
+                )
             else:  # the incident is `testing` already
                 await self._write(
-                    self.state, f"candidate {candidate_no} drafted", action_to=A.TESTING
+                    self.state,
+                    f"candidate {candidate_no} drafted; sandbox test requested",
+                    action_to=A.TESTING,
                 )
             try:
                 test = await self._cancellable(
@@ -363,6 +375,7 @@ class IncidentWorkflow:
                     timeout_s=900,
                     heartbeat_s=20,
                     retry=NO_RETRY,
+                    task_queue=act.TEST_RUNNER_QUEUE,  # only the Test Runner has Docker (ADR-71)
                 )
             except ActivityError:
                 return await self._hand_over(
@@ -371,16 +384,33 @@ class IncidentWorkflow:
             await self._safe_point()
             if test.reproduced and test.outcome == "passed":
                 break
+            ran = f" ({test.isolation})" if test.isolation else ""
+            if test.outcome == "not_reproduced":  # FR-21: the patch itself was never tested
+                return await self._hand_over(
+                    "fix not tested: the failure did not reproduce at the patch's base revision"
+                    f"{ran}; a person checks the diagnosis",
+                    action_to=A.TEST_FAILED,
+                )
             # Only a fix that ran and failed earns another candidate; anything else is the sandbox's answer.
             if test.outcome != "failed" or candidate_no == act.MAX_PATCH_CANDIDATES:
                 return await self._hand_over(
-                    f"fix not proven: {test.outcome}", action_to=A.TEST_FAILED
+                    f"fix not proven: {test.outcome}{ran}", action_to=A.TEST_FAILED
                 )
             await self._write(
                 self.state, f"candidate {candidate_no} failed its test", action_to=A.TEST_FAILED
             )
         if not snap.remediation_enabled:  # Release A: people change production (ADR-44)
-            return await self._hand_over("release_a_recommendation", action_to=A.WITHDRAWN)
+            # The tested fix goes to people as a draft pull request, never merged here (FR-18).
+            review = await self._open_review(test)
+            proposed = (
+                f"draft pull request {review.review_ref}"
+                if review is not None
+                else "draft pull request could not be opened; the patch is on the action"
+            )
+            return await self._hand_over(
+                f"{RELEASE_A}: fix passed its sandbox test ({test.isolation}); {proposed}",
+                action_to=A.WITHDRAWN,
+            )
 
         # ---- Approval wait (8.6)
         self.action_digest = test.action_digest
@@ -523,6 +553,20 @@ class IncidentWorkflow:
     def _step_key(self) -> str:
         self.step += 1
         return f"{self.run_key}:s{self.step}"
+
+    async def _open_review(self, test: act.TestOut) -> Optional[act.ReviewOut]:
+        """Release A: the passing fix as a draft pull request. A failure leaves the hand-over as
+        it is, saying so; the patch and its test stay on the action either way."""
+        try:
+            out: act.ReviewOut = await self._act(
+                act.open_draft_pull_request,
+                act.ReviewIn(self.action_id, test.test_run_id, f"{self.action_id}:review:1"),
+                timeout_s=60,
+                retry=REVIEW_RETRY,
+            )
+            return out
+        except ActivityError:
+            return None
 
     # ------------------------------------------------------------------ approval
     async def _request_approval(self, action_id: str, digest: str) -> act.ApprovalRequestOut:
@@ -760,6 +804,7 @@ class IncidentWorkflow:
         heartbeat_s: Optional[int] = None,
         schedule_s: Optional[int] = None,
         unlimited: bool = False,
+        task_queue: str = act.INVESTIGATION_QUEUE,
     ):
         """Runs an activity that cancellation stops (8.7). The handle is kept so the signal
         handler and the 24-hour timer can cancel it; WAIT_CANCELLATION_COMPLETED lets it
@@ -768,7 +813,7 @@ class IncidentWorkflow:
         handle = workflow.start_activity(
             fn,
             arg,
-            task_queue=act.INVESTIGATION_QUEUE,
+            task_queue=task_queue,
             start_to_close_timeout=timedelta(seconds=timeout_s),
             schedule_to_close_timeout=None
             if unlimited

@@ -55,6 +55,7 @@ from aisre.workflow.states import InvalidTransition
 # Task queues (Artifact 6: the worker process and the dispatcher process)
 INVESTIGATION_QUEUE = "aisre-investigation"
 DISPATCHER_QUEUE = "aisre-dispatcher"
+TEST_RUNNER_QUEUE = "aisre-test-runner"  # run_sandbox_test and the reaper only (ADR-71)
 
 DATA_CONVERTER = pydantic_data_converter
 MAX_INVESTIGATIONS = 5  # running at once, across all workers (8.1)
@@ -187,6 +188,22 @@ class TestOut:
     reproduced: bool
     outcome: Literal["passed", "failed", "not_reproduced", "inconclusive", "crashed", "timeout"]
     action_digest: Optional[str] = None  # write-once, set when testing ends (ADR-64)
+    isolation: Optional[str] = None  # gvisor, or development-runc: the flow, not isolation (ADR-71)
+
+
+@dataclass
+class ReviewIn:
+    """open_draft_pull_request: for an action whose test `test_run_id` passed (ADR-72)."""
+
+    action_id: str
+    test_run_id: str
+    review_key: str  # idempotency key, sent to the review system as Idempotency-Key
+
+
+@dataclass
+class ReviewOut:
+    review_ref: str  # repository#number
+    review_url: str
 
 
 @dataclass
@@ -514,8 +531,18 @@ async def draft_patch(inp: SkillIn) -> SkillResult[PatchOut]:
 
 @activity.defn(name="run_sandbox_test")
 async def run_sandbox_test(inp: TestIn) -> TestOut:
-    """Test Runner: fresh isolated environment, reproduce first, apply, check, destroy.
-    Heartbeats; on cancellation it kills and destroys the sandbox before the activity ends."""
+    """Test Runner (TEST_RUNNER_QUEUE, its own process; ADR-71): fresh isolated environment,
+    reproduce first, apply, check, destroy. Heartbeats; on cancellation it kills and destroys the
+    sandbox before the activity ends. Implementation: aisre.remediation.test_runner."""
+    raise NotImplementedError
+
+
+@activity.defn(name="open_draft_pull_request")
+async def open_draft_pull_request(inp: ReviewIn) -> ReviewOut:
+    """Release A (ADR-44, FR-18): a draft pull request in the review system for a fix whose
+    failure reproduced and whose test passed, with the patch, FR-19's fields and the test result
+    with its isolation label. Never merged by the platform. Records `patches.review_ref` once and
+    `aisre.action.review_opened.v1`. Implementation: aisre.remediation.review."""
     raise NotImplementedError
 
 
@@ -593,7 +620,7 @@ ALL_INVESTIGATION_ACTIVITIES = [
     diagnose,
     review_diagnosis,
     draft_patch,
-    run_sandbox_test,
+    open_draft_pull_request,
     request_approval,
     escalate_approval,
     close_approval_request,
@@ -602,3 +629,4 @@ ALL_INVESTIGATION_ACTIVITIES = [
     reconcile_workflows,
 ]
 ALL_DISPATCHER_ACTIVITIES = [dispatch_change, reconcile_execution]
+ALL_TEST_RUNNER_ACTIVITIES = [run_sandbox_test]  # with the reaper's reap_sandboxes (ADR-71)

@@ -126,7 +126,7 @@ VIEWS = [
     (c.Diagnosis, "diagnoses", {"hypotheses"}),
     (c.ActionView, "actions", {"target_service", "target_environment", "patch", "latest_test"}),
     (c.PatchView, "patches", set()),
-    (c.TestRunView, "test_runs", set()),
+    (c.TestRunView, "test_runs", {"isolation"}),  # added by migration 0007 (ADR-71)
     (c.ApprovalDecisionView, "approval_decisions", {"target_service", "target_environment"}),
     (c.ArtifactView, "artifacts", {"content_url"}),
 ]
@@ -174,7 +174,7 @@ def artifact_event_types() -> set[str]:
 
 
 def test_every_event_type_in_the_artifact_has_a_payload_model():
-    assert len(c.EVENT_DATA) == 41
+    assert len(c.EVENT_DATA) == 43
     assert set(c.EVENT_DATA) == artifact_event_types()
 
 
@@ -571,6 +571,7 @@ def test_run(outcome):
         patch_sha256=SHA,
         reproduced=True,
         outcome=outcome,
+        isolation="gvisor",
         output_artifact_id=None,
         started_at=NOW,
         finished_at=NOW,

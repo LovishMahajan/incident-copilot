@@ -470,11 +470,17 @@ class PatchView(Strict):
     review_ref: str | None
 
 
+Isolation = Literal["gvisor", "development-runc"]  # ADR-71: what a test run proves
+
+
 class TestRunView(Strict):
     test_run_id: UUID
     patch_sha256: Sha256
     reproduced: bool
     outcome: TestOutcome
+    isolation: Isolation = Field(
+        description="gvisor, or development-runc: proves the flow, never isolation (ADR-71)"
+    )
     output_artifact_id: UUID | None
     started_at: datetime
     finished_at: datetime
@@ -802,6 +808,29 @@ class ActionTestedData(Strict):
     patch_sha256: Sha256
     reproduced: bool
     outcome: TestOutcome
+    isolation: Isolation
+
+
+class ActionTestStartedData(Strict):
+    """The Test Runner took a slot and is starting the sandbox (M2, ADR-71)."""
+
+    action_id: UUID
+    patch_sha256: Sha256
+    isolation: Isolation
+
+
+class ActionReviewOpenedData(Strict):
+    """A draft pull request opened in the review system for a fix that passed its test (FR-18,
+    ADR-72). Never merged by the platform: people review, merge and deploy it."""
+
+    action_id: UUID
+    patch_sha256: Sha256
+    review_ref: str = Field(description="repository#number in the review system")
+    review_url: str
+    draft: Literal[True]
+    test_run_id: UUID
+    isolation: Isolation
+    required_reviewers: list[str] = Field(default_factory=list)
 
 
 class ActionWithdrawnData(Strict):
@@ -981,7 +1010,9 @@ EVENT_DATA: dict[str, type[Strict]] = {
     "aisre.diagnosis.inconclusive.v1": DiagnosisInconclusiveData,
     "aisre.diagnosis.reviewed.v1": DiagnosisReviewedData,
     "aisre.action.proposed.v1": ActionProposedData,
+    "aisre.action.test_started.v1": ActionTestStartedData,
     "aisre.action.tested.v1": ActionTestedData,
+    "aisre.action.review_opened.v1": ActionReviewOpenedData,
     "aisre.action.withdrawn.v1": ActionWithdrawnData,
     "aisre.action.undone.v1": ActionUndoneData,
     "aisre.approval.requested.v1": ApprovalRequestedData,

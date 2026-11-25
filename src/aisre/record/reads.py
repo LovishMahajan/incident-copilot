@@ -19,6 +19,7 @@ document version it was. A document no longer in the organisation's corpus is sh
 from __future__ import annotations
 
 from collections.abc import Mapping
+from dataclasses import dataclass
 from typing import Any
 from uuid import UUID
 
@@ -185,7 +186,7 @@ def actions(conn: Connection, incident_id: UUID, action_id: UUID | None = None) 
         test = (
             conn.execute(
                 text(
-                    "SELECT test_run_id, patch_sha256, reproduced, outcome, output_artifact_id, "
+                    "SELECT test_run_id, patch_sha256, reproduced, outcome, isolation, output_artifact_id, "
                     "started_at, finished_at FROM test_runs WHERE action_id = :a "
                     "ORDER BY started_at DESC, test_run_id DESC LIMIT 1"
                 ),
@@ -215,6 +216,40 @@ def incident_of_action(conn: Connection, action_id: UUID, org_id: UUID) -> UUID 
         {"a": action_id, "o": org_id},
     ).scalar()
     return found if isinstance(found, UUID) else None
+
+
+@dataclass(frozen=True)
+class StoredArtifact:
+    """An artifact's row, for the content read. `storage_key` is internal and never returned."""
+
+    incident_id: UUID
+    kind: str
+    storage_key: str
+    content_sha256: str
+    media_type: str
+
+
+def artifact(conn: Connection, artifact_id: UUID, org_id: UUID) -> StoredArtifact | None:
+    row = (
+        conn.execute(
+            text(
+                "SELECT incident_id, kind, storage_key, content_sha256, media_type FROM artifacts "
+                "WHERE artifact_id = :a AND org_id = :o"
+            ),
+            {"a": artifact_id, "o": org_id},
+        )
+        .mappings()
+        .first()
+    )
+    if row is None:
+        return None
+    return StoredArtifact(
+        row["incident_id"],
+        str(row["kind"]),
+        str(row["storage_key"]),
+        str(row["content_sha256"]).strip(),
+        str(row["media_type"]),
+    )
 
 
 def _evidence_links(conn: Connection, ids: list[Any]) -> dict[Any, list[EvidenceLink]]:

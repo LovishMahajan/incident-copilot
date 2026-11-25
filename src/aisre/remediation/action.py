@@ -174,7 +174,7 @@ class Directory:
 @dataclass(frozen=True)
 class ApprovalPolicy:
     version: str = "approval-policy@1"
-    edit_version: str = "edit-policy@1"  # the EditPolicy in force (patch.py)
+    edit_version: str = "edit-policy@2"  # the EditPolicy in force (patch.py, ADR-72)
     valid_for: timedelta = timedelta(minutes=15)  # execute within this after approval
     conditional_margin: timedelta = timedelta(minutes=15)  # ADR-48: time to deploy the fix
     escalates: timedelta = timedelta(minutes=15)  # workflow timer on an unanswered request

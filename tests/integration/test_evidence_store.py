@@ -258,6 +258,7 @@ def test_snapshot_reaches_the_compose_object_store():
     key = snapshot_key(str(uuid7()), str(uuid7()))
     store.put(key, b'{"records": []}', "application/json")
     assert UUID(key.split("/")[1])
+    assert store.get(key) == b'{"records": []}'  # M2: how the Test Runner reads a patch
 
 
 def test_t1_11_tiers_are_stored_and_a_later_round_links_to_the_stored_change(app_engine, incident):
