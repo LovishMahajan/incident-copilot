@@ -49,13 +49,16 @@ Each adapter's arguments are its own (its module docstring). Credentials are nam
 | `alertmanager` | `get_alert` (API v2 `/api/v2/alerts`, active alerts labelled with the service) | as Prometheus |
 | `tempo` | `get_traces` (TraceQL `/api/search`, then `/api/traces/<id>`) | as Prometheus |
 | `datadog` | `get_metric` (v1 query), `get_logs` (v2 logs search), `get_changes` (v1 events), `get_alert` (v1 monitors in Alert or Warn), `get_traces` (v2 spans search), `get_error_groups` (v2 Error Tracking, native), `get_dependency_health`, derived (v1 query per dependency) | `api_key` and `app_key`, the application key scoped read-only; `site` |
+| `github_changes` | `get_changes` only: deployments to the environment and their statuses, what each deployed against the one before (commits, files, and the diff and changed keys of your configuration files), and optionally completed release workflow runs (REST 2022-11-28, github.com or Enterprise `/api/v3`) | `token` by reference: a fine-grained token with read-only Contents, Deployments, Actions and Metadata on the service's repositories; never an `AISRE_RELEASE_*` name |
 | `cloudwatch` | `get_metric` (GetMetricData), `get_logs` (FilterLogEvents), `get_alert` (DescribeAlarms), `get_traces` (X-Ray), `get_error_groups`, derived (Logs Insights `stats ... by`), `get_dependency_health`, derived (GetMetricData per dependency) | the standard AWS chain (optional `profile`); needs the `aws` extra, `uv sync --extra aws` |
 
 **Dependency health** is the same everywhere: you name each dependency and the query that measures it, `{"<name>": {"kind": "postgresql", "error_rate": query, "latency_p95": query, "max_error_rate": 0.05, "max_latency_s": 0.5}}`, with `$dependency` put in like `$service`. Over a limit is `degraded`; a measure with no data is `unknown`, never `healthy`; a query that fails makes the whole call a gap.
 
-**Allowed gaps.** Neither the Prometheus stack nor CloudWatch holds a change history, so no adapter here answers `get_changes` for them (Datadog's deployment events do). Every source tool needs a source for `aisre pilot check` to pass. If your service's owners accept going without one, say so in its scope, with the reason: `"allowed_gaps": [{"tool": "get_changes", "reason": "..."}]`. The check then prints a `WARN` line with the reason instead of failing, and every call for that tool is still a `gap` in the evidence, which the diagnosis names. Without change history no evidence gets a strength tier (ADR-53), so the diagnosis can't pass low; treat this as a known weakness of the pilot for that service, not a fix. A `"*"` whose adapter can't answer a tool (`"*": cloudwatch` for `get_changes`) counts as no source.
+**Change history from GitHub.** Neither the Prometheus stack nor CloudWatch holds a change history; if your releases run from GitHub Actions, `github_changes` answers `get_changes` from the repository instead. Give it the `repository` (`owner/name`, `$service` allowed), the API `url` for GitHub Enterprise (`https://HOST/api/v3`; github.com is the default), `environments` mapping the platform's environment to the GitHub environment names your deployment jobs use (default: the same name; an environment not in the map is a gap), `workflows` (release workflow file names, optional) and `config_paths` (globs such as `deploy/**`: files matching them count as configuration, so their diff and changed `KEY=value` or `key: value` lines reach the fact rules, the way `ORDER_TAX_RATE_BPS 825 -> 8.25` did in the reference incident). Without `config_paths` every changed file counts as code. Your deployment jobs must use GitHub environments (`environment:` on the job) so GitHub records deployments; a run without one shows only as a workflow run, with no diff. Create the token as a fine-grained personal access token or GitHub App installation on the service's repositories with **Contents: read, Deployments: read, Actions: read, Metadata: read** and nothing else, and name it anything but `AISRE_RELEASE_*` (that is the release write credential: refused by the adapter and by the go-live check). It may share the review token's secret only if you decide so. A rate limit is a gap saying when GitHub allows the next call; nothing waits.
 
-The Prometheus stack (Prometheus, Loki, Alertmanager, Tempo), all seven tools:
+**Allowed gaps.** Every source tool needs a source for `aisre pilot check` to pass. If your service's owners accept going without one, say so in its scope, with the reason: `"allowed_gaps": [{"tool": "get_changes", "reason": "..."}]`. The check then prints a `WARN` line with the reason instead of failing, and every call for that tool is still a `gap` in the evidence, which the diagnosis names. Without change history no evidence gets a strength tier (ADR-53), so the diagnosis can't pass low; treat this as a known weakness of the pilot for that service, not a fix. A `"*"` whose adapter can't answer a tool (`"*": cloudwatch` for `get_changes`) counts as no source.
+
+The Prometheus stack (Prometheus, Loki, Alertmanager, Tempo) with GitHub for change history, all seven tools:
 
 ```json
 {"services": {"payments-api/production": {
@@ -91,8 +94,9 @@ The Prometheus stack (Prometheus, Loki, Alertmanager, Tempo), all seven tools:
   "get_traces": {"adapter": "tempo", "url": "https://tempo.internal.example", "tenant": "payments",
     "token": {"env": "TEMPO_READ_TOKEN"},
     "query": "{ resource.service.name = \"$service\" && resource.deployment.environment = \"$environment\" && status = error }"},
-  "allowed_gaps": [{"tool": "get_changes",
-    "reason": "No deployment history reachable from the Prometheus stack; responders read the release log by hand"}]}}}
+  "get_changes": {"adapter": "github_changes", "repository": "example-org/$service",
+    "token": {"env": "AISRE_CHANGES_GITHUB_TOKEN"}, "environments": {"production": ["production"]},
+    "workflows": ["release.yml"], "config_paths": ["deploy/**"]}}}}
 ```
 
 Alertmanager keeps no value or threshold of its own: put them in the rule's annotations (`value: "{{ $value }}"`, `threshold: "0.05"`), or they stay empty. It doesn't hold when the condition began either, so the breach start is empty; the rule's expression is read from the alert's Prometheus link.
@@ -123,7 +127,7 @@ Datadog, all seven tools from one adapter (`$levels` becomes `(error OR warn)`, 
 
 Deployment events need `service:`, `env:` and `version:` tags (and `previous_version:` if you have it); Datadog doesn't hold the files or configuration keys a release changed, so the fact rules have less to go on than with a full change history. Monitors must be tagged `service:` (and `env:`); a monitor holds its query and threshold, not the value that triggered it. The application key needs `monitors_read`, `apm_read` and `error_tracking_read` besides the pass-2 scopes.
 
-CloudWatch, with X-Ray and Logs Insights (the worker's role needs only `cloudwatch:GetMetricData`, `cloudwatch:DescribeAlarms`, `logs:FilterLogEvents`, `logs:StartQuery` and `logs:GetQueryResults` on the service's log groups, `xray:GetTraceSummaries` and `xray:BatchGetTraces`; with `alarm_tags`, `cloudwatch:ListTagsForResource`):
+CloudWatch, with X-Ray and Logs Insights, and change history from GitHub Enterprise (the worker's role needs only `cloudwatch:GetMetricData`, `cloudwatch:DescribeAlarms`, `logs:FilterLogEvents`, `logs:StartQuery` and `logs:GetQueryResults` on the service's log groups, `xray:GetTraceSummaries` and `xray:BatchGetTraces`; with `alarm_tags`, `cloudwatch:ListTagsForResource`):
 
 ```json
 {"services": {"payments-api/production": {
@@ -144,8 +148,10 @@ CloudWatch, with X-Ray and Logs Insights (the worker's role needs only `cloudwat
         "max_latency_s": 0.05},
       "card-network": {"kind": "third_party_http",
         "error_rate": "SUM(SEARCH('{App,Service,Peer} Service=\"$service\" Peer=\"$dependency\" MetricName=\"ClientErrorRate\"', 'Average', 60))"}}},
-  "allowed_gaps": [{"tool": "get_changes",
-    "reason": "CloudWatch holds no change history and no deployment source is wired yet; responders read the release log by hand"}]}}}
+  "get_changes": {"adapter": "github_changes", "url": "https://github.example.com/api/v3",
+    "repository": "payments/$service", "token": {"file": "/run/secrets/github-changes-readonly"},
+    "environments": {"production": ["production-eu", "production-us"]},
+    "config_paths": ["deploy/**", "config/*.yaml"]}}}}
 ```
 
 The error-groups query must name its output columns `type`, `message`, `count`, `first_seen` and `last_seen` (and may add `version` and a Python `stack`, whose `File "...", line N` frames become the group's); the query runs at most the call's 20 s, else the call is a gap. Each dependency expression must return one series.
