@@ -5,9 +5,11 @@ pull request here once the fix has passed its test, with its draft-pull-request 
 nothing more (11.7: propose, never merge or deploy). Patches reach the code only as draft pull
 requests that people review and merge (FR-18); this client has no merge, push or commit call.
 
-`ReviewClient` speaks the review system's HTTP API: for now Compose's fake
-(`AISRE_REVIEW_ADAPTER=fake_review`, ops/fakes/review.py), which Settings refuses in production,
-as it does every fake. A real code host gets its own adapter behind the same methods.
+`ReviewClient` speaks Compose's fake review system's HTTP API (`AISRE_REVIEW_ADAPTER=fake_review`,
+ops/fakes/review.py), which Settings refuses in production, as it does every fake.
+`GitHubReviewClient` (aisre.remediation.github, `AISRE_REVIEW_ADAPTER=github`, ADR-75) is the
+real one, allowed in production. Both are a `ReviewSystem`: the same reads and draft pull
+requests, and no merge.
 
 `ReviewActivities.open_draft_pull_request` is the workflow's activity: it opens the pull request
 for an action whose test passed (never before), with the patch, the diagnosis's hypothesis, the
@@ -89,6 +91,11 @@ class RepoReader(Protocol):
     def history(self, repo: str, ref: str, limit: int) -> list[CommitInfo]: ...
     def resolve(self, repo: str, ref: str) -> str | None: ...
     def content(self, repo: str, ref: str, path: str) -> str | None: ...
+
+
+class ReviewSystem(RepoReader, Protocol):
+    def open_draft(self, repo: str, pr: DraftPullRequest, key: str) -> PullRequest: ...
+    def pull(self, repo: str, number: int) -> PullRequest | None: ...
 
 
 class ReviewClient:
@@ -207,7 +214,7 @@ def _pull(p: dict[str, Any]) -> PullRequest:
     )
 
 
-def client_from_settings(settings: Settings) -> ReviewClient | None:
+def client_from_settings(settings: Settings) -> ReviewSystem | None:
     """None when no review system is configured. Settings already refuses the fake in
     production; this checks again, as the worker does for scripted skills."""
     if settings.review_adapter is None or settings.review_url is None:
@@ -215,6 +222,12 @@ def client_from_settings(settings: Settings) -> ReviewClient | None:
     if settings.review_adapter == "fake_review" and settings.env == "production":
         raise RuntimeError("the fake review system is refused when AISRE_ENV is production")
     assert settings.review_token is not None  # Settings: all three or none
+    if settings.review_adapter == "github":
+        from aisre.remediation.github import GitHubReviewClient
+
+        return GitHubReviewClient(
+            settings.review_url, settings.review_token, settings.review_repos or {}
+        )
     return ReviewClient(settings.review_url, settings.review_token)
 
 
@@ -276,7 +289,7 @@ class BlobReader(Protocol):
 class ReviewActivities:
     """`open_draft_pull_request`, over the record, the object store and the review system."""
 
-    def __init__(self, engine: Engine, blobs: BlobReader, client: ReviewClient) -> None:
+    def __init__(self, engine: Engine, blobs: BlobReader, client: ReviewSystem) -> None:
         self.engine, self.blobs, self.client = engine, blobs, client
 
     def all(self) -> list[Any]:

@@ -3,8 +3,9 @@
 An adapter holds the source's address (and, for a real source, its narrow credential, never
 shown to the model: ST-17) and answers one tool call with records in the platform's own shape,
 below, so the collector and the fact rules (aisre.evidence.facts) never see a vendor's format.
-Which adapter answers which tool is configuration (`SourceSet.from_config`): a real source is
-one more class in ADAPTERS and one more entry in the configuration, nothing else.
+Which adapter answers which tool, for which service and environment, is configuration
+(`SourceSet.from_config`, ADR-75): a real source is one more class in ADAPTERS and one more
+entry in the configuration, nothing else.
 
 Every adapter is read-only, stays inside the call's service, environment and window (it asks
 the source for that scope and drops anything else it is sent: FR-44, ST-22), and raises
@@ -29,17 +30,21 @@ Records, one list per call:
 
 from __future__ import annotations
 
+import importlib
 import json
+import os.path
 import re
 import urllib.error
 import urllib.request
 from collections.abc import Callable, Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from typing import Any, Protocol
 from urllib.parse import urlencode
 
 from pydantic import BaseModel
+
+from aisre.config import referenced_value
 
 Record = dict[str, Any]
 DEFAULT_TIMEOUT_S = 20.0  # per source call; the collector's 180 s covers a slow source (FR-09)
@@ -62,6 +67,172 @@ class Source(Protocol):
     """One configured source. `params` is the ToolGate's validated parameter model."""
 
     def fetch(self, tool: str, params: BaseModel, environment: str) -> SourceResult: ...
+
+
+# ---------------------------------------------------------------------------
+# What every real adapter shares: credentials by reference, and bounded HTTP
+# ---------------------------------------------------------------------------
+MAX_RESPONSE_BYTES = 4_000_000  # per source answer, before the collector caps what is kept
+
+
+class SecretRef:
+    """A credential by reference, never by value: `{"env": NAME}` or `{"file": PATH}`. It is read
+    when a call needs it, never when the adapter is built (so `aisre pilot check` can build every
+    adapter without reaching a secret or the network), and never logged, shown or stored."""
+
+    def __init__(self, ref: Any, what: str) -> None:
+        if not (
+            isinstance(ref, Mapping)
+            and len(ref) == 1
+            and next(iter(ref)) in ("env", "file")
+            and isinstance(next(iter(ref.values())), str)
+            and next(iter(ref.values()))
+        ):
+            raise ValueError(f'{what}: by reference only, {{"env": NAME}} or {{"file": PATH}}')
+        (self.kind, self.where), self.what = next(iter(ref.items())), what
+
+    def describe(self) -> str:
+        return (
+            f"{self.what} ({'environment variable' if self.kind == 'env' else 'file'} {self.where})"
+        )
+
+    def present(self, environ: Mapping[str, str] | None = None) -> bool:
+        if self.kind == "env":
+            return bool(referenced_value(self.where, environ))
+        return os.path.isfile(self.where)
+
+    def value(self) -> str:
+        try:
+            found = (
+                referenced_value(self.where)
+                if self.kind == "env"
+                else open(self.where, encoding="utf-8").read().strip()
+            )
+        except OSError:
+            found = ""
+        if not found:
+            raise SourceUnavailable(f"{self.describe()} is not set")
+        return found
+
+
+def optional_ref(ref: Any, what: str) -> SecretRef | None:
+    return None if ref is None else SecretRef(ref, what)
+
+
+def http_json(
+    req: urllib.request.Request, name: str, timeout_s: float, max_bytes: int = MAX_RESPONSE_BYTES
+) -> Any:
+    """One HTTP call to a source, bounded in time and size. Every failure is SourceUnavailable,
+    whose text names the source and the status, never the URL (it may carry a query) or a
+    header (it carries the credential)."""
+    try:
+        with urllib.request.urlopen(req, timeout=timeout_s) as resp:
+            raw = resp.read(max_bytes + 1)
+    except urllib.error.HTTPError as e:
+        raise SourceUnavailable(f"{name}: HTTP {e.code}") from None
+    except TimeoutError:
+        raise SourceUnavailable(f"{name}: no answer in {timeout_s:g} s") from None
+    except (urllib.error.URLError, OSError) as e:
+        raise SourceUnavailable(f"{name}: {type(e).__name__}") from None
+    if len(raw) > max_bytes:
+        raise SourceUnavailable(f"{name}: answer over {max_bytes} bytes")
+    try:
+        return json.loads(raw)
+    except ValueError:
+        raise SourceUnavailable(f"{name}: unreadable answer") from None
+
+
+def substitute(template: str, quote: Callable[[str], str], **values: str) -> str:
+    """`$service`, `$environment` (and any other `$name` given) in a configured query, each
+    value through the query language's own quoting, so a value can't change the query."""
+    out = template
+    for key in sorted(values, key=len, reverse=True):
+        out = out.replace(f"${key}", quote(values[key]))
+    return out
+
+
+METRICS = ("http_5xx_rate", "http_latency_p95", "http_request_rate", "error_rate_by_version")
+
+
+def metric_queries(metrics: Mapping[str, Any], what: str) -> dict[str, dict[str, str]]:
+    """`{metric: {"value": query, "requests": query?}}`, the metrics the registry names only."""
+    out: dict[str, dict[str, str]] = {}
+    for metric, spec in metrics.items():
+        if metric not in METRICS:
+            raise ValueError(f"{what}: no metric {metric!r} (one of {', '.join(METRICS)})")
+        if (
+            not isinstance(spec, Mapping)
+            or not isinstance(spec.get("value"), str)
+            or set(spec) - {"value", "requests"}
+            or not all(isinstance(v, str) for v in spec.values())
+        ):
+            raise ValueError(f'{what}: {metric} is {{"value": query, "requests": query}}')
+        out[metric] = dict(spec)
+    return out
+
+
+def metric_records(
+    metric: str,
+    value: Mapping[str, Mapping[str, float | None]],
+    requests: Mapping[str, Mapping[str, float | None]],
+) -> list[Record]:
+    """The platform's metric records from series already read: `value` and `requests` map a
+    series key (a version, or "" for the one series) to {time: number}."""
+    if metric == "error_rate_by_version":
+        times = sorted({t for s in value.values() for t in s})
+        return [
+            {
+                "at": t,
+                "versions": {
+                    v: {"rate": s.get(t), "requests": requests.get(v, {}).get(t)}
+                    for v, s in sorted(value.items())
+                    if t in s
+                },
+            }
+            for t in times
+        ]
+    if len(value) > 1:
+        raise SourceUnavailable(f"{metric}: the query gave {len(value)} series; aggregate it")
+    series = next(iter(value.values()), {})
+    reqs = next(iter(requests.values()), {})
+    out: list[Record] = []
+    for t in sorted(series):
+        rec: Record = {"at": t, "value": series[t]}
+        if metric == "http_5xx_rate":
+            rec["requests"] = reqs.get(t)
+        out.append(rec)
+    return out
+
+
+def log_record(fields: Mapping[str, Any], ts: str, line: str) -> Record:
+    """A log line as the platform's record, from its parsed fields (JSON, labels or attributes),
+    flat or nested the way the fake's are; the line itself is the message when nothing names one."""
+    nested_err, nested_http = fields.get("error"), fields.get("http")
+    err: Mapping[str, Any] = nested_err if isinstance(nested_err, Mapping) else {}
+    http: Mapping[str, Any] = nested_http if isinstance(nested_http, Mapping) else {}
+    method, path = (
+        http.get("method") or fields.get("method"),
+        http.get("path") or fields.get("path"),
+    )
+    level = fields.get("level") or fields.get("status") or fields.get("severity")
+    return {
+        "ts": ts,
+        "level": {"WARN": "WARNING"}.get(str(level).upper(), str(level).upper()) if level else None,
+        "instance": fields.get("instance") or fields.get("host"),
+        "version": fields.get("version"),
+        "message": fields.get("message") or fields.get("msg") or line,
+        "error_type": err.get("type") or fields.get("error_type"),
+        "error_message": err.get("message") or fields.get("error_message"),
+        "stack": err.get("stack") or fields.get("stack"),
+        "trace_id": fields.get("trace_id"),
+        "path": f"{method or ''} {path or ''}".strip() or None,
+        "status": http.get("status") or fields.get("status_code"),
+    }
+
+
+def wanted_levels(level: str | None) -> set[str]:
+    """The log levels a get_logs call asks for: the one named, or errors and warnings."""
+    return {level.upper()} if level else {"ERROR", "WARNING", "WARN"}
 
 
 def parse_time(value: str) -> datetime:
@@ -315,38 +486,104 @@ def _change(body: dict[str, Any]) -> Record:
 
 
 # ---------------------------------------------------------------------------
-# Configuration: which adapter answers which tool
+# Configuration: which adapter answers which tool, for which service
 # ---------------------------------------------------------------------------
-ADAPTERS: dict[str, Callable[..., Source]] = {"fake_monitoring": FakeMonitoringSource}
+def _lazy(module: str, cls: str) -> Callable[..., Source]:
+    """An adapter class imported when it is first configured, so one vendor's module (and its
+    optional dependency) loads only where it is used."""
+
+    def build(**spec: Any) -> Source:
+        built: Source = getattr(importlib.import_module(module), cls)(**spec)
+        return built
+
+    return build
+
+
+ADAPTERS: dict[str, Callable[..., Source]] = {
+    "fake_monitoring": FakeMonitoringSource,
+    # Real sources (M5, ADR-75): read-only, credentials by reference (SecretRef).
+    "prometheus": _lazy("aisre.evidence.prometheus", "PrometheusSource"),
+    "loki": _lazy("aisre.evidence.prometheus", "LokiSource"),
+    "datadog": _lazy("aisre.evidence.datadog", "DatadogSource"),
+    "cloudwatch": _lazy("aisre.evidence.cloudwatch", "CloudWatchSource"),
+}
 LOCAL_ONLY = {"fake_monitoring"}
+# The READ tools a source answers: every READ tool in aisre.agent.tool_registry but the two
+# the corpus answers (search_runbooks, search_past_incidents). A unit test keeps them equal.
+SOURCE_TOOLS = (
+    "get_alert",
+    "get_metric",
+    "get_logs",
+    "get_traces",
+    "get_changes",
+    "get_error_groups",
+    "get_dependency_health",
+)
+ToolSources = Mapping[str, Source]
 
 
 @dataclass(frozen=True)
 class SourceSet:
-    """Tool name -> source; `"*"` answers any tool not named. `replay_as_of` is for replaying a
-    recorded scenario only: the collector treats it as "now", so data after the scenario's
-    evidence cut-off stays hidden (tests/fixtures/reference-incident/README.md)."""
+    """Tool name -> source; `"*"` answers any tool not named. `services` holds the same map per
+    service (key `service`) or per service and environment (key `service/environment`). The
+    most specific scope that names the tool, or failing that has a `"*"`, answers: the service
+    and environment, then the service, then the platform-wide `sources`. A service no scope
+    covers has no source, and the collector records a gap: never another service's source.
 
-    sources: Mapping[str, Source]
+    `replay_as_of` is for replaying a recorded scenario only: the collector treats it as "now",
+    so data after the scenario's evidence cut-off stays hidden
+    (tests/fixtures/reference-incident/README.md)."""
+
+    sources: ToolSources
     replay_as_of: datetime | None = None
+    services: Mapping[str, ToolSources] = field(default_factory=dict)
 
-    def for_tool(self, tool: str) -> Source | None:
-        return self.sources.get(tool) or self.sources.get("*")
+    def for_tool(
+        self, tool: str, service: str | None = None, environment: str | None = None
+    ) -> Source | None:
+        scopes: list[ToolSources] = []
+        if service is not None:
+            if environment is not None and f"{service}/{environment}" in self.services:
+                scopes.append(self.services[f"{service}/{environment}"])
+            if service in self.services:
+                scopes.append(self.services[service])
+        scopes.append(self.sources)
+        for scope in scopes:
+            if found := scope.get(tool) or scope.get("*"):
+                return found
+        return None
 
     @classmethod
     def from_config(cls, config: Mapping[str, Any], *, production: bool = False) -> SourceSet:
-        """`{"sources": {"*" | tool: {"adapter": name, ...its arguments}}, "replay_as_of": ...}`.
-        In production, local-only adapters and replay are refused."""
-        sources: dict[str, Source] = {}
-        for tool, spec in config.get("sources", {}).items():
-            spec = dict(spec)
-            name = spec.pop("adapter")
-            if name not in ADAPTERS:
-                raise ValueError(f"unknown evidence adapter {name!r}")
-            if production and name in LOCAL_ONLY:
-                raise ValueError(f"evidence adapter {name!r} is for local use only")
-            sources[tool] = ADAPTERS[name](**spec)
+        """`{"sources": {"*" | tool: {"adapter": name, ...its arguments}}, "services":
+        {service | "service/environment": {"*" | tool: {...}}}, "replay_as_of": ...}`. Either
+        map may be absent. In production, local-only adapters and replay are refused."""
+        unknown = set(config) - {"sources", "services", "replay_as_of"}
+        if unknown:
+            raise ValueError(f"unknown evidence configuration keys: {sorted(unknown)}")
+        services: dict[str, ToolSources] = {}
+        for scope, tools in config.get("services", {}).items():
+            service, _, environment = scope.partition("/")
+            if not service or "/" in environment or scope.endswith("/"):
+                raise ValueError(f"evidence scope {scope!r}: `service` or `service/environment`")
+            services[scope] = _tool_sources(tools, production)
+        sources = _tool_sources(config.get("sources", {}), production)
         replay = config.get("replay_as_of")
         if production and replay:
             raise ValueError("replay_as_of is for replaying scenarios, never production")
-        return cls(sources, parse_time(replay) if replay else None)
+        return cls(sources, parse_time(replay) if replay else None, services)
+
+
+def _tool_sources(tools: Mapping[str, Any], production: bool) -> dict[str, Source]:
+    out: dict[str, Source] = {}
+    for tool, spec in tools.items():
+        if tool != "*" and tool not in SOURCE_TOOLS:
+            raise ValueError(f"no evidence source answers {tool!r}")
+        spec = dict(spec)
+        name = spec.pop("adapter")
+        if name not in ADAPTERS:
+            raise ValueError(f"unknown evidence adapter {name!r}")
+        if production and name in LOCAL_ONLY:
+            raise ValueError(f"evidence adapter {name!r} is for local use only")
+        out[tool] = ADAPTERS[name](**spec)
+    return out

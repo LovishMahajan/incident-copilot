@@ -5,6 +5,7 @@
     POST /v1/incidents/{id}/severity-confirmation  incident:confirm_severity 200  If-Match
     POST /v1/incidents/{id}/closure                incident:close            200  If-Match
     POST /v1/incidents/{id}/reinvestigations       incident:reinvestigate    202  If-Match
+    POST /v1/incidents/{id}/incident-review        incident:close            201  (ADR-75)
 
 Every one, in order: the `Idempotency-Key` (400 without one); one transaction that claims
 the key, locks the incident, checks the caller on the incident's service, checks `If-Match`

@@ -289,6 +289,85 @@ def test_sources_are_chosen_per_tool_by_configuration():
     assert s.replay_as_of == CUT_OFF
 
 
+def _fake(url: str) -> dict[str, str]:
+    return {"adapter": "fake_monitoring", "url": url}
+
+
+PER_SERVICE = {
+    "sources": {"*": _fake("http://platform")},
+    "services": {
+        "payments-api": {"*": _fake("http://payments"), "get_logs": _fake("http://pay-logs")},
+        "payments-api/staging": {"get_logs": _fake("http://pay-staging-logs")},
+    },
+}
+
+
+@pytest.mark.parametrize(
+    ("service", "environment", "tool", "url"),
+    [
+        ("payments-api", "staging", "get_logs", "http://pay-staging-logs"),
+        ("payments-api", "staging", "get_alert", "http://payments"),  # the service's "*"
+        ("payments-api", "production", "get_logs", "http://pay-logs"),
+        ("payments-api", "production", "get_metric", "http://payments"),
+        ("orders-api", "production", "get_logs", "http://platform"),  # the platform fallback
+    ],
+)
+def test_sources_are_chosen_per_service_and_environment(service, environment, tool, url):
+    """ADR-75: the most specific scope answers; the platform-wide `"*"` is the fallback."""
+    s = SourceSet.from_config(PER_SERVICE)
+    assert s.for_tool(tool, service, environment).url == url
+
+
+def test_an_unknown_service_with_no_fallback_is_a_gap_never_another_services_source():
+    config = {"services": {"payments-api": {"*": _fake("http://payments")}}}
+    s = SourceSet.from_config(config)
+    assert s.for_tool("get_logs", "orders-api", "production") is None
+    assert s.for_tool("get_logs") is None
+    out = run(s, [Call("get_logs", {"service": "orders-api"})])
+    gap = out.collected[0].evidence
+    assert gap.kind == EvidenceKind.gap
+    assert gap.gap_reason == "no source is configured for get_logs on orders-api in production"
+
+
+def test_the_collector_asks_the_incidents_own_service_and_environment():
+    pay, platform = Canned([]), Canned([])
+    s = SourceSet({"*": platform}, services={"orders-api/production": {"get_logs": pay}})
+    run(s, [Call("get_logs", {"service": "orders-api"})])
+    assert (pay.calls, platform.calls) == (1, 0)
+
+
+@pytest.mark.parametrize(
+    ("config", "match"),
+    [
+        ({"services": {"a/b/c": {"*": _fake("http://x")}}}, "service/environment"),
+        ({"services": {"/prod": {"*": _fake("http://x")}}}, "service/environment"),
+        ({"services": {"a/": {"*": _fake("http://x")}}}, "service/environment"),
+        ({"sources": {"get_log": _fake("http://x")}}, "no evidence source answers"),
+        ({"service": {}}, "unknown evidence configuration keys"),
+        ({"services": {"a": {"*": {"adapter": "nope"}}}}, "unknown evidence adapter"),
+    ],
+)
+def test_a_malformed_per_service_configuration_is_refused(config, match):
+    with pytest.raises(ValueError, match=match):
+        SourceSet.from_config(config)
+
+
+def test_a_local_only_adapter_is_refused_in_production_in_any_scope():
+    with pytest.raises(ValueError, match="local use only"):
+        SourceSet.from_config(
+            {"services": {"a/production": {"*": _fake("http://x")}}}, production=True
+        )
+
+
+def test_source_tools_are_the_registrys_read_tools_the_corpus_does_not_answer():
+    from aisre.agent.tool_registry import ToolKind
+    from aisre.evidence.sources import SOURCE_TOOLS
+    from aisre.workflow.record_activities import KNOWLEDGE_TOOLS
+
+    reads = {t.name for t in REGISTRY.values() if t.kind == ToolKind.READ}
+    assert set(SOURCE_TOOLS) == reads - set(KNOWLEDGE_TOOLS)
+
+
 @pytest.mark.parametrize(
     "config",
     [

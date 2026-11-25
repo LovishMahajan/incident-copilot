@@ -8,6 +8,8 @@ the caller's own roles don't allow, and every refusal is the API's (ADR-50).
     incident timeline ID [--follow]     the timeline; --follow streams it until it ends (SSE)
     incident cancel ID --reason R       POST .../cancellation
     incident close ID [--note N]        POST .../closure, with the incident's ETag as If-Match
+    incident review ID FILE [--key K]   POST .../incident-review: the incident review's findings
+                                        (an IncidentReviewCreate; Incident lead, once; ADR-75)
 
 Settings come from the environment:
 
@@ -39,6 +41,8 @@ ADR-74). Refused (exit 1) if either is missing, invalid or holds the wrong role:
     document purge-text ID --reason R   remove a document version's text (security lead), as
                                         AISRE_RETENTION_DATABASE_URL; refused until the legal
                                         deletion policy is recorded in AISRE_LEGAL_DELETION_DECISION
+
+The pilot's commands (M5, ADR-75) are aisre.pilot.cli's: `pilot check`, the go-live check.
 """
 
 from __future__ import annotations
@@ -52,6 +56,8 @@ from collections.abc import Iterator, Mapping, Sequence
 from typing import IO, Any
 from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
+
+from aisre.pilot import cli as pilot_cli
 
 DEFAULT_URL = "http://127.0.0.1:8000"
 TIMEOUT_S = 30
@@ -141,6 +147,11 @@ def run(args: argparse.Namespace, api: Api, out: IO[str]) -> None:
     elif args.command == "cancel":
         made = api.call("POST", base + "/cancellation", {"reason": args.reason}, key(args.key))
         print(json.dumps(made[2]), file=out)
+    elif args.command == "review":
+        with open(args.file, encoding="utf-8") as f:
+            body = json.load(f)
+        made = api.call("POST", base + "/incident-review", body, key(args.key))
+        print(json.dumps(made[2]), file=out)
     elif args.command == "close":
         _, headers, _ = api.call("GET", base)
         body = {"note": args.note} if args.note else {}
@@ -189,6 +200,7 @@ def parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(prog="aisre", description="The AI SRE platform's CLI.")
     top = p.add_subparsers(dest="noun", required=True)
     admin_parsers(top)
+    pilot_cli.parsers(top)
     incident = top.add_parser("incident", help="Incidents")
     sub = incident.add_subparsers(dest="command", required=True)
     s = sub.add_parser("submit", help="Submit an alert or an IncidentCreate from a JSON file")
@@ -202,6 +214,10 @@ def parser() -> argparse.ArgumentParser:
     c.add_argument("id")
     c.add_argument("--reason", required=True)
     c.add_argument("--key")
+    r = sub.add_parser("review", help="Record the incident review's findings (incident lead)")
+    r.add_argument("id")
+    r.add_argument("file")
+    r.add_argument("--key")
     cl = sub.add_parser("close", help="Accept the outcome and close (incident lead)")
     cl.add_argument("id")
     cl.add_argument("--note")
@@ -216,6 +232,8 @@ def main(
 ) -> int:
     args = parser().parse_args(argv)
     env = os.environ if environ is None else environ
+    if args.noun == "pilot":
+        return pilot_cli.main(args, env, out or sys.stdout)
     if args.noun in ADMIN:
         from aisre.reliability import admin_cli  # PostgreSQL, only for these commands
 

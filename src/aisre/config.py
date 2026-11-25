@@ -8,7 +8,8 @@ process named in Artifact 6 gets each one.
 
 Database URLs carry passwords, so they are `SecretStr`: they don't appear in a repr or a log.
 Each process reads only the URL for its own role (ADR-51): API and worker `aisre_app`, the
-dispatcher `aisre_dispatcher`, the migration job `aisre_owner`.
+dispatcher `aisre_dispatcher`, the migration job `aisre_owner`, the retention job
+`aisre_retention` and the pilot reports `aisre_reporting` (read-only, ADR-75).
 
 Every setting the processes read is here, under its environment variable's name, including
 OpenTelemetry's own `OTEL_EXPORTER_OTLP_ENDPOINT`; the CLI's `AISRE_API_URL` and `AISRE_TOKEN`
@@ -38,6 +39,7 @@ ENV_VARS: dict[str, str] = {
     "dispatcher_database_url": "AISRE_DISPATCHER_DATABASE_URL",
     "migration_database_url": "AISRE_MIGRATION_DATABASE_URL",
     "retention_database_url": "AISRE_RETENTION_DATABASE_URL",
+    "reporting_database_url": "AISRE_REPORTING_DATABASE_URL",
     "temporal_address": "AISRE_TEMPORAL_ADDRESS",
     "temporal_namespace": "AISRE_TEMPORAL_NAMESPACE",
     "log_level": "AISRE_LOG_LEVEL",
@@ -68,15 +70,24 @@ ENV_VARS: dict[str, str] = {
     "review_adapter": "AISRE_REVIEW_ADAPTER",
     "review_url": "AISRE_REVIEW_URL",
     "review_token": "AISRE_REVIEW_TOKEN",
+    "review_repos": "AISRE_REVIEW_REPOS",
     "release_adapter": "AISRE_RELEASE_ADAPTER",
     "release_url": "AISRE_RELEASE_URL",
     "release_token": "AISRE_RELEASE_TOKEN",
+    "release_github": "AISRE_RELEASE_GITHUB",
     "approval_signing_key": "AISRE_APPROVAL_SIGNING_KEY",
     "approval_verify_key": "AISRE_APPROVAL_VERIFY_KEY",
     "identity_directory_url": "AISRE_IDENTITY_DIRECTORY_URL",
     "verifier_monitoring_url": "AISRE_VERIFIER_MONITORING_URL",
     "post_change_watch_seconds": "AISRE_POST_CHANGE_WATCH_SECONDS",
 }
+
+
+def referenced_value(name: str, environ: Mapping[str, str] | None = None) -> str:
+    """A credential an adapter names by reference (aisre.evidence.sources.SecretRef, ADR-75),
+    read when a call needs it. The one read of the environment outside Settings, kept here so
+    no other module reads the environment."""
+    return (os.environ if environ is None else environ).get(name, "")
 
 
 class Settings(BaseModel):
@@ -93,6 +104,7 @@ class Settings(BaseModel):
         "postgresql+psycopg://aisre_owner@127.0.0.1:5432/aisre"
     )
     retention_database_url: SecretStr | None = None  # T4.8: the retention job, as aisre_retention
+    reporting_database_url: SecretStr | None = None  # M5: the pilot reports, as aisre_reporting
     temporal_address: str = Field(default="127.0.0.1:7233", min_length=1)
     temporal_namespace: str = Field(default="default", min_length=1)
     log_level: LogLevel = "INFO"
@@ -108,7 +120,8 @@ class Settings(BaseModel):
     oidc_audience: str | None = Field(default=None, min_length=1)
     oidc_jwks_url: str | None = Field(default=None, pattern=r"^https?://")
     # Evidence (T1.10, T1.17): JSON for aisre.evidence.sources.SourceSet.from_config, naming the
-    # adapter answering each READ tool. Unset: no real Evidence Collector or Knowledge Retriever.
+    # adapter answering each READ tool, platform-wide and per service or service and environment
+    # (ADR-75). Unset: no real Evidence Collector or Knowledge Retriever.
     evidence_sources: Json[dict[str, Any]] | None = None
     # Evidence snapshots in the object store (ADR-57). All four or none.
     object_store_url: str | None = Field(default=None, pattern=r"^https?://")
@@ -145,18 +158,24 @@ class Settings(BaseModel):
     # The review system (M2, T2.8, ADR-72): where draft pull requests are opened and where the
     # Patch Proposer reads the repository at its base revision, with the worker's
     # draft-pull-request credential (Artifact 11.7). `fake_review` is Compose's fake
-    # (ops/fakes/review.py), refused in production like the other fakes. Unset: no real
-    # draft_patch, and no pull request.
-    review_adapter: Literal["fake_review"] | None = None
+    # (ops/fakes/review.py), refused in production like the other fakes. `github` is GitHub or
+    # GitHub Enterprise (aisre.remediation.github, ADR-75): the URL is its API's
+    # (https://api.github.com or https://HOST/api/v3), and AISRE_REVIEW_REPOS maps each service to
+    # its repository, `owner/name`. Unset: no real draft_patch, and no pull request.
+    review_adapter: Literal["fake_review", "github"] | None = None
     review_url: str | None = Field(default=None, pattern=r"^https?://")
     review_token: SecretStr | None = None
+    review_repos: Json[dict[str, str]] | None = None
     # The release process (M3, T3.1, ADR-73): `fake_release` is Compose's fake
-    # (ops/fakes/release.py), the only adapter, refused in production: no production write
-    # credential exists (ADR-44). On the worker the adapter alone turns on the approval path; the
-    # URL and the token, the release credential, are the dispatcher process's only.
-    release_adapter: Literal["fake_release"] | None = None
+    # (ops/fakes/release.py); `github_actions` dispatches workflows on GitHub (T5.5 prep, ADR-75),
+    # with AISRE_RELEASE_GITHUB naming the repository, the apply and undo workflows and the ref.
+    # Both are refused in production: no production write credential exists until HG-10
+    # (ADR-44). On the worker the adapter alone turns on the approval path; the URL and the
+    # token, the release credential, are the dispatcher process's only.
+    release_adapter: Literal["fake_release", "github_actions"] | None = None
     release_url: str | None = Field(default=None, pattern=r"^https?://")
     release_token: SecretStr | None = None
+    release_github: Json[dict[str, str]] | None = None
     # Approvals (M3, T3.2, T3.3, ADR-73). No secrets manager is chosen, so the Approval Service
     # signs with a DEVELOPMENT Ed25519 key from settings (32-byte seed, base64; the API only),
     # and the dispatcher holds its public key (base64). Both refused outside development and
@@ -191,8 +210,17 @@ class Settings(BaseModel):
             self.review_adapter is not None and self.review_token is None
         ):
             raise ValueError("AISRE_REVIEW_ADAPTER, _URL and _TOKEN go together")
+        if self.review_adapter == "github" and (
+            not self.review_repos or not (self.review_url or "").startswith("https://")
+        ):
+            raise ValueError("AISRE_REVIEW_ADAPTER=github needs an https _URL and _REPOS")
         if self.release_adapter is not None and self.env == "production":
-            raise ValueError("AISRE_RELEASE_ADAPTER=fake_release is for development and test")
+            raise ValueError(
+                "AISRE_RELEASE_ADAPTER is for development and test: no production write "
+                "credential until HG-10 (ADR-44)"
+            )
+        if (self.release_adapter == "github_actions") != (self.release_github is not None):
+            raise ValueError("AISRE_RELEASE_ADAPTER=github_actions goes with AISRE_RELEASE_GITHUB")
         if (self.release_url is None) != (self.release_token is None) or (
             self.release_url is not None and self.release_adapter is None
         ):

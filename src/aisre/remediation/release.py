@@ -7,9 +7,11 @@ action ID, ADR-47). A fix is an apply carrying the patch's canonical bytes, whic
 through `patch_content` (the dispatcher's own reader, so the bytes sent are the bytes it hashed,
 ST-13); a rollback has no patch and is the release process's undo to the revision it names.
 
-There is no production adapter. No credential for a production write exists (ADR-44): `Settings`
-refuses `fake_release` in production, and `release_from_settings` returns nothing without an
-adapter, so the dispatcher process refuses to start (aisre.remediation.dispatcher_process).
+`github_actions` (aisre.remediation.github, ADR-75) is the real release process's adapter, for
+T5.5's scenario revert in a test environment. There is no production adapter: no credential for
+a production write exists until HG-10 (ADR-44). `Settings` refuses every release adapter in
+production, `release_from_settings` refuses there too and without an adapter or its credential,
+so the dispatcher process refuses to start (aisre.remediation.dispatcher_process).
 
 HTTP is urllib through `asyncio.to_thread`, as the review client does. No answer, or a 5xx, is a
 ConnectionError: the dispatcher records the outcome as unknown and reconciles, never re-sends.
@@ -23,7 +25,7 @@ import urllib.error
 import urllib.request
 from collections.abc import Callable
 from datetime import datetime
-from typing import Any
+from typing import TYPE_CHECKING, Any
 from urllib.parse import quote
 
 from pydantic import SecretStr
@@ -31,9 +33,13 @@ from pydantic import SecretStr
 from aisre.config import Settings
 from aisre.remediation.dispatcher import ReleaseChange, TargetState
 
+if TYPE_CHECKING:
+    from aisre.remediation.github import GitHubActionsRelease
+
 TIMEOUT_S = 10.0
 PRODUCTION_REFUSED = (
-    "no production write credential exists (ADR-44): only fake_release, in development and test"
+    "no production write credential exists until HG-10 (ADR-44): release adapters run in "
+    "development and test only"
 )
 
 
@@ -143,20 +149,29 @@ class FakeReleaseClient:
 
 def release_from_settings(
     settings: Settings, patch_content: Callable[[str], bytes]
-) -> FakeReleaseClient:
-    """The one adapter there is. Raises ReleaseRefused in production or when it isn't set."""
+) -> FakeReleaseClient | GitHubActionsRelease:
+    """The configured adapter. Raises ReleaseRefused in production, when none is set, or with no
+    write credential: nothing is built that could write without one."""
     if settings.env == "production":
         raise ReleaseRefused(PRODUCTION_REFUSED)
-    if settings.release_adapter != "fake_release" or not settings.release_url:
-        raise ReleaseRefused(
-            "AISRE_RELEASE_ADAPTER=fake_release and AISRE_RELEASE_URL are required"
-        )
-    if settings.release_token is None:
-        raise ReleaseRefused("AISRE_RELEASE_TOKEN is required")
+    if settings.release_adapter is None or not settings.release_url:
+        raise ReleaseRefused("AISRE_RELEASE_ADAPTER and AISRE_RELEASE_URL are required")
+    if settings.release_token is None or not settings.release_token.get_secret_value():
+        raise ReleaseRefused("AISRE_RELEASE_TOKEN, the write credential, is required")
+    if settings.release_adapter == "github_actions":
+        from aisre.remediation.github import GitHubActionsRelease
+
+        gh: dict[str, Any] = dict(settings.release_github or {})
+        try:
+            return GitHubActionsRelease(
+                settings.release_url, settings.release_token, patch_content, **gh
+            )
+        except (TypeError, ValueError) as e:
+            raise ReleaseRefused(f"AISRE_RELEASE_GITHUB: {e}") from None
     return FakeReleaseClient(settings.release_url, settings.release_token, patch_content)
 
 
 def remediation_enabled(settings: Settings) -> bool:
     """ADR-73: the workflow asks for approval instead of handing over a tested fix only in
-    development or test, with the fake release process configured. Else Release A (ADR-44)."""
-    return settings.env in ("development", "test") and settings.release_adapter == "fake_release"
+    development or test, with a release adapter configured. Else Release A (ADR-44)."""
+    return settings.env in ("development", "test") and settings.release_adapter is not None

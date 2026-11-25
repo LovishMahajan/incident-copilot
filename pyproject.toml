@@ -19,8 +19,14 @@ dependencies = [
     "uvicorn>=0.30",
 ]
 
+[project.optional-dependencies]
+aws = [
+    "boto3>=1.35",
+]
+
 [dependency-groups]
 dev = [
+    "boto3>=1.35",
     "httpx2>=2.16.2",
     "mypy>=2.4.1",
     "pytest>=8.3",
@@ -126,12 +132,15 @@ module = [
     "aisre.remediation.test_runner",
     "aisre.remediation.review",
     "aisre.remediation.release",
+    "aisre.remediation.github",
     "aisre.workflow.approval_activities",
     "aisre.remediation.dispatcher_process",
     "aisre.verification.verifier",
     "aisre.workflow.reconciliation",
     "aisre.workflow.queue_activities",
     "aisre.workflow.retention_jobs",
+    "aisre.pilot",
+    "aisre.pilot.*",
 ]
 # `strict = true` here applies to every module, so name the flags --strict sets.
 disallow_any_generics = true

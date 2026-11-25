@@ -1,0 +1,537 @@
+{
+ "_source": "GitHub REST API 2022-11-28 (X-GitHub-Api-Version): repos https://docs.github.com/en/rest/repos/repos#get-a-repository ; commits https://docs.github.com/en/rest/commits/commits ; contents https://docs.github.com/en/rest/repos/contents#get-repository-content ; git data https://docs.github.com/en/rest/git ; pulls https://docs.github.com/en/rest/pulls/pulls ; deployments https://docs.github.com/en/rest/deployments/deployments ; deployment statuses https://docs.github.com/en/rest/deployments/statuses ; workflow dispatch https://docs.github.com/en/rest/actions/workflows#create-a-workflow-dispatch-event ; workflow runs https://docs.github.com/en/rest/actions/workflow-runs#list-workflow-runs-for-a-workflow",
+ "exchanges": [
+  {
+   "method": "GET",
+   "path": "/repos/example-org/orders-api",
+   "status": 200,
+   "body": {
+    "id": 1,
+    "name": "orders-api",
+    "full_name": "example-org/orders-api",
+    "private": true,
+    "default_branch": "main",
+    "visibility": "private"
+   }
+  },
+  {
+   "method": "GET",
+   "path": "/repos/example-org/orders-api/commits",
+   "when": [
+    "sha=9f1c2ab3d4e5f60718293a4b5c6d7e8f90a1b2c3"
+   ],
+   "status": 200,
+   "body": [
+    {
+     "sha": "9f1c2ab3d4e5f60718293a4b5c6d7e8f90a1b2c3",
+     "commit": {
+      "message": "Raise the pool size",
+      "author": {
+       "name": "Dana Dev"
+      }
+     },
+     "parents": [
+      {
+       "sha": "1a2b3c4d5e6f708192a3b4c5d6e7f8091a2b3c4d"
+      }
+     ]
+    },
+    {
+     "sha": "1a2b3c4d5e6f708192a3b4c5d6e7f8091a2b3c4d",
+     "commit": {
+      "message": "Initial",
+      "author": {
+       "name": "Dana Dev"
+      }
+     },
+     "parents": []
+    }
+   ]
+  },
+  {
+   "method": "GET",
+   "path": "/repos/example-org/orders-api/commits/main",
+   "status": 200,
+   "body": {
+    "sha": "9f1c2ab3d4e5f60718293a4b5c6d7e8f90a1b2c3",
+    "commit": {
+     "message": "Raise the pool size"
+    },
+    "parents": [
+     {
+      "sha": "1a2b3c4d5e6f708192a3b4c5d6e7f8091a2b3c4d"
+     }
+    ]
+   }
+  },
+  {
+   "method": "GET",
+   "path": "/repos/example-org/orders-api/commits/9f1c2ab3d4e5f60718293a4b5c6d7e8f90a1b2c3",
+   "status": 200,
+   "body": {
+    "sha": "9f1c2ab3d4e5f60718293a4b5c6d7e8f90a1b2c3",
+    "commit": {
+     "message": "Raise the pool size\n\nFrom 10 to 50.",
+     "author": {
+      "name": "Dana Dev",
+      "email": "dana@example.org",
+      "date": "2026-11-19T09:40:00Z"
+     }
+    },
+    "parents": [
+     {
+      "sha": "1a2b3c4d5e6f708192a3b4c5d6e7f8091a2b3c4d"
+     }
+    ],
+    "files": [
+     {
+      "sha": "b1",
+      "filename": "config/app.yaml",
+      "status": "modified",
+      "additions": 1,
+      "deletions": 1,
+      "changes": 2,
+      "patch": "@@ -1 +1 @@\n-pool: 10\n+pool: 50"
+     },
+     {
+      "sha": "b2",
+      "filename": "docs/new.md",
+      "status": "added",
+      "additions": 1,
+      "deletions": 0,
+      "changes": 1
+     }
+    ]
+   }
+  },
+  {
+   "method": "GET",
+   "path": "/repos/example-org/orders-api/commits/1a2b3c4d5e6f708192a3b4c5d6e7f8091a2b3c4d",
+   "status": 200,
+   "body": {
+    "sha": "1a2b3c4d5e6f708192a3b4c5d6e7f8091a2b3c4d",
+    "commit": {
+     "message": "Initial",
+     "author": {
+      "name": "Dana Dev"
+     }
+    },
+    "parents": [],
+    "files": [
+     {
+      "sha": "b0",
+      "filename": "config/app.yaml",
+      "status": "added"
+     }
+    ]
+   }
+  },
+  {
+   "method": "GET",
+   "path": "/repos/example-org/orders-api/commits/no-such-ref",
+   "status": 422,
+   "body": {
+    "message": "No commit found for SHA: no-such-ref",
+    "documentation_url": "https://docs.github.com/rest/commits/commits#get-a-commit",
+    "status": "422"
+   }
+  },
+  {
+   "method": "GET",
+   "path": "/repos/example-org/orders-api/contents/config/app.yaml",
+   "when": [
+    "ref=9f1c2ab3d4e5f60718293a4b5c6d7e8f90a1b2c3"
+   ],
+   "status": 200,
+   "raw": "pool: 50\nretries: 3\n"
+  },
+  {
+   "method": "GET",
+   "path": "/repos/example-org/orders-api/contents/config/app.yaml",
+   "when": [
+    "ref=1a2b3c4d5e6f708192a3b4c5d6e7f8091a2b3c4d"
+   ],
+   "status": 200,
+   "raw": "pool: 10\nretries: 3\n"
+  },
+  {
+   "method": "GET",
+   "path": "/repos/example-org/orders-api/contents/docs/new.md",
+   "when": [
+    "ref=9f1c2ab3d4e5f60718293a4b5c6d7e8f90a1b2c3"
+   ],
+   "status": 200,
+   "raw": "# new\n"
+  },
+  {
+   "method": "GET",
+   "path": "/repos/example-org/orders-api/contents/missing.txt",
+   "status": 404,
+   "body": {
+    "message": "Not Found",
+    "status": "404"
+   }
+  },
+  {
+   "method": "GET",
+   "path": "/repos/example-org/orders-api/pulls",
+   "when": [
+    "head=example-org:aisre/act-1"
+   ],
+   "status": 200,
+   "once": true,
+   "body": []
+  },
+  {
+   "method": "GET",
+   "path": "/repos/example-org/orders-api/pulls",
+   "when": [
+    "head=example-org:aisre/act-1"
+   ],
+   "status": 200,
+   "body": [
+    {
+     "url": "https://api.github.com/repos/example-org/orders-api/pulls/42",
+     "id": 1,
+     "node_id": "PR_x",
+     "html_url": "https://github.com/example-org/orders-api/pull/42",
+     "number": 42,
+     "state": "open",
+     "locked": false,
+     "title": "[aisre] config revert",
+     "user": {
+      "login": "aisre-bot"
+     },
+     "body": "...",
+     "draft": true,
+     "merged": false,
+     "merged_at": null,
+     "mergeable": null,
+     "head": {
+      "ref": "aisre/act-1",
+      "sha": "c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3"
+     },
+     "base": {
+      "ref": "main",
+      "sha": "9f1c2ab3d4e5f60718293a4b5c6d7e8f90a1b2c3"
+     },
+     "requested_reviewers": [
+      {
+       "login": "security-lead"
+      }
+     ],
+     "requested_teams": [
+      {
+       "slug": "orders-owners"
+      }
+     ],
+     "labels": []
+    }
+   ]
+  },
+  {
+   "method": "GET",
+   "path": "/repos/example-org/orders-api/pulls/42",
+   "status": 200,
+   "body": {
+    "url": "https://api.github.com/repos/example-org/orders-api/pulls/42",
+    "id": 1,
+    "node_id": "PR_x",
+    "html_url": "https://github.com/example-org/orders-api/pull/42",
+    "number": 42,
+    "state": "open",
+    "locked": false,
+    "title": "[aisre] config revert",
+    "user": {
+     "login": "aisre-bot"
+    },
+    "body": "...",
+    "draft": true,
+    "merged": false,
+    "merged_at": null,
+    "mergeable": null,
+    "head": {
+     "ref": "aisre/act-1",
+     "sha": "c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3"
+    },
+    "base": {
+     "ref": "main",
+     "sha": "9f1c2ab3d4e5f60718293a4b5c6d7e8f90a1b2c3"
+    },
+    "requested_reviewers": [
+     {
+      "login": "security-lead"
+     }
+    ],
+    "requested_teams": [
+     {
+      "slug": "orders-owners"
+     }
+    ],
+    "labels": []
+   }
+  },
+  {
+   "method": "GET",
+   "path": "/repos/example-org/orders-api/git/commits/9f1c2ab3d4e5f60718293a4b5c6d7e8f90a1b2c3",
+   "status": 200,
+   "body": {
+    "sha": "9f1c2ab3d4e5f60718293a4b5c6d7e8f90a1b2c3",
+    "tree": {
+     "sha": "7777777777777777777777777777777777777777"
+    },
+    "parents": [
+     {
+      "sha": "1a2b3c4d5e6f708192a3b4c5d6e7f8091a2b3c4d"
+     }
+    ],
+    "message": "Raise the pool size"
+   }
+  },
+  {
+   "method": "POST",
+   "path": "/repos/example-org/orders-api/git/trees",
+   "status": 201,
+   "body": {
+    "sha": "8888888888888888888888888888888888888888",
+    "url": "...",
+    "tree": [],
+    "truncated": false
+   }
+  },
+  {
+   "method": "POST",
+   "path": "/repos/example-org/orders-api/git/commits",
+   "status": 201,
+   "body": {
+    "sha": "c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3",
+    "tree": {
+     "sha": "8888888888888888888888888888888888888888"
+    },
+    "parents": [
+     {
+      "sha": "9f1c2ab3d4e5f60718293a4b5c6d7e8f90a1b2c3"
+     }
+    ],
+    "message": "..."
+   }
+  },
+  {
+   "method": "POST",
+   "path": "/repos/example-org/orders-api/git/refs",
+   "status": 201,
+   "body": {
+    "ref": "refs/heads/aisre/act-1",
+    "object": {
+     "type": "commit",
+     "sha": "c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3"
+    }
+   }
+  },
+  {
+   "method": "POST",
+   "path": "/repos/example-org/orders-api/pulls",
+   "status": 201,
+   "body": {
+    "url": "https://api.github.com/repos/example-org/orders-api/pulls/42",
+    "id": 1,
+    "node_id": "PR_x",
+    "html_url": "https://github.com/example-org/orders-api/pull/42",
+    "number": 42,
+    "state": "open",
+    "locked": false,
+    "title": "[aisre] config revert",
+    "user": {
+     "login": "aisre-bot"
+    },
+    "body": "...",
+    "draft": true,
+    "merged": false,
+    "merged_at": null,
+    "mergeable": null,
+    "head": {
+     "ref": "aisre/act-1",
+     "sha": "c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3"
+    },
+    "base": {
+     "ref": "main",
+     "sha": "9f1c2ab3d4e5f60718293a4b5c6d7e8f90a1b2c3"
+    },
+    "requested_reviewers": [
+     {
+      "login": "security-lead"
+     }
+    ],
+    "requested_teams": [
+     {
+      "slug": "orders-owners"
+     }
+    ],
+    "labels": []
+   }
+  },
+  {
+   "method": "POST",
+   "path": "/repos/example-org/orders-api/issues/42/labels",
+   "status": 200,
+   "body": [
+    {
+     "name": "aisre"
+    }
+   ]
+  },
+  {
+   "method": "GET",
+   "path": "/repos/example-org/deploys/deployments",
+   "when": [
+    "environment=orders-api-production"
+   ],
+   "status": 200,
+   "body": [
+    {
+     "id": 303,
+     "sha": "r3r3r3r3",
+     "ref": "main",
+     "task": "aisre:apply",
+     "payload": {
+      "execution_key": "act-2"
+     },
+     "environment": "orders-api-production",
+     "created_at": "2026-11-19T10:05:00Z"
+    },
+    {
+     "id": 302,
+     "sha": "r2r2r2r2",
+     "ref": "main",
+     "task": "deploy",
+     "payload": {},
+     "environment": "orders-api-production",
+     "created_at": "2026-11-19T09:00:00Z"
+    },
+    {
+     "id": 301,
+     "sha": "r1r1r1r1",
+     "ref": "main",
+     "task": "aisre:undo",
+     "payload": "{\"execution_key\": \"act-0\"}",
+     "environment": "orders-api-production",
+     "created_at": "2026-11-18T09:00:00Z"
+    }
+   ]
+  },
+  {
+   "method": "GET",
+   "path": "/repos/example-org/deploys/deployments/303/statuses",
+   "status": 200,
+   "body": [
+    {
+     "id": 3,
+     "state": "in_progress",
+     "created_at": "2026-11-19T10:05:10Z"
+    }
+   ]
+  },
+  {
+   "method": "GET",
+   "path": "/repos/example-org/deploys/deployments/302/statuses",
+   "status": 200,
+   "body": [
+    {
+     "id": 2,
+     "state": "success",
+     "created_at": "2026-11-19T09:02:00Z"
+    }
+   ]
+  },
+  {
+   "method": "GET",
+   "path": "/repos/example-org/deploys/deployments/301/statuses",
+   "status": 200,
+   "body": [
+    {
+     "id": 1,
+     "state": "inactive",
+     "created_at": "2026-11-19T09:02:00Z"
+    }
+   ]
+  },
+  {
+   "method": "GET",
+   "path": "/repos/example-org/deploys/actions/workflows/aisre-apply.yml/runs",
+   "status": 200,
+   "body": {
+    "total_count": 3,
+    "workflow_runs": [
+     {
+      "id": 9009,
+      "name": "aisre-apply",
+      "display_title": "aisre orders-api-production act-9",
+      "event": "workflow_dispatch",
+      "status": "queued",
+      "conclusion": null
+     },
+     {
+      "id": 9008,
+      "name": "aisre-apply",
+      "display_title": "aisre orders-api-production act-8",
+      "event": "workflow_dispatch",
+      "status": "completed",
+      "conclusion": "failure"
+     },
+     {
+      "id": 9007,
+      "name": "aisre-apply",
+      "display_title": "aisre orders-api-production act-7",
+      "event": "workflow_dispatch",
+      "status": "completed",
+      "conclusion": "success"
+     }
+    ]
+   }
+  },
+  {
+   "method": "GET",
+   "path": "/repos/example-org/deploys/actions/workflows/aisre-undo.yml/runs",
+   "status": 200,
+   "body": {
+    "total_count": 0,
+    "workflow_runs": []
+   }
+  },
+  {
+   "method": "POST",
+   "path": "/repos/example-org/deploys/actions/workflows/aisre-apply.yml/dispatches",
+   "when": [
+    "act-refused"
+   ],
+   "status": 422,
+   "body": {
+    "message": "Unexpected inputs provided",
+    "status": "422"
+   }
+  },
+  {
+   "method": "POST",
+   "path": "/repos/example-org/deploys/actions/workflows/aisre-apply.yml/dispatches",
+   "when": [
+    "act-outage"
+   ],
+   "status": 503,
+   "body": {
+    "message": "unavailable"
+   }
+  },
+  {
+   "method": "POST",
+   "path": "/repos/example-org/deploys/actions/workflows/aisre-apply.yml/dispatches",
+   "status": 204,
+   "raw": ""
+  },
+  {
+   "method": "POST",
+   "path": "/repos/example-org/deploys/actions/workflows/aisre-undo.yml/dispatches",
+   "status": 204,
+   "raw": ""
+  }
+ ]
+}

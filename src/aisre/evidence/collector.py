@@ -212,10 +212,12 @@ async def collect(
         pending.append((tool.name, params, call_hash, dumped))
 
     async def run(tool: str, params: BaseModel, dumped: dict[str, Any]) -> Collected:
-        source = sources.for_tool(tool)
+        source = sources.for_tool(tool, scope.service, scope.environment)
         try:
             if source is None:
-                raise SourceUnavailable(f"no source is configured for {tool}")
+                raise SourceUnavailable(
+                    f"no source is configured for {tool} on {scope.service} in {scope.environment}"
+                )
             breaker = breaker_for(source)
             for attempt in range(retries + 1):
                 if not breaker.allow():
