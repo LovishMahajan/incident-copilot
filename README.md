@@ -69,6 +69,7 @@ docker compose down -v           # stop and delete the data
 | Fake token issuer | http://127.0.0.1:59100 (`/jwks`, `POST /token`) |
 | Fake model provider | http://127.0.0.1:59200 (`POST /v1/messages`, any `x-api-key`) |
 | Fake monitoring source | http://127.0.0.1:59300 (`/v1/scenarios`) |
+| Demo viewer (ADR-70) | http://127.0.0.1:58080 (read-only page; see Demo viewer below) |
 
 **Sign-in** (`src/aisre/api/auth.py`, T1.3). Every `/v1` call sends `Authorization: Bearer <token>`. The API verifies the token against the issuer's keys (`AISRE_OIDC_ISSUER`, `AISRE_OIDC_AUDIENCE`, `AISRE_OIDC_JWKS_URL`); in the stack that is the fake issuer, which mints any identity for local use. Roles come from the token's `groups`: `aisre:<role>` on every service, or `aisre:<role>:<service>` on one, with ADR-50's roles (`viewer`, `responder`, `approver`, `incident_lead`, `monitoring`, `platform_admin`). Writes also need an `Idempotency-Key` of 8 to 128 characters:
 
@@ -152,6 +153,16 @@ uv run python -m aisre.evaluation.runner tests/fixtures/eval/dev-seed-1 tests/fi
 ```
 
 A run stops before it could pass `--max-spend-usd` (default $10, ADR-56): a case starts only while the spend so far plus one incident's $2 cap fits, and cases left unrun count as wrong. Against the fake provider nothing is billed; the spend shown is list price on the fake's token counts. `.github/workflows/eval-nightly.yml` runs it every night on the development split. On 2026-11-18, with the fake provider: FR-13 leading cause 2/2, FR-14 1/1, FR-15 5/5 contradicted hypotheses not left supported, FR-16 honesty 1/1, FR-39 injection followed 0/1 and flagged 1/1, accuracy 4/4, evidence coverage 0/2 (the scripted answers never cite the alert, which the keys require). These show the evaluation path works end to end; the answers come from scripts written with the cases, so they say nothing about a model's accuracy.
+
+## Demo viewer
+
+A read-only page for showing an investigation to people who won't run the CLI (ADR-70). It is a showcase tool, not the product dashboard, and it is never deployed. The `demo-viewer` Compose service (nginx 1.30.6, `demo/nginx.conf`) serves the static files in `demo/` (no build step) on http://127.0.0.1:58080 (`AISRE_DEMO_VIEWER_PORT`) and proxies to the API and the fake token issuer on the same origin. With the stack up and the dev seed applied, open the page, pick a persona and press **Start reference incident**, or open an incident by ID (also as `http://127.0.0.1:58080/#<incident-id>`).
+
+What it can do: sign in as a demo persona through the **fake** token issuer (so it only works against a local or test stack), refreshing the 5-minute token a minute early; post `demo/reference-alert.json` (a copy of `tests/fixtures/reference-incident/alert.json`, timestamps unchanged so the evidence replay lines up) with a fresh `Idempotency-Key`; and follow the incident live: the status, the timeline (the SSE stream read with `fetch`, so it can send the bearer token, resumed with `Last-Event-ID` after a drop or a token refresh), the evidence with its strength tiers and gaps, the hypotheses, the diagnosis with each claim's citations linked to its evidence, and the model spend. Runbooks and past incident reviews show what the API returns for the persona: "Responder outside the orders team" sees them as restricted.
+
+What it can't do: anything else. The proxy allows `GET` and `HEAD` on `/v1/...`, `POST` on exactly `/v1/incidents` and on `/token`, and answers every other method `405`, so it can never approve, cancel, close or execute; the API's own ADR-50 checks still apply to each persona. Evidence and model output are rendered as text under a strict Content-Security-Policy (`default-src 'self'`, no inline script or style, no external hosts). An orders-api alert joins an incident until that incident is closed, so a second **Start** reopens the same one; close it with the CLI (`incident close`) for a fresh run.
+
+The scenario is the worker's, not the page's: there is no per-incident choice. For the honesty variant, restart the worker with the override shown under "The honesty variant" above, close the previous run's incident, and start again; the viewer shows the inconclusive diagnosis ("Root cause not established") and the change-history gap. `docker compose up -d --wait worker` without the override goes back. Against the fake provider an incident runs from `open` to `handed_over` in a few seconds.
 
 ## M0 demo
 

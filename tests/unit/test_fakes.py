@@ -276,6 +276,7 @@ def test_compose_runs_every_fake_and_the_telemetry_stack():
         "token-issuer",
         "fake-provider",
         "fake-monitoring",
+        "demo-viewer",  # ADR-70
     ):
         assert name in services, name
     for name, svc in services.items():

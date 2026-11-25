@@ -1,0 +1,210 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="referrer" content="no-referrer">
+  <meta name="color-scheme" content="light dark">
+  <title>Incident Copilot demo</title>
+  <link rel="icon" href="favicon.svg" type="image/svg+xml">
+  <link rel="stylesheet" href="styles.css">
+  <script type="module" src="app.js"></script>
+</head>
+<body>
+  <!-- ADR-70: a read-only demo viewer, outside the product. Every value shown comes from the
+       API and is rendered as text (app.js); nothing here is product UI. Icons are drawn by
+       icons.js into the [data-icon] placeholders. -->
+  <div class="shell">
+    <aside id="sidebar" class="sidebar" aria-label="Navigation">
+      <div class="side-brand">
+        <span class="logo" data-icon="logo"></span>
+        <span class="side-name">Incident Copilot</span>
+        <button id="side-close" type="button" class="icon-btn side-close" aria-label="Close navigation"><span data-icon="x"></span></button>
+      </div>
+
+      <nav class="side-nav" aria-label="Sections">
+        <div class="nav-item active" aria-current="page">
+          <span data-icon="incidents"></span>
+          <span class="nav-label">Incidents</span>
+          <span id="recent-count" class="nav-badge">0</span>
+        </div>
+        <p class="side-caption">Opened in this browser</p>
+        <ul id="recent" class="recent"></ul>
+        <p class="side-note">Runbooks and knowledge appear as evidence on each incident.</p>
+      </nav>
+
+      <div id="health" class="health" data-state="checking" role="status" aria-live="polite">
+        <span class="health-dot" aria-hidden="true"></span>
+        <div>
+          <strong id="health-title">Checking the API…</strong>
+          <span id="health-detail">GET /readyz</span>
+        </div>
+      </div>
+    </aside>
+    <div id="scrim" class="scrim" hidden></div>
+
+    <div class="main">
+      <header class="topbar">
+        <button id="menu" type="button" class="icon-btn menu-btn" aria-label="Open navigation" aria-controls="sidebar" aria-expanded="false"><span data-icon="menu"></span></button>
+
+        <form id="open-form" class="search" role="search" autocomplete="off">
+          <span class="search-icon" data-icon="search"></span>
+          <label for="open-id" class="sr-only">Open an incident by ID, or filter the incidents opened in this browser</label>
+          <input id="open-id" name="id" type="text" spellcheck="false" autocomplete="off"
+                 placeholder="Open incident: paste an ID, or filter recent…"
+                 aria-controls="search-results" aria-expanded="false" aria-autocomplete="list" role="combobox">
+          <kbd id="kbd-hint" class="kbd" aria-hidden="true">⌘K</kbd>
+          <ul id="search-results" class="search-results" role="listbox" aria-label="Recent incidents" hidden></ul>
+        </form>
+
+        <div class="top-actions">
+          <button id="start" type="button" class="btn primary" aria-label="Start reference incident"><span data-icon="play"></span><span>Start reference incident</span></button>
+          <button id="theme" type="button" class="icon-btn" aria-label="Theme: system"><span id="theme-icon"></span></button>
+          <div class="user-chip">
+            <span id="avatar" class="avatar" aria-hidden="true">DR</span>
+            <span class="user-text" aria-hidden="true">
+              <span id="user-name" class="user-name">Demo responder</span>
+              <span id="user-team" class="user-team">orders team</span>
+            </span>
+            <span class="user-chev" data-icon="chevronDown"></span>
+            <label for="persona" class="sr-only">Signed in as (demo persona)</label>
+            <select id="persona" class="persona-select"></select>
+          </div>
+        </div>
+      </header>
+
+      <div class="demo-note" role="note">
+        <span data-icon="info"></span>
+        <p><strong>Demo only.</strong> Signs in as a synthetic persona through the stack's <strong>fake token issuer</strong>. This page can read incidents and start the synthetic reference incident; it cannot approve, cancel, close or change anything.</p>
+        <span id="token-state" class="token-state" role="status">Not signed in</span>
+      </div>
+
+      <p id="message" class="message" role="status" hidden></p>
+
+      <main class="page">
+        <!-- Nothing open yet -->
+        <section id="empty" class="empty-state" aria-labelledby="empty-h">
+          <div class="empty-card">
+            <span class="empty-mark" data-icon="sparkle"></span>
+            <h1 id="empty-h">Watch the platform investigate an incident</h1>
+            <p>Start the synthetic reference incident and follow it live: the evidence the platform collects, the hypotheses it tests, and a diagnosis that cites evidence for every claim. All data is synthetic, from the stack's fake monitoring source and fake model provider.</p>
+            <div class="empty-actions">
+              <button id="start-empty" type="button" class="btn primary"><span data-icon="play"></span><span>Start reference incident</span></button>
+              <button id="open-focus" type="button" class="btn">Open by ID</button>
+            </div>
+            <p class="empty-hint">Start posts the synthetic <code>OrdersApiHighErrorRate</code> alert for orders-api / production.</p>
+            <div id="empty-recent-wrap" class="empty-recent" hidden>
+              <h2>Opened in this browser</h2>
+              <ul id="empty-recent" class="recent recent-wide"></ul>
+            </div>
+          </div>
+        </section>
+
+        <!-- An open incident -->
+        <section id="incident" class="incident" hidden aria-labelledby="inc-title">
+          <nav class="crumbs" aria-label="Breadcrumb">
+            <ol>
+              <li>Incidents</li>
+              <li aria-current="page" id="crumb-ref"></li>
+            </ol>
+          </nav>
+
+          <div class="card head-card">
+            <div class="head-main">
+              <div class="head-badges">
+                <span id="sev" class="sev" data-tone="none"></span>
+                <span id="inc-ref" class="ref"></span>
+              </div>
+              <h1 id="inc-title" class="inc-title"></h1>
+              <p id="inc-sub" class="inc-sub"></p>
+              <div class="head-pills">
+                <span class="chip"><span data-icon="cube"></span><span id="inc-service"></span></span>
+                <span class="chip"><span class="env-dot" aria-hidden="true"></span><span id="inc-env"></span></span>
+              </div>
+              <ul class="meta-row">
+                <li><span data-icon="clock"></span><span id="inc-started"></span></li>
+                <li><span id="inc-age"></span></li>
+                <li><span id="inc-status" class="pill"></span></li>
+                <li class="meta-conf"><span class="meta-label">Confidence</span><span id="conf-bar" class="conf-bar" data-level="0"><i></i><i></i><i></i></span><span id="conf-label" class="conf-label">not yet</span></li>
+              </ul>
+            </div>
+            <div class="head-side">
+              <div class="spend-card" aria-labelledby="spend-h">
+                <div class="spend-top">
+                  <span id="spend-h" class="spend-title">Model spend</span>
+                  <span id="spend-amount" class="spend-amount"></span>
+                </div>
+                <div class="bar" aria-hidden="true"><span id="spend-bar"></span></div>
+                <p id="spend-calls" class="spend-calls"></p>
+                <p class="spend-note">Fake provider: nothing billed; list price on its token counts.</p>
+              </div>
+              <a id="temporal" class="btn outline" target="_blank" rel="noopener noreferrer">View in Temporal <span data-icon="external"></span></a>
+            </div>
+          </div>
+
+          <div class="card stepper-card">
+            <ol id="stepper" class="stepper" aria-label="Incident progress"></ol>
+          </div>
+
+          <div class="columns">
+            <section class="card main-card" aria-label="Investigation">
+              <div id="tabs" class="tabs" role="tablist" aria-label="Investigation views">
+                <button type="button" role="tab" id="tab-diagnosis" aria-controls="panel-diagnosis" aria-selected="true" tabindex="0"><span data-icon="sparkle"></span><span>AI Diagnosis</span></button>
+                <button type="button" role="tab" id="tab-evidence" aria-controls="panel-evidence" aria-selected="false" tabindex="-1">Evidence <span id="tab-ev-count" class="tab-count">0</span></button>
+                <button type="button" role="tab" id="tab-runbooks" aria-controls="panel-runbooks" aria-selected="false" tabindex="-1">Runbooks <span id="tab-rb-count" class="tab-count">0</span></button>
+                <button type="button" role="tab" id="tab-timeline" aria-controls="panel-timeline" aria-selected="false" tabindex="-1">Timeline <span id="tab-tl-count" class="tab-count">0</span></button>
+              </div>
+              <div id="panel-diagnosis" class="panel" role="tabpanel" aria-labelledby="tab-diagnosis" tabindex="0">
+                <div id="diagnosis"></div>
+                <div class="subsection">
+                  <h3 class="section-h">Hypotheses <span id="hyp-count" class="muted-count"></span></h3>
+                  <ol id="hypotheses" class="hyps"></ol>
+                </div>
+              </div>
+              <div id="panel-evidence" class="panel" role="tabpanel" aria-labelledby="tab-evidence" tabindex="0" hidden></div>
+              <div id="panel-runbooks" class="panel" role="tabpanel" aria-labelledby="tab-runbooks" tabindex="0" hidden></div>
+              <div id="panel-timeline" class="panel" role="tabpanel" aria-labelledby="tab-timeline" tabindex="0" hidden>
+                <p class="panel-note">Every event on the incident's timeline, oldest first. Times are UTC.</p>
+                <ol id="timeline" class="full-tl" aria-live="polite"></ol>
+              </div>
+            </section>
+
+            <section class="card fix-card" aria-labelledby="fix-h">
+              <div class="card-head">
+                <span class="fix-icon" data-icon="wrench"></span>
+                <h2 id="fix-h">Proposed fix</h2>
+              </div>
+              <div id="fix"></div>
+            </section>
+
+            <section class="card live-card" aria-labelledby="live-h">
+              <div class="card-head">
+                <h2 id="live-h">Live timeline</h2>
+                <span id="live" class="live" data-state="idle">Idle</span>
+              </div>
+              <ol id="live-tl" class="rail"></ol>
+              <button id="full-tl" type="button" class="link-btn">View full timeline <span data-icon="chevronRight"></span></button>
+            </section>
+          </div>
+
+          <section id="explorer" class="card explorer" aria-labelledby="ex-h">
+            <div class="ex-head">
+              <h2 id="ex-h">Evidence Explorer <span id="ex-count" class="muted-count"></span></h2>
+              <div class="ex-search">
+                <span data-icon="search"></span>
+                <label for="ex-q" class="sr-only">Filter evidence by text</label>
+                <input id="ex-q" type="search" placeholder="Filter by summary, source or kind" spellcheck="false" autocomplete="off">
+              </div>
+            </div>
+            <div id="ex-chips" class="chips" role="group" aria-label="Filter by kind"></div>
+            <p class="legend">Strength tiers are set by code, not the model (ADR-53): <span class="tag tier-mech">1–3 mechanism</span> <span class="tag tier-supp">4–7 supporting</span> <span class="tag tier-weak">8 timing alone</span>. A gap is a source that could not be read, never a sign of health.</p>
+            <ol id="evidence" class="ev-list"></ol>
+          </section>
+        </section>
+      </main>
+
+      <footer class="foot">ADR-70 demo viewer · not the product dashboard · all data synthetic · times in UTC</footer>
+    </div>
+  </div>
+</body>
+</html>
