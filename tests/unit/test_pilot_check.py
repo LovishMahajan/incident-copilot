@@ -282,3 +282,71 @@ def test_an_allowed_gap_needs_a_known_tool_and_a_reason(gaps, error):
     scope = {"get_logs": {"adapter": "realish", "url": "https://l"}, "allowed_gaps": gaps}
     with pytest.raises(ValueError, match=error):
         sources.SourceSet.from_config({"services": {"orders-api": scope}})
+
+
+GITHUB_CHANGES = {
+    "adapter": "github_changes",
+    "repository": "example-org/$service",
+    "token": {"env": "AISRE_CHANGES_GITHUB_TOKEN"},
+    "config_paths": ["deploy/**"],
+}
+PROMETHEUS_STACK = {
+    "get_metric": {
+        "adapter": "prometheus",
+        "url": "https://prometheus.example",
+        "metrics": {"http_5xx_rate": {"value": "q"}},
+        "dependencies": {"db": {"kind": "postgresql", "error_rate": "q"}},
+    },
+    "get_dependency_health": {
+        "adapter": "prometheus",
+        "url": "https://prometheus.example",
+        "dependencies": {"db": {"kind": "postgresql", "error_rate": "q"}},
+    },
+    "get_logs": {"adapter": "loki", "url": "https://loki.example", "query": '{s="$service"}'},
+    "get_error_groups": {
+        "adapter": "loki",
+        "url": "https://loki.example",
+        "error_groups": {"selector": '{s="$service"}', "type_label": "t", "message_label": "m"},
+    },
+    "get_alert": {"adapter": "alertmanager", "url": "https://alertmanager.example"},
+    "get_traces": {
+        "adapter": "tempo",
+        "url": "https://tempo.example",
+        "query": '{ resource.service.name = "$service" }',
+    },
+}
+CLOUDWATCH_STACK = {
+    "*": {
+        "adapter": "cloudwatch",
+        "region": "eu-west-1",
+        "metrics": {"http_5xx_rate": {"value": "SEARCH('x', 'Average', 60)"}},
+        "log_group": "/ecs/$service",
+        "alarm_dimensions": {"Service": "$service"},
+        "error_groups_query": "stats count(*) as count by type, message",
+        "dependencies": {"db": {"kind": "postgresql", "error_rate": "SEARCH('y', 'Average', 60)"}},
+    }
+}
+
+
+@pytest.mark.parametrize("stack", ["prometheus", "cloudwatch"])
+def test_a_service_with_github_changes_needs_no_allowed_gap(paging, stack):
+    """ADR-75: GitHub Deployments answer get_changes where the monitoring holds no change
+    history, so the service passes with no WARN; its read-only token is no AISRE_RELEASE_*."""
+    if stack == "cloudwatch":
+        pytest.importorskip("boto3")
+    scope = dict(PROMETHEUS_STACK if stack == "prometheus" else CLOUDWATCH_STACK)
+    scope["get_changes"] = GITHUB_CHANGES
+    evidence = {"services": {"orders-api": scope}}
+    env = {
+        **GOOD,
+        "AISRE_EVIDENCE_SOURCES": json.dumps(evidence),
+        "AISRE_CHANGES_GITHUB_TOKEN": "github_pat_not_a_real_changes_token",
+    }
+    results = check.run(env, ["orders-api"], paging)
+    assert [r.line() for r in results if not r.ok or r.warn] == []
+    names = {r.name for r in results}
+    assert "evidence sources for orders-api in production" in names
+    # Without the token the check names the reference, never a value.
+    env.pop("AISRE_CHANGES_GITHUB_TOKEN")
+    (r,) = failing(env, paging, ["orders-api"])
+    assert "AISRE_CHANGES_GITHUB_TOKEN" in r.detail

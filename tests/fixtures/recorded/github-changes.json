@@ -1,0 +1,451 @@
+{
+ "_source": "GitHub REST API 2022-11-28 (X-GitHub-Api-Version): list deployments https://docs.github.com/en/rest/deployments/deployments#list-deployments ; deployment statuses https://docs.github.com/en/rest/deployments/statuses#list-deployment-statuses ; compare two commits https://docs.github.com/en/rest/commits/commits#compare-two-commits ; get a repository https://docs.github.com/en/rest/repos/repos#get-a-repository ; workflow runs https://docs.github.com/en/rest/actions/workflow-runs#list-workflow-runs-for-a-workflow ; rate limits https://docs.github.com/en/rest/using-the-rest-api/rate-limits-for-the-rest-api . Synthetic: the reference incident's release 2.14.1 (tests/fixtures/reference-incident), commit and IDs invented.",
+ "exchanges": [
+  {
+   "method": "GET",
+   "path": "/repos/example-org/orders-api/deployments",
+   "when": [
+    "environment=production"
+   ],
+   "status": 200,
+   "headers": {
+    "x-ratelimit-limit": "5000",
+    "x-ratelimit-remaining": "4990",
+    "x-ratelimit-reset": "1792500000"
+   },
+   "body": [
+    {
+     "url": "https://api.github.com/repos/example-org/orders-api/deployments/9142",
+     "id": 9142,
+     "node_id": "DE_kwDO9142",
+     "sha": "7d3e91a4c2b85f0e1d6a93b7c4e2f1a0b9d8c7e6",
+     "ref": "2.14.1",
+     "task": "deploy",
+     "payload": {
+      "version": "2.14.1"
+     },
+     "original_environment": "production",
+     "environment": "production",
+     "description": "Deploy 2.14.1",
+     "creator": {
+      "login": "synthetic-engineer-a",
+      "id": 1001,
+      "type": "User"
+     },
+     "created_at": "2026-10-20T13:58:00Z",
+     "updated_at": "2026-10-20T13:58:00Z",
+     "statuses_url": "https://api.github.com/repos/example-org/orders-api/deployments/9142/statuses",
+     "repository_url": "https://api.github.com/repos/example-org/orders-api",
+     "transient_environment": false,
+     "production_environment": true
+    },
+    {
+     "url": "https://api.github.com/repos/example-org/orders-api/deployments/9101",
+     "id": 9101,
+     "node_id": "DE_kwDO9101",
+     "sha": "3f1c2aa90b7e6d5c4b3a29180f7e6d5c4b3a2918",
+     "ref": "2.14.0",
+     "task": "deploy",
+     "payload": {
+      "version": "2.14.0"
+     },
+     "original_environment": "production",
+     "environment": "production",
+     "description": "Deploy 2.14.0",
+     "creator": {
+      "login": "synthetic-engineer-a",
+      "id": 1001,
+      "type": "User"
+     },
+     "created_at": "2026-10-13T10:00:00Z",
+     "updated_at": "2026-10-13T10:00:00Z",
+     "statuses_url": "https://api.github.com/repos/example-org/orders-api/deployments/9101/statuses",
+     "repository_url": "https://api.github.com/repos/example-org/orders-api",
+     "transient_environment": false,
+     "production_environment": true
+    },
+    {
+     "url": "https://api.github.com/repos/example-org/orders-api/deployments/9055",
+     "id": 9055,
+     "node_id": "DE_kwDO9055",
+     "sha": "1a2b3c4d5e6f708192a3b4c5d6e7f8091a2b3c4d",
+     "ref": "2.13.4",
+     "task": "deploy",
+     "payload": {
+      "version": "2.13.4"
+     },
+     "original_environment": "production",
+     "environment": "production",
+     "description": "Deploy 2.13.4",
+     "creator": {
+      "login": "synthetic-engineer-a",
+      "id": 1001,
+      "type": "User"
+     },
+     "created_at": "2026-10-06T10:00:00Z",
+     "updated_at": "2026-10-06T10:00:00Z",
+     "statuses_url": "https://api.github.com/repos/example-org/orders-api/deployments/9055/statuses",
+     "repository_url": "https://api.github.com/repos/example-org/orders-api",
+     "transient_environment": false,
+     "production_environment": true
+    }
+   ]
+  },
+  {
+   "method": "GET",
+   "path": "/repos/example-org/orders-api/deployments",
+   "when": [
+    "environment=staging"
+   ],
+   "status": 200,
+   "body": [
+    {
+     "url": "https://api.github.com/repos/example-org/orders-api/deployments/9140",
+     "id": 9140,
+     "node_id": "DE_kwDO9140",
+     "sha": "7d3e91a4c2b85f0e1d6a93b7c4e2f1a0b9d8c7e6",
+     "ref": "2.14.1",
+     "task": "deploy",
+     "payload": {
+      "version": "2.14.1"
+     },
+     "original_environment": "staging",
+     "environment": "staging",
+     "description": "Deploy 2.14.1",
+     "creator": {
+      "login": "synthetic-engineer-a",
+      "id": 1001,
+      "type": "User"
+     },
+     "created_at": "2026-10-20T13:50:00Z",
+     "updated_at": "2026-10-20T13:50:00Z",
+     "statuses_url": "https://api.github.com/repos/example-org/orders-api/deployments/9140/statuses",
+     "repository_url": "https://api.github.com/repos/example-org/orders-api",
+     "transient_environment": false,
+     "production_environment": false
+    }
+   ]
+  },
+  {
+   "method": "GET",
+   "path": "/repos/example-org/orders-api/deployments/9142/statuses",
+   "status": 200,
+   "body": [
+    {
+     "url": "https://api.github.com/repos/example-org/orders-api/deployments/9142/statuses/30003",
+     "id": 30003,
+     "node_id": "DES_30003",
+     "state": "in_progress",
+     "creator": {
+      "login": "synthetic-engineer-a",
+      "id": 1001,
+      "type": "User"
+     },
+     "description": "Rolling out 2.14.1",
+     "environment": "production",
+     "target_url": "",
+     "log_url": "https://github.com/example-org/orders-api/actions/runs/555",
+     "environment_url": "",
+     "created_at": "2026-10-20T14:02:00Z",
+     "updated_at": "2026-10-20T14:02:00Z",
+     "deployment_url": "https://api.github.com/repos/example-org/orders-api/deployments/9142",
+     "repository_url": "https://api.github.com/repos/example-org/orders-api"
+    },
+    {
+     "url": "https://api.github.com/repos/example-org/orders-api/deployments/9142/statuses/30002",
+     "id": 30002,
+     "node_id": "DES_30002",
+     "state": "queued",
+     "creator": {
+      "login": "synthetic-engineer-a",
+      "id": 1001,
+      "type": "User"
+     },
+     "description": "Waiting for a runner",
+     "environment": "production",
+     "target_url": "",
+     "log_url": "https://github.com/example-org/orders-api/actions/runs/555",
+     "environment_url": "",
+     "created_at": "2026-10-20T13:58:05Z",
+     "updated_at": "2026-10-20T13:58:05Z",
+     "deployment_url": "https://api.github.com/repos/example-org/orders-api/deployments/9142",
+     "repository_url": "https://api.github.com/repos/example-org/orders-api"
+    }
+   ]
+  },
+  {
+   "method": "GET",
+   "path": "/repos/example-org/orders-api/deployments/9140/statuses",
+   "status": 200,
+   "body": [
+    {
+     "url": "https://api.github.com/repos/example-org/orders-api/deployments/9140/statuses/29001",
+     "id": 29001,
+     "node_id": "DES_29001",
+     "state": "success",
+     "creator": {
+      "login": "synthetic-engineer-a",
+      "id": 1001,
+      "type": "User"
+     },
+     "description": "Deployed to staging",
+     "environment": "production",
+     "target_url": "",
+     "log_url": "https://github.com/example-org/orders-api/actions/runs/555",
+     "environment_url": "",
+     "created_at": "2026-10-20T13:53:00Z",
+     "updated_at": "2026-10-20T13:53:00Z",
+     "deployment_url": "https://api.github.com/repos/example-org/orders-api/deployments/9140",
+     "repository_url": "https://api.github.com/repos/example-org/orders-api"
+    }
+   ]
+  },
+  {
+   "method": "GET",
+   "path": "/repos/example-org/orders-api/compare/3f1c2aa90b7e6d5c4b3a29180f7e6d5c4b3a2918...7d3e91a4c2b85f0e1d6a93b7c4e2f1a0b9d8c7e6",
+   "status": 200,
+   "body": {
+    "url": "https://api.github.com/repos/example-org/orders-api/compare/3f1c2aa90b7e6d5c4b3a29180f7e6d5c4b3a2918...7d3e91a4c2b85f0e1d6a93b7c4e2f1a0b9d8c7e6",
+    "html_url": "https://github.com/example-org/orders-api/compare/3f1c2aa90b7e6d5c4b3a29180f7e6d5c4b3a2918...7d3e91a4c2b85f0e1d6a93b7c4e2f1a0b9d8c7e6",
+    "base_commit": {
+     "sha": "3f1c2aa90b7e6d5c4b3a29180f7e6d5c4b3a2918",
+     "commit": {
+      "message": "Release 2.14.0"
+     }
+    },
+    "merge_base_commit": {
+     "sha": "3f1c2aa90b7e6d5c4b3a29180f7e6d5c4b3a2918",
+     "commit": {
+      "message": "Release 2.14.0"
+     }
+    },
+    "status": "ahead",
+    "ahead_by": 1,
+    "behind_by": 0,
+    "total_commits": 1,
+    "commits": [
+     {
+      "sha": "7d3e91a4c2b85f0e1d6a93b7c4e2f1a0b9d8c7e6",
+      "node_id": "C_kwDO1",
+      "commit": {
+       "author": {
+        "name": "synthetic-engineer-a",
+        "email": "engineer-a@example.com",
+        "date": "2026-10-20T13:35:12Z"
+       },
+       "committer": {
+        "name": "GitHub",
+        "email": "noreply@github.com",
+        "date": "2026-10-20T13:38:40Z"
+       },
+       "message": "Update tax rate config to match finance sheet (8.25%)",
+       "tree": {
+        "sha": "9be40d1aa0000000000000000000000000000000"
+       },
+       "comment_count": 0
+      },
+      "author": {
+       "login": "synthetic-engineer-a",
+       "id": 1001,
+       "type": "User"
+      },
+      "committer": {
+       "login": "web-flow",
+       "id": 19864447,
+       "type": "User"
+      },
+      "parents": [
+       {
+        "sha": "3f1c2aa90b7e6d5c4b3a29180f7e6d5c4b3a2918"
+       }
+      ],
+      "url": "https://api.github.com/repos/example-org/orders-api/commits/7d3e91a4c2b85f0e1d6a93b7c4e2f1a0b9d8c7e6",
+      "html_url": "https://github.com/example-org/orders-api/commit/7d3e91a4c2b85f0e1d6a93b7c4e2f1a0b9d8c7e6"
+     }
+    ],
+    "files": [
+     {
+      "sha": "9be40d1aa0000000000000000000000000000000",
+      "filename": "deploy/production.env",
+      "status": "modified",
+      "additions": 1,
+      "deletions": 1,
+      "changes": 2,
+      "blob_url": "https://github.com/example-org/orders-api/blob/7d3e91a4c2b85f0e1d6a93b7c4e2f1a0b9d8c7e6/deploy/production.env",
+      "raw_url": "https://github.com/example-org/orders-api/raw/7d3e91a4c2b85f0e1d6a93b7c4e2f1a0b9d8c7e6/deploy/production.env",
+      "contents_url": "https://api.github.com/repos/example-org/orders-api/contents/deploy/production.env?ref=7d3e91a4c2b85f0e1d6a93b7c4e2f1a0b9d8c7e6",
+      "patch": "@@ -11,7 +11,7 @@ ORDER_CURRENCY=USD\n ORDER_MAX_ITEMS=50\n ORDER_RESERVATION_TTL_SECONDS=900\n ORDER_ROUNDING_DIGITS=2\n-ORDER_TAX_RATE_BPS=825\n+ORDER_TAX_RATE_BPS=8.25\n ORDERS_DB_POOL_SIZE=20\n ORDERS_DB_TIMEOUT_MS=2000\n PAYMENTS_TIMEOUT_MS=3000"
+     }
+    ]
+   }
+  },
+  {
+   "method": "GET",
+   "path": "/repos/example-org/orders-api",
+   "status": 200,
+   "body": {
+    "id": 4242,
+    "name": "orders-api",
+    "full_name": "example-org/orders-api",
+    "private": true,
+    "default_branch": "main",
+    "html_url": "https://github.com/example-org/orders-api",
+    "url": "https://api.github.com/repos/example-org/orders-api"
+   }
+  },
+  {
+   "method": "GET",
+   "path": "/repos/example-org/orders-api/actions/workflows/release.yml/runs",
+   "status": 200,
+   "body": {
+    "total_count": 2,
+    "workflow_runs": [
+     {
+      "id": 556,
+      "name": "release",
+      "head_branch": "main",
+      "head_sha": "c0ffee00c0ffee00c0ffee00c0ffee00c0ffee00",
+      "run_number": 88,
+      "event": "push",
+      "status": "completed",
+      "conclusion": "failure",
+      "workflow_id": 31,
+      "created_at": "2026-10-20T13:44:00Z",
+      "updated_at": "2026-10-20T13:49:30Z",
+      "run_started_at": "2026-10-20T13:44:02Z",
+      "html_url": "https://github.com/example-org/orders-api/actions/runs/556",
+      "head_commit": {
+       "id": "c0ffee00c0ffee00c0ffee00c0ffee00c0ffee00",
+       "tree_id": "0000000000000000000000000000000000000000",
+       "message": "Bump request timeout\n\nlonger body",
+       "timestamp": "2026-10-20T13:43:00Z",
+       "author": {
+        "name": "synthetic-engineer-b",
+        "email": "engineer-b@example.com"
+       }
+      }
+     },
+     {
+      "id": 555,
+      "name": "release",
+      "head_branch": "main",
+      "head_sha": "7d3e91a4c2b85f0e1d6a93b7c4e2f1a0b9d8c7e6",
+      "run_number": 87,
+      "event": "push",
+      "status": "completed",
+      "conclusion": "success",
+      "workflow_id": 31,
+      "created_at": "2026-10-20T13:39:00Z",
+      "updated_at": "2026-10-20T13:58:00Z",
+      "run_started_at": "2026-10-20T13:39:05Z",
+      "html_url": "https://github.com/example-org/orders-api/actions/runs/555",
+      "head_commit": {
+       "id": "7d3e91a4c2b85f0e1d6a93b7c4e2f1a0b9d8c7e6",
+       "tree_id": "0000000000000000000000000000000000000000",
+       "message": "Update tax rate config to match finance sheet (8.25%)",
+       "timestamp": "2026-10-20T13:38:40Z",
+       "author": {
+        "name": "synthetic-engineer-a",
+        "email": "engineer-a@example.com"
+       }
+      }
+     }
+    ]
+   }
+  },
+  {
+   "method": "GET",
+   "path": "/repos/example-org/quiet-api/deployments",
+   "status": 200,
+   "body": [
+    {
+     "url": "https://api.github.com/repos/example-org/quiet-api/deployments/8001",
+     "id": 8001,
+     "node_id": "DE_kwDO8001",
+     "sha": "1a2b3c4d5e6f708192a3b4c5d6e7f8091a2b3c4d",
+     "ref": "1.0.0",
+     "task": "deploy",
+     "payload": {},
+     "original_environment": "production",
+     "environment": "production",
+     "description": "Deploy 1.0.0",
+     "creator": {
+      "login": "synthetic-engineer-a",
+      "id": 1001,
+      "type": "User"
+     },
+     "created_at": "2026-09-01T10:00:00Z",
+     "updated_at": "2026-09-01T10:00:00Z",
+     "statuses_url": "https://api.github.com/repos/example-org/orders-api/deployments/8001/statuses",
+     "repository_url": "https://api.github.com/repos/example-org/orders-api",
+     "transient_environment": false,
+     "production_environment": true
+    }
+   ]
+  },
+  {
+   "method": "GET",
+   "path": "/repos/example-org/locked-api/deployments",
+   "status": 401,
+   "body": {
+    "message": "Bad credentials",
+    "documentation_url": "https://docs.github.com/rest",
+    "status": "401"
+   }
+  },
+  {
+   "method": "GET",
+   "path": "/repos/example-org/forbidden-api/deployments",
+   "status": 403,
+   "headers": {
+    "x-ratelimit-remaining": "4800",
+    "x-ratelimit-reset": "1792500000"
+   },
+   "body": {
+    "message": "Resource not accessible by personal access token",
+    "documentation_url": "https://docs.github.com/rest/deployments/deployments#list-deployments",
+    "status": "403"
+   }
+  },
+  {
+   "method": "GET",
+   "path": "/repos/example-org/gone-api/deployments",
+   "status": 404,
+   "body": {
+    "message": "Not Found",
+    "documentation_url": "https://docs.github.com/rest/deployments/deployments#list-deployments",
+    "status": "404"
+   }
+  },
+  {
+   "method": "GET",
+   "path": "/repos/example-org/busy-api/deployments",
+   "status": 403,
+   "headers": {
+    "x-ratelimit-limit": "5000",
+    "x-ratelimit-remaining": "0",
+    "x-ratelimit-used": "5000",
+    "x-ratelimit-reset": "1792500000",
+    "x-ratelimit-resource": "core"
+   },
+   "body": {
+    "message": "API rate limit exceeded for user ID 1001.",
+    "documentation_url": "https://docs.github.com/rest/overview/rate-limits-for-the-rest-api",
+    "status": "403"
+   }
+  },
+  {
+   "method": "GET",
+   "path": "/repos/example-org/hurried-api/deployments",
+   "status": 429,
+   "headers": {
+    "retry-after": "60"
+   },
+   "body": {
+    "message": "You have exceeded a secondary rate limit. Please wait a few minutes before you try again.",
+    "documentation_url": "https://docs.github.com/rest/overview/rate-limits-for-the-rest-api#about-secondary-rate-limits",
+    "status": "429"
+   }
+  }
+ ]
+}
