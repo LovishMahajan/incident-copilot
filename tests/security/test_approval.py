@@ -157,12 +157,30 @@ def test_st01_st02_st13_the_voided_close_is_the_workflows_to_ask_for_and_its_eve
     assert closing.close_reason == "voided" and data.reason == "patch content changed"
 
 
-def test_st01_st02_st13_alerting_security_and_the_approver_needs_the_notifier():
-    pytest.skip(
-        "Needs the Notifier and a running workflow: the hand-over after a voided approval names security and "
-        "the approvers as its audience (test_workflow.py), but `notify` is an interface and no alert rule "
-        "reads aisre.approval.voided.v1"
-    )
+def test_st01_st02_st13_a_void_pages_security_and_tells_the_approvers():
+    """T3.6: a refusal that voids the approval is closed as `voided` (aisre.approval.voided.v1),
+    counted once in aisre_approval_refused_total{reason="voided"} (tests/integration/
+    test_approvals.py), which AisreApprovalRefused pages the Security lead on; the hand-over goes
+    to security and the approvers through the real Notifier (test_workflow.py runs the path). The
+    Notifier's channel is a log line: delivery to a person's pager waits for T4.6."""
+    import re
+    from pathlib import Path
+
+    import yaml
+
+    from aisre.workflow import approval_activities
+    from aisre.workflow.workflow import VOID_AUDIENCE
+
+    rules = yaml.safe_load((Path(__file__).parents[2] / "ops/alerts.yml").read_text())
+    (rule,) = [
+        r for g in rules["groups"] for r in g["rules"] if r.get("alert") == "AisreApprovalRefused"
+    ]
+    reasons = re.search(r'reason=~"([^"]+)"', rule["expr"]).group(1).split("|")
+    assert "voided" in reasons
+    assert rule["labels"] == {"severity": "page", "route": "security_lead"}
+    assert {"security", "approvers"} <= set(VOID_AUDIENCE)
+    source = Path(approval_activities.__file__).read_text()
+    assert "telemetry.approval_refused.labels(reason=act.VOIDED).inc()" in source
 
 
 def test_st01_a_good_signature_with_junk_added_is_not_good():

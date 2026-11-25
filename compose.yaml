@@ -24,6 +24,9 @@
 #                         (ops/fakes/monitoring.py)
 #   fake-review           FAKE review system (M2, T2.8): the reference repository, built at
 #                         start-up, and draft pull requests, never merged (ops/fakes/review.py)
+#   fake-release          FAKE release process (M3, T3.1, ADR-73): what orders-api-production
+#                         runs; apply, undo and lookup by key, with the release token
+#                         (ops/fakes/release.py). fake-monitoring's live metrics follow it
 # The fakes are for local use only: anyone who reaches the issuer can mint any identity.
 #
 # Wired from M1 (T1.10, T1.17, T1.19, T1.20): the worker runs the real Evidence Collector against
@@ -208,6 +211,9 @@ services:
       AISRE_OIDC_ISSUER: ${AISRE_OIDC_ISSUER:-}
       AISRE_OIDC_AUDIENCE: ${AISRE_OIDC_AUDIENCE:-}
       AISRE_OIDC_JWKS_URL: ${AISRE_OIDC_JWKS_URL:-}
+      # The DEVELOPMENT approval signing key (ADR-73): the API alone signs decisions. Unset:
+      # approval writes answer 503.
+      AISRE_APPROVAL_SIGNING_KEY: ${AISRE_APPROVAL_SIGNING_KEY:-}
       # Unset: each start signs exports with a fresh key (development and test only).
       AISRE_EXPORT_SIGNING_KEY: ${AISRE_EXPORT_SIGNING_KEY:-}
       # Read-only use: a patch's diff for GET /v1/artifacts/{id}/content (M2). Unset: not served.
@@ -265,6 +271,11 @@ services:
       AISRE_REVIEW_ADAPTER: ${AISRE_REVIEW_ADAPTER:-}
       AISRE_REVIEW_URL: ${AISRE_REVIEW_URL:-}
       AISRE_REVIEW_TOKEN: ${AISRE_REVIEW_TOKEN:-}
+      # M3 (ADR-73): the adapter alone turns on the approval path. Never the URL or the token.
+      AISRE_RELEASE_ADAPTER: ${AISRE_RELEASE_ADAPTER:-}
+      # The Recovery Verifier (T3.8, T3.17): read-only monitoring, and the post-change watch.
+      AISRE_VERIFIER_MONITORING_URL: ${AISRE_VERIFIER_MONITORING_URL:-}
+      AISRE_POST_CHANGE_WATCH_SECONDS: ${AISRE_POST_CHANGE_WATCH_SECONDS:-3600}
     command: ["python", "-m", "aisre.workflow.worker"]
     healthcheck:
       # The worker touches this file after every relay pass (aisre.workflow.worker).
@@ -272,6 +283,36 @@ services:
       interval: 5s
       timeout: 5s
       retries: 12
+
+  dispatcher:
+    # M3 (T3.5, ADR-51, ADR-73): the trusted dispatcher, its own process on the aisre-dispatcher
+    # queue, as aisre_dispatcher. The only holder of the release credential; no Docker socket.
+    <<: *app
+    depends_on:
+      <<: *app-depends
+      fake-release:
+        condition: service_healthy
+      token-issuer:
+        condition: service_healthy
+    environment:
+      AISRE_ENV: ${AISRE_ENV:-development}
+      AISRE_DISPATCHER_DATABASE_URL: ${AISRE_DISPATCHER_DATABASE_URL}
+      AISRE_TEMPORAL_ADDRESS: ${AISRE_TEMPORAL_ADDRESS}
+      AISRE_TEMPORAL_NAMESPACE: ${AISRE_TEMPORAL_NAMESPACE}
+      AISRE_LOG_LEVEL: ${AISRE_LOG_LEVEL:-INFO}
+      AISRE_RELEASE_ADAPTER: ${AISRE_RELEASE_ADAPTER:-}
+      AISRE_RELEASE_URL: ${AISRE_RELEASE_URL:-}
+      AISRE_RELEASE_TOKEN: ${AISRE_RELEASE_TOKEN:-}
+      AISRE_APPROVAL_VERIFY_KEY: ${AISRE_APPROVAL_VERIFY_KEY:-}
+      AISRE_IDENTITY_DIRECTORY_URL: ${AISRE_IDENTITY_DIRECTORY_URL:-}
+      # /metrics for Prometheus: dispatch outcomes, unmatched release changes (ST-40).
+      AISRE_METRICS_PORT: ${AISRE_METRICS_PORT:-9464}
+      # Read-only use: the patch bytes it hashes and sends (ST-13).
+      AISRE_OBJECT_STORE_URL: ${AISRE_OBJECT_STORE_URL:-}
+      AISRE_OBJECT_STORE_BUCKET: ${AISRE_OBJECT_STORE_BUCKET:-aisre-artifacts}
+      AISRE_OBJECT_STORE_ACCESS_KEY: ${AISRE_OBJECT_STORE_ACCESS_KEY:-}
+      AISRE_OBJECT_STORE_SECRET_KEY: ${AISRE_OBJECT_STORE_SECRET_KEY:-}
+    command: ["python", "-m", "aisre.remediation.dispatcher_process"]
 
   corpus-seed:
     # DEVELOPMENT ONLY (T1.17): the synthetic runbook corpus, into the development
@@ -403,6 +444,8 @@ services:
     command: ["python", "/opt/fakes/monitoring.py"]
     environment:
       FAKE_MONITORING_FIXTURES: /fixtures
+      # Live metrics follow what the fake release process deploys (ADR-73).
+      FAKE_MONITORING_RELEASE_URL: http://fake-release:8080
     volumes:
       - ./ops/fakes:/opt/fakes:ro
       - ./tests/fixtures:/fixtures:ro
@@ -427,6 +470,26 @@ services:
       - ./ops/reference-app:/opt/reference-app:ro
     ports:
       - "127.0.0.1:${AISRE_FAKE_REVIEW_PORT:-59400}:8080"
+    healthcheck: *fake-health
+    restart: unless-stopped
+
+  fake-release:
+    # Builds the reference repository with git, so it runs on fake-review's image.
+    image: aisre-fake-review:dev
+    build:
+      context: ./ops/fakes
+      dockerfile: review.Dockerfile
+    user: "65534:65534"
+    command: ["python", "/opt/fakes/release.py"]
+    environment:
+      AISRE_ENV: ${AISRE_ENV:-development}
+      FAKE_REVIEW_REPO_SOURCE: /opt/reference-app/build_repo.py
+      FAKE_RELEASE_TOKEN: ${AISRE_RELEASE_TOKEN:?copy .env.example to .env}
+    volumes:
+      - ./ops/fakes:/opt/fakes:ro
+      - ./ops/reference-app:/opt/reference-app:ro
+    ports:
+      - "127.0.0.1:${AISRE_FAKE_RELEASE_PORT:-59500}:8080"
     healthcheck: *fake-health
     restart: unless-stopped
 

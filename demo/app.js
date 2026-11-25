@@ -10,6 +10,8 @@
 //                                                 Authorization header can be sent
 //   GET  /v1/incidents/{id}/actions               the incident's fixes, open or ended (a Release A
 //                                                 fix ends `withdrawn`, so open_action_ids drops it)
+//   GET  /v1/actions/{id}/approvals               M3: who decided, when, and the signing key's ID
+//                                                 (ADR-73: a development key, labelled as such)
 //   GET  /v1/artifacts/{id}/content               a fix's patch, its canonical diff (patch_diff only)
 //   GET  /readyz                                  the system-health box (no token)
 //
@@ -175,6 +177,8 @@ const EVENT_LABEL = {
   "aisre.execution.outcome_resolved.v1": "Execution outcome resolved",
   "aisre.verification.completed.v1": "Verification completed",
   "aisre.verification.accepted.v1": "Verification accepted",
+  "aisre.verification.watch_flagged.v1": "Post-change watch flagged",
+  "aisre.verification.watch_ended.v1": "Post-change watch ended",
   "aisre.limit.reached.v1": "Limit reached",
   "aisre.model.attempt_failed.v1": "Model attempt failed",
   "aisre.notification.failed.v1": "Notification failed",
@@ -558,6 +562,7 @@ const view = {
   actionsKey: "",
   actionEvents: 0, // aisre.action.* events seen: the actions are read again when it moves
   diffs: new Map(), // diff_artifact_id -> {files} (Patch.canonical()) or {error}
+  decisions: new Map(), // action_id -> ApprovalDecisionView[] (M3), read again as approvals move
   hypothesesFromEvents: new Map(), // hypothesis_id -> data, until a diagnosis lists them
   statusTimes: new Map(), // status -> time it was entered, from the timeline
   run: 1, // the investigation run, from re-investigation events
@@ -588,6 +593,7 @@ function resetView(id) {
   view.actionsKey = "";
   view.actionEvents = 0;
   view.diffs = new Map();
+  view.decisions = new Map();
   view.hypothesesFromEvents = new Map();
   view.statusTimes = new Map();
   view.run = 1;
@@ -670,6 +676,17 @@ async function refreshActions() {
     if (UUID_RE.test(String(a.action_id))) found.set(String(a.action_id), a);
   }
   view.actions = found;
+  renderFix();
+  for (const a of found.values()) {
+    if (!a.action_digest) continue; // nothing can be decided before testing seals the digest
+    try {
+      const got = await api(`/v1/actions/${a.action_id}/approvals`);
+      if (id !== view.id) return;
+      view.decisions.set(String(a.action_id), Array.isArray(got.body.items) ? got.body.items : []);
+    } catch (e) {
+      console.warn("approvals read failed", e);
+    }
+  }
   renderFix();
   for (const a of found.values()) {
     const diffId = a.patch && String(a.patch.diff_artifact_id);
@@ -926,8 +943,9 @@ function onEvent(event, seq) {
     view.hypothesesFromEvents.set(String(data.hypothesis_id), data);
     if (!view.diagnosis) renderHypotheses();
   }
-  if (type.startsWith("aisre.action.")) view.actionEvents += 1;
-  if (type.startsWith("aisre.incident.") || type.startsWith("aisre.diagnosis.") || type.startsWith("aisre.action.")) {
+  const moves = ["aisre.action.", "aisre.approval.", "aisre.execution.", "aisre.verification."];
+  if (moves.some((m) => type.startsWith(m))) view.actionEvents += 1;
+  if (type.startsWith("aisre.incident.") || type.startsWith("aisre.diagnosis.") || moves.some((m) => type.startsWith(m))) {
     scheduleRefresh("incident");
   }
   if (type.startsWith("aisre.evidence.")) scheduleRefresh("evidence");
@@ -1392,15 +1410,18 @@ function renderFix() {
             el("dd", {
               text: test
                 ? `${humanize(test.outcome)} · failure reproduced first: ${test.reproduced ? "yes" : "no"} · ${ISOLATION_NOTE[test.isolation] || test.isolation}`
-                : a.status === "testing" ? "Running" : "Not run",
+                : a.status === "testing" ? "Running" : a.kind === "rollback" ? "Not run: a rollback restores the revision that ran before (ADR-48)" : "Not run",
             }),
             el("dt", { text: "Pull request" }),
             el("dd", {
               text: a.patch && a.patch.review_ref
                 ? `${a.patch.review_ref}, a draft in the review system. People review, merge and deploy it; the platform never merges.`
-                : "None: a draft pull request is opened only for a fix whose test passed.",
+                : APPROVAL_PATH.has(a.status) || a.kind === "rollback"
+                  ? "None: on the approval path the tested patch itself is approved and applied (ADR-73)."
+                  : "None: a draft pull request is opened only for a fix whose test passed.",
             }),
           ]),
+          renderLifecycle(a),
           a.patch
             ? el("div", { className: "diff-stat" }, [
                 el("span", { className: "add", text: `+${a.patch.lines_added}` }),
@@ -1413,10 +1434,14 @@ function renderFix() {
       );
     }
     if (reason) parts.push(el("p", { className: "fix-reason" }, [el("strong", { text: "Hand-over reason: " }), reason]));
+    const approvalPath = actions.some((a) => (view.decisions.get(String(a.action_id)) || []).length)
+      || actions.some((a) => APPROVAL_PATH.has(a.status));
     parts.push(
       el("p", {
         className: "fix-note",
-        text: "The fix is a recommendation, applied by people: the platform is advisory in this release (ADR-44) and this viewer is read-only (ADR-70).",
+        text: approvalPath
+          ? "People approved it through the API, signed with a DEVELOPMENT key, and applied by the dispatcher to the FAKE release process for the synthetic orders-api (ADR-73): no production write exists (ADR-44). This viewer is read-only (ADR-70): it can't approve, apply or roll back."
+          : "The fix is a recommendation, applied by people: the platform is advisory in this release (ADR-44) and this viewer is read-only (ADR-70).",
       }),
     );
   } else {
@@ -1434,6 +1459,71 @@ function renderFix() {
     parts.push(el("p", { className: "fix-note", text: "The platform is advisory in this release (ADR-44) and this viewer is read-only (ADR-70)." }));
   }
   box.replaceChildren(...parts);
+}
+
+// States reached only on the M3 approval path (fake release process, ADR-73).
+const APPROVAL_PATH = new Set([
+  "awaiting_approval", "approved", "applying", "executed", "not_applied", "outcome_unknown",
+  "verified", "undone", "rejected", "expired",
+]);
+
+/** M3: approvals, execution, verification, post-change watch and rollback, from the API's
+ * decision list and the timeline. Read-only: the controls for these live in the API and CLI. */
+function renderLifecycle(a) {
+  const id = String(a.action_id);
+  const decisions = view.decisions.get(id) || [];
+  const mine = [...view.events.values()]
+    .filter((e) => e.data && String(e.data.action_id) === id)
+    .sort((x, y) => Number(x.sequence) - Number(y.sequence));
+  const rows = [];
+  if (a.parent_action_id) {
+    const parent = view.actions.get(String(a.parent_action_id));
+    rows.push(el("dt", { text: "Rollback of" }), el("dd", {
+      text: `${parent ? humanize(parent.kind) : "the fix"} (${String(a.parent_action_id).slice(0, 8)}): its own action, approval and execution key (ADR-48)`,
+    }));
+  }
+  if (decisions.length) {
+    rows.push(el("dt", { text: "Approvals" }), el("dd", {}, decisions.map((d) => {
+      const key = String(d.signing_key_id || "");
+      const dev = key.startsWith("development-");
+      return el("div", { className: "decision" }, [
+        el("strong", { text: `${capital(humanize(d.decision))}${d.conditional ? " (conditional, with the fix)" : ""}` }),
+        ` by ${d.decided_by} at ${fmtFull(d.decided_at)}`,
+        key ? el("span", { className: "mono" }, [` · key ${key}`]) : null,
+        dev ? el("span", { className: "tag", data: { tone: "warn" }, text: "development key, not a real signature (ADR-73)" }) : null,
+        d.reason ? ` · ${d.reason}` : null,
+      ]);
+    })));
+  }
+  const runs = mine.filter((e) => String(e.type).startsWith("aisre.execution."));
+  if (runs.length) {
+    rows.push(el("dt", { text: "Execution" }), el("dd", {}, runs.map((e) => {
+      const d = e.data;
+      const what = e.type === "aisre.execution.started.v1"
+        ? `Intent recorded, attempt ${d.attempt_no}, key ${String(d.execution_key).slice(0, 8)}…`
+        : e.type === "aisre.execution.completed.v1"
+          ? `Outcome: ${humanize(d.outcome)}`
+          : e.type === "aisre.execution.refused.v1"
+            ? `Refused: ${d.reason || ""}`
+            : `Outcome resolved: ${humanize(d.outcome)} by ${e.actor || "?"}`;
+      return el("div", {}, [`${what} · ${shortTime(e.time)}`]);
+    })));
+  }
+  const checks = mine.filter((e) => String(e.type).startsWith("aisre.verification."));
+  if (checks.length) {
+    rows.push(el("dt", { text: "Verification" }), el("dd", {}, checks.map((e) => {
+      const d = e.data;
+      const what = e.type === "aisre.verification.completed.v1"
+        ? `${capital(humanize(d.result))} over a ${Math.round(Number(d.hold_seconds) / 60)}-minute hold, read from monitoring`
+        : e.type === "aisre.verification.watch_flagged.v1"
+          ? `Post-change watch flagged: ${d.detail} (nothing rolled back; a person judges)`
+          : e.type === "aisre.verification.watch_ended.v1"
+            ? `Post-change watch ended: ${d.flags} flag${Number(d.flags) === 1 ? "" : "s"}`
+            : EVENT_LABEL[e.type] || e.type;
+      return el("div", { className: e.type.endsWith("watch_flagged.v1") || d.result === "failed" ? "warn-text" : "" }, [`${what} · ${shortTime(e.time)}`]);
+    })));
+  }
+  return rows.length ? el("dl", { className: "fix-dl" }, rows) : null;
 }
 
 // ------------------------------------------------------------------ live timeline (condensed)
@@ -1509,6 +1599,12 @@ function condensedRows() {
       case "aisre.incident.status_changed.v1": {
         const to = String(d.to_status || "");
         const names = {
+          awaiting_approval: "Awaiting approval",
+          executing: "Executing: the dispatcher applies the approved change",
+          verifying: "Applied: verifying recovery",
+          recovered: "Recovered: recovery held",
+          not_recovered: "Not recovered: the fix did not hold",
+          reconciling: "Outcome unknown: reconciling",
           investigating: "Investigation started",
           diagnosed: "Diagnosed",
           testing: "Testing a fix in the sandbox",
@@ -1520,7 +1616,7 @@ function condensedRows() {
         row = {
           title: names[to] || `Status: ${STATUS_LABEL[to] || to}`,
           detail: d.reason || "",
-          tone: to === "inconclusive" ? "warn" : to === "cancelled" ? "bad" : "done",
+          tone: ["inconclusive", "not_recovered", "reconciling"].includes(to) ? "warn" : to === "cancelled" ? "bad" : "done",
         };
         break;
       }
@@ -1557,6 +1653,27 @@ function condensedRows() {
         break;
       case "aisre.action.review_opened.v1":
         row = { title: "Draft pull request opened", detail: `${d.review_ref} · for people to review and merge` };
+        break;
+      case "aisre.approval.granted.v1":
+        row = { title: d.conditional ? "Rollback approved with the fix (conditional)" : "Approval granted", detail: `by ${d.decided_by}` };
+        break;
+      case "aisre.approval.refused.v1":
+        row = { title: "Approval refused", detail: `${e.actor || ""} · ${humanize(d.code)}`, tone: "warn" };
+        break;
+      case "aisre.approval.voided.v1":
+        row = { title: "Approval voided", detail: d.reason || "", tone: "bad" };
+        break;
+      case "aisre.execution.completed.v1":
+        row = { title: `Change ${humanize(d.outcome)}`, detail: "by the dispatcher, on the fake release process (ADR-73)", tone: d.outcome === "applied" ? "done" : "warn" };
+        break;
+      case "aisre.verification.completed.v1":
+        row = { title: `Verification: ${humanize(d.result)}`, detail: `read from monitoring over the ${Math.round(Number(d.hold_seconds) / 60)}-minute hold`, tone: d.result === "verified" ? "done" : "warn" };
+        break;
+      case "aisre.verification.watch_flagged.v1":
+        row = { title: "Post-change watch flagged", detail: String(d.detail || ""), tone: "warn" };
+        break;
+      case "aisre.action.undone.v1":
+        row = { title: "Fix undone by its rollback", detail: "a separate approved action (ADR-48)", tone: "warn" };
         break;
       default:
         row = { title: EVENT_LABEL[type] || type, detail: "" };

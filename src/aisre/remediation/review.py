@@ -56,6 +56,7 @@ class CommitInfo:
     message: str
     refs: list[str]
     files: dict[str, FileChangeFacts]
+    author: str = ""  # the commit's author, as the review system names them (ADR-49)
 
     def revert_facts(self) -> RevertFacts:
         return RevertFacts(self.sha, self.files)
@@ -187,6 +188,7 @@ def _commit(c: dict[str, Any]) -> CommitInfo:
         parents=[str(p) for p in c.get("parents", [])],
         message=str(c.get("message", "")),
         refs=[str(r) for r in c.get("refs", [])],
+        author=str(c.get("author") or ""),
         files={
             str(f["path"]): FileChangeFacts(f.get("before_sha256"), f.get("after_sha256"))
             for f in c.get("files", [])

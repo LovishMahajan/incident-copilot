@@ -166,6 +166,7 @@ def test_each_patch_carries_hypothesis_evidence_diff_effect_risk_and_undo(refere
     for text in (saved.description, saved.expected_effect, saved.risk, saved.undo_plan):
         assert 10 <= len(text) <= 500
     assert saved.recovery_criteria and saved.kind == "config_revert"
+    assert saved.change_author == "synthetic-engineer-a"  # the reverted commit's (ADR-49, ST-07)
     assert saved.policy_version.startswith("edit-policy@2|")
 
 

@@ -31,6 +31,7 @@ from temporalio.client import (
     Client,
     Schedule,
     ScheduleActionStartWorkflow,
+    ScheduleAlreadyRunningError,
     ScheduleIntervalSpec,
     ScheduleSpec,
 )
@@ -62,6 +63,9 @@ MAX_INVESTIGATIONS = 5  # running at once, across all workers (8.1)
 MAX_SLOTS_PER_SERVICE = 4  # NFR-44, provisional: one service can't take every slot
 RECONCILIATION_SCHEDULE = "aisre-reconciliation"
 RECONCILIATION_EVERY = timedelta(minutes=5)  # provisional (8.9)
+RELEASE_RECONCILIATION_SCHEDULE = "aisre-release-reconciliation"
+RELEASE_RECONCILIATION_EVERY = timedelta(days=1)  # provisional (Artifact 5.2, ST-40)
+RELEASE_RECONCILIATION_WINDOW = timedelta(hours=25)  # each run overlaps the last by an hour
 REFUSED_EXPIRED = "approval expired"  # start of the dispatcher's reason when the approval ran out
 DB_REFUSALS = {"23514", "23001"}  # check_violation, restrict_violation: the record said no
 MAX_PATCH_CANDIDATES = 3  # per diagnosis, one action each, drafted one at a time (ADR-69)
@@ -225,6 +229,7 @@ class ApprovalRequestOut:
     )
     # tested, the one exception to ADR-64's "when testing ends" (ADR-48)
     conditional_approval: bool = False  # on a rollback's request: one was signed with the fix
+    action_digest: Optional[str] = None  # the digest sealed when testing ended (ADR-64)
 
 
 @dataclass
@@ -243,6 +248,21 @@ class DispatchOut:
 
 
 @dataclass
+class ResolutionIn:
+    """POST /v1/actions/{id}/outcome-resolutions, checked by the API, for the dispatcher to write
+    (ADR-73: only its role writes attempts and blocks). `auth_time` is ISO 8601, from the token."""
+
+    action_id: str
+    subject: str
+    outcome: str  # applied | not_applied
+    observed_revision: str
+    reason: str
+    auth_time: str
+    mfa: bool
+    request_key: str  # idempotency: the API's request
+
+
+@dataclass
 class VerifyIn:
     action_id: str
     attempt_id: str
@@ -254,6 +274,46 @@ class VerifyIn:
 class VerifyOut:
     verification_id: str
     result: Literal["verified", "failed", "inconclusive"]
+    window_end: Optional[str] = None  # ISO 8601: where the post-change watch starts (T3.17)
+    watch_seconds: int = 0  # the post-change watch after a verified fix; 0: none
+
+
+@dataclass
+class WatchIn:
+    """One stretch of the post-change watch (11.12, T3.17): from `start` to `end` (ISO 8601),
+    returning early on a new flag. `flagged` holds the keys flagged already."""
+
+    action_id: str
+    verification_id: str
+    start: str
+    end: str
+    watch_key: str  # idempotency key
+    flagged: list[str] = field(default_factory=list)
+
+
+@dataclass
+class WatchFlagOut:
+    key: str
+    kind: str  # alert_breach | new_error_group
+    detail: str
+
+
+@dataclass
+class WatchOut:
+    flags: list[WatchFlagOut]
+    done: bool  # the watch reached its end
+
+
+@dataclass
+class ReleaseReconciliationIn:
+    idempotency_key: str
+    since: str  # ISO 8601: the change history from here on
+
+
+@dataclass
+class ReleaseReconciliationOut:
+    changes: int
+    unmatched: list[str]  # "<deployment> <at> <kind> <revision>" for each unmatched change
 
 
 @dataclass
@@ -434,8 +494,34 @@ def reconciliation_schedule() -> Schedule:
     )
 
 
+def release_reconciliation_schedule() -> Schedule:
+    """Daily, one ReleaseReconciliationWorkflow; its activity runs on the dispatcher's queue."""
+    return Schedule(
+        action=ScheduleActionStartWorkflow(
+            "ReleaseReconciliationWorkflow",
+            id=f"{RELEASE_RECONCILIATION_SCHEDULE}-run",
+            task_queue=INVESTIGATION_QUEUE,
+        ),
+        spec=ScheduleSpec(intervals=[ScheduleIntervalSpec(every=RELEASE_RECONCILIATION_EVERY)]),
+    )
+
+
+async def ensure_release_reconciliation_schedule(client: Client) -> None:
+    """T3.11: creates the daily schedule unless it exists."""
+    try:
+        await client.create_schedule(
+            RELEASE_RECONCILIATION_SCHEDULE, release_reconciliation_schedule()
+        )
+    except ScheduleAlreadyRunningError:
+        pass
+
+
 async def ensure_reconciliation_schedule(client: Client) -> None:
-    await client.create_schedule(RECONCILIATION_SCHEDULE, reconciliation_schedule())
+    """Creates the schedule unless it exists (the worker calls this at start, T3.10)."""
+    try:
+        await client.create_schedule(RECONCILIATION_SCHEDULE, reconciliation_schedule())
+    except ScheduleAlreadyRunningError:
+        pass
 
 
 # ---------------------------------------------------------------------------
@@ -587,10 +673,35 @@ async def reconcile_execution(inp: DispatchIn) -> DispatchOut:
     raise NotImplementedError
 
 
+@activity.defn(name="resolve_outcome")
+async def resolve_outcome(inp: ResolutionIn) -> DispatchOut:
+    """Trusted Dispatcher (11.11, T3.16): record the incident lead's outcome, which clears the
+    deployment's block. Re-checks the lead's rights, sign-in and two-factor. Refusals are not
+    retried. Implementation: aisre.remediation.dispatcher_process."""
+    raise NotImplementedError
+
+
 @activity.defn(name="verify_recovery")
 async def verify_recovery(inp: VerifyIn) -> VerifyOut:
     """Recovery Verifier: reads monitoring directly for the hold period. Heartbeats. The
-    implementation counts aisre_verification_outcomes_total with action_kind and category."""
+    implementation counts aisre_verification_outcomes_total with action_kind and category.
+    Implementation: aisre.verification.verifier (T3.8)."""
+    raise NotImplementedError
+
+
+@activity.defn(name="watch_after_change")
+async def watch_after_change(inp: WatchIn) -> WatchOut:
+    """Post-change watch (11.12, T3.17): flags new error groups and breaches of the recovery
+    criteria after the hold period, as `aisre.verification.watch_flagged.v1` linked to the
+    action. Never rolls back. Heartbeats. Implementation: aisre.verification.verifier."""
+    raise NotImplementedError
+
+
+@activity.defn(name="reconcile_releases")
+async def reconcile_releases(inp: ReleaseReconciliationIn) -> ReleaseReconciliationOut:
+    """Trusted Dispatcher (T3.11, ST-40): the release process's change history against
+    `execution_attempts`. A change with no matching attempt is a security alert. Read-only.
+    Implementation: aisre.remediation.dispatcher_process."""
     raise NotImplementedError
 
 
@@ -625,8 +736,14 @@ ALL_INVESTIGATION_ACTIVITIES = [
     escalate_approval,
     close_approval_request,
     verify_recovery,
+    watch_after_change,
     hand_over,
     reconcile_workflows,
 ]
-ALL_DISPATCHER_ACTIVITIES = [dispatch_change, reconcile_execution]
+ALL_DISPATCHER_ACTIVITIES = [
+    dispatch_change,
+    reconcile_execution,
+    resolve_outcome,
+    reconcile_releases,
+]
 ALL_TEST_RUNNER_ACTIVITIES = [run_sandbox_test]  # with the reaper's reap_sandboxes (ADR-71)

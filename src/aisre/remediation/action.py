@@ -12,6 +12,8 @@ from __future__ import annotations
 import base64
 import hashlib
 import json
+import re
+from collections.abc import Iterable
 from dataclasses import asdict, dataclass, field
 from datetime import datetime, timedelta
 from enum import Enum
@@ -19,6 +21,7 @@ from typing import Literal, Optional, get_args
 
 from cryptography.exceptions import InvalidSignature
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey, Ed25519PublicKey
+from cryptography.hazmat.primitives.serialization import Encoding, PublicFormat
 
 
 def canonical(obj) -> bytes:
@@ -156,6 +159,35 @@ MATRIX: dict[Role, set[Perm]] = {  # ADR-50, Artifact 11.7
 }
 
 
+# Identity groups (ADR-49, ADR-73): a group names a role, and optionally the one service it applies
+# to; without a service it applies to every service. Rights come only from groups, never from a
+# name in code. aisre.api.auth reads them from the token; the dispatcher from the directory.
+GROUP = re.compile(r"^aisre:(?P<role>[a-z_]+)(?::(?P<service>[a-z0-9][a-z0-9-]{0,62}))?$")
+GROUP_ROLES = frozenset(
+    {
+        Role.VIEWER,
+        Role.RESPONDER,
+        Role.APPROVER,
+        Role.INCIDENT_LEAD,
+        Role.MONITORING,
+        Role.PLATFORM_ADMIN,
+        Role.SECURITY_LEAD,
+    }
+)  # the platform's own identities never come from a group
+EVERY_SERVICE = "*"
+
+
+def roles_from_groups(groups: Iterable[str]) -> dict[str, frozenset[Role]]:
+    """The roles a subject's groups give, per service. Unknown groups give nothing."""
+    grants: dict[str, set[Role]] = {}
+    for g in groups:
+        m = GROUP.fullmatch(g)
+        if m is None or m["role"] not in {r.value for r in GROUP_ROLES}:
+            continue
+        grants.setdefault(m["service"] or EVERY_SERVICE, set()).add(Role(m["role"]))
+    return {svc: frozenset(roles) for svc, roles in grants.items()}
+
+
 @dataclass
 class Directory:
     """Who holds which role on which service, now. Backed by the identity system."""
@@ -166,6 +198,13 @@ class Directory:
 
     def can(self, subject: str, service: str, perm: Perm) -> bool:
         return any(perm in MATRIX[r] for r in self.grants.get((subject, service), set()))
+
+    def add_groups(self, subject: str, groups: Iterable[str], service: str) -> Directory:
+        """Grant `subject`, on `service`, what its identity groups give there (ADR-73)."""
+        found = roles_from_groups(groups)
+        roles = found.get(EVERY_SERVICE, frozenset()) | found.get(service, frozenset())
+        self.grants[(subject, service)] = set(roles)
+        return self
 
 
 # ---------------------------------------------------------------------------
@@ -232,6 +271,26 @@ class Signer:
         return Decision(**{**asdict(unsigned), "signature": sig})
 
 
+DEV_KEY_PREFIX = "development-"  # ADR-73: a development-signed decision says so in its key ID
+
+
+def development_key_id(public: Ed25519PublicKey) -> str:
+    raw = public.public_bytes(Encoding.Raw, PublicFormat.Raw)
+    return DEV_KEY_PREFIX + hashlib.sha256(raw).hexdigest()[:16]
+
+
+def development_signer(seed_b64: str) -> Signer:
+    """ADR-73: the Approval Service's development key, from settings (32-byte seed, base64)."""
+    private = Ed25519PrivateKey.from_private_bytes(base64.b64decode(seed_b64, validate=True))
+    return Signer(development_key_id(private.public_key()), private)
+
+
+def development_verify_keys(public_b64: str) -> dict[str, Ed25519PublicKey]:
+    """The dispatcher's side: the public key only, by the ID the signer records (ADR-17)."""
+    public = Ed25519PublicKey.from_public_bytes(base64.b64decode(public_b64, validate=True))
+    return {development_key_id(public): public}
+
+
 def verify_signature(d: Decision, keys: dict[str, Ed25519PublicKey]) -> bool:
     k = keys.get(d.key_id)
     if not k or not d.signature:
@@ -257,6 +316,7 @@ SECURITY_ALERT_CODES = {
     "not_own_approval",
     "not_found",
     "digest_mismatch",
+    "voided",  # the workflow's voided close: what ran isn't what was approved (ST-01, ST-02, ST-13)
 }  # identity, rights and binding; retries don't alert (11.6).
 # `unauthenticated` is the API's: no caller reaches this module
 TAMPERED = "bad signature or digest"  # evaluate's note for a stored row that fails verification (ST-01, ST-02)

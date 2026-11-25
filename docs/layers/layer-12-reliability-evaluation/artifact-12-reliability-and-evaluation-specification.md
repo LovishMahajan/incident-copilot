@@ -212,10 +212,11 @@ This table is the specification: 33 alerts. [files/alerts.yml](files/alerts.yml)
 | Remediation | `AisreVerificationFailureRate` | Over 30% failed in 7 days, with at least 10 attempts | none | ticket | RB-09 verification failures |
 | Remediation | `AisreSandboxLeak` | Any sandbox left beyond 60 minutes | none | ticket | RB-10 sandbox leak |
 | Remediation | `AisreWritesFenced` | Writes disabled | 15m | ticket | RB-11 writes fenced |
+| Remediation | `AisreReleaseChangeUnmatched` (new, M3, T3.11, ADR-73) | The daily release reconciliation found a change in the release process's history with no matching execution attempt (ST-40, provisional) | none | page | RB-07 unknown action outcome |
 | Remediation | `AisreAuditChainBroken` (new) | Any incident failed `verify_timeline_chain` at the last check (ST-32) | none | page | RB-13 audit chain broken |
 | Telemetry | `AisreTelemetryDropping` | Any telemetry dropped (15 min rate) | 15m | ticket | RB-12 telemetry degraded |
 
-**Routing.** Alerts page the Platform owner role ([Q12.2](conversation.md)), with four exceptions: `AisreQueueDepthHigh` goes to the incident lead (NFR-39), `AisreApprovalRefused` and `AisreAuditChainBroken` go to the Security lead (ADR-49, ST-32), and `AisreApprovalBacklog` also goes to the incident lead. Pages travel from Prometheus and must not pass through the Notifier or PostgreSQL, since either may be what failed. `alerts.yml` carries `route` and `also_route` labels for the four exceptions. Receivers and the paging path need an Alertmanager configuration, which isn't in `files/` yet.
+**Routing.** Alerts page the Platform owner role ([Q12.2](conversation.md)), with four exceptions: `AisreQueueDepthHigh` goes to the incident lead (NFR-39), `AisreApprovalRefused`, `AisreAuditChainBroken` and `AisreReleaseChangeUnmatched` go to the Security lead (ADR-49, ST-32, ST-40), and `AisreApprovalBacklog` also goes to the incident lead. Pages travel from Prometheus and must not pass through the Notifier or PostgreSQL, since either may be what failed. `alerts.yml` carries `route` and `also_route` labels for the four exceptions. Receivers and the paging path need an Alertmanager configuration, which isn't in `files/` yet.
 
 **Timing rules.** Age gauges take no hold, because the age already is the wait: a hold on top would fire late. `AisrePostgresDown` meets the 2-minute limit (NFR-07): probe every 15 s, a 15 s evaluation, a 60 s hold, leaving 30 s for delivery (provisional, proven by the outage test).
 

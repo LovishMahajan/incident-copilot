@@ -436,6 +436,7 @@ class PatchSkill:
             files_changed=len(p.files),
             lines_added=added,
             lines_removed=removed,
+            change_author=c.author or None,
         )
 
 

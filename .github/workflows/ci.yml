@@ -21,9 +21,9 @@ defaults:
 env:
   UV_VERSION: "0.12.6"
   PYTHON_VERSION: "3.12"
-  # tests/security skips in a default run on 2026-11-18. A new skip there fails the build
+  # tests/security skips in a default run on 2026-11-19. A new skip there fails the build
   # (Artifact 13.4, M0 security gate); lower this when a skip is removed.
-  SECURITY_SKIPS_ALLOWED: "13"
+  SECURITY_SKIPS_ALLOWED: "10"
 
 jobs:
   checks:
@@ -60,7 +60,10 @@ jobs:
             src/aisre/gateway/jobs.py src/aisre/workflow/budget_jobs.py \
             src/aisre/evidence src/aisre/retrieval/corpus.py src/aisre/agent/skills \
             src/aisre/evaluation/seed.py src/aisre/evaluation/runner.py \
-            src/aisre/remediation/test_runner.py src/aisre/remediation/review.py
+            src/aisre/remediation/test_runner.py src/aisre/remediation/review.py \
+            src/aisre/remediation/release.py src/aisre/workflow/approval_activities.py \
+            src/aisre/remediation/dispatcher_process.py src/aisre/verification/verifier.py \
+            src/aisre/workflow/reconciliation.py
       - name: Types, report-only on src
         run: |
           set +e

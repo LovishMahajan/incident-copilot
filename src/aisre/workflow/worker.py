@@ -35,6 +35,23 @@ through the review system. Otherwise `draft_patch` stays scripted (`no_allowed_f
 and M1. `run_sandbox_test` is not registered here: it runs in the Test Runner, on its own queue,
 the only process with Docker (ADR-71, aisre.remediation.test_runner).
 
+Approvals (M3, T3.2, ADR-73): `request_approval`, `escalate_approval` and
+`close_approval_request` are real (aisre.workflow.approval_activities). With
+`AISRE_RELEASE_ADAPTER=fake_release` in development or test, `load_incident` reports remediation
+enabled, so a tested fix asks for approval instead of handing over; the worker never holds the
+release URL or token, which are the dispatcher process's (aisre.remediation.dispatcher_process).
+
+Verification (M3, T3.8, T3.17): with the approval path on and `AISRE_VERIFIER_MONITORING_URL`
+set, `verify_recovery` and `watch_after_change` are the Recovery Verifier
+(aisre.verification.verifier), reading the fake monitoring source's live metrics. With the
+approval path on and no monitoring source, `verify_recovery` answers at once with a
+non-retryable error, so an applied fix is handed over saying a person decides.
+
+Reconciliation (T3.10, 8.9): `reconcile_workflows` is real (aisre.workflow.reconciliation), and
+the worker creates the `aisre-reconciliation` schedule if it doesn't exist. With the approval
+path on it also creates `aisre-release-reconciliation` (T3.11, ST-40): ReleaseReconciliationWorkflow
+runs here daily, and its one activity, `reconcile_releases`, on the dispatcher's queue.
+
 Budget jobs (T1.21): the worker registers BudgetJobWorkflow with the ledger's expiry and
 reconciliation activities, over PostgreSQL, and starts both jobs if they aren't running
 (aisre.workflow.budget_jobs).
@@ -71,7 +88,9 @@ from pathlib import Path
 from typing import Any, cast
 
 from sqlalchemy import Engine
+from temporalio import activity
 from temporalio.client import Client
+from temporalio.exceptions import ApplicationError
 from temporalio.worker import Interceptor, Worker
 
 from aisre.agent.skills.activities import ModelSkills
@@ -93,13 +112,22 @@ from aisre.record.audit_copy import store_from_settings
 from aisre.reliability import telemetry
 from aisre.reliability.audit_jobs import AuditJobActivities, ensure_audit_jobs
 from aisre.reliability.temporal_telemetry import interceptors
+from aisre.remediation.release import remediation_enabled
 from aisre.remediation.review import ReviewActivities, client_from_settings
+from aisre.verification.verifier import LiveMonitoring, RecoveryVerifier
 from aisre.workflow import activities as act
 from aisre.workflow import scripted
+from aisre.workflow.approval_activities import ApprovalActivities
 from aisre.workflow.budget_jobs import BudgetJobWorkflow, ensure_budget_jobs
+from aisre.workflow.reconciliation import ReconciliationActivities
 from aisre.workflow.record_activities import EvidenceActivities, RecordActivities
 from aisre.workflow.relay import Relay
-from aisre.workflow.workflow import IncidentWorkflow, ReconciliationWorkflow
+from aisre.workflow.workflow import (
+    IncidentWorkflow,
+    OutcomeResolutionWorkflow,
+    ReconciliationWorkflow,
+    ReleaseReconciliationWorkflow,
+)
 
 ALIVE_FILE = Path(tempfile.gettempdir()) / "aisre-worker.alive"
 ALIVE_WITHIN = timedelta(seconds=30)
@@ -184,16 +212,22 @@ def investigation_activities(
     engine: Engine,
     notifier: Notifier | None = None,
     transport: AnthropicTransport | None = None,
+    client: Client | None = None,
 ) -> list[Callable[..., Any]]:
     """Real record, evidence, skill and Notifier activities, then the scripts if enabled for
-    what is still missing, then the interfaces for the rest."""
+    what is still missing, then the interfaces for the rest. With a Temporal client, the
+    workflow reconciliation job's activity is real too (T3.10)."""
     chosen = (
-        RecordActivities(engine).all()
+        RecordActivities(engine, remediation_enabled(settings)).all()
+        + ApprovalActivities(engine).all()
         + evidence_activities(settings, engine)
         + skill_activities(settings, engine, transport)
         + review_activities(settings, engine)
         + (notifier or Notifier(engine)).activities()
+        + (ReconciliationActivities(engine, client).all() if client is not None else [])
     )
+    if remediation_enabled(settings):
+        chosen += verifier_activities(settings, engine)
     if settings.scripted_skills:
         if settings.env == "production":
             raise RuntimeError("scripted skills are refused when AISRE_ENV is production")
@@ -204,6 +238,28 @@ def investigation_activities(
     # activities.py isn't strict: its list is typed as plain functions.
     interfaces = cast(Sequence[Callable[..., Any]], act.ALL_INVESTIGATION_ACTIVITIES)
     return chosen + [a for a in interfaces if activity_name(a) not in names]
+
+
+def verifier_activities(settings: Settings, engine: Engine) -> list[Callable[..., Any]]:
+    """T3.8, T3.17: the Recovery Verifier over the monitoring source; without one, the seam."""
+    if settings.verifier_monitoring_url is None:
+        return [verify_recovery]
+    monitoring = LiveMonitoring(settings.verifier_monitoring_url)
+    verifier = RecoveryVerifier(
+        engine, monitoring, watch_seconds=settings.post_change_watch_seconds
+    )
+    return verifier.all()
+
+
+@activity.defn(name="verify_recovery")
+async def verify_recovery(inp: act.VerifyIn) -> act.VerifyOut:
+    """No monitoring source configured: an applied fix gets no verdict at once, never a retry
+    loop, so the workflow hands over saying a person decides."""
+    raise ApplicationError(
+        "no monitoring source (AISRE_VERIFIER_MONITORING_URL): no verdict",
+        type="NoMonitoring",
+        non_retryable=True,
+    )
 
 
 def budget_job_activities(engine: Engine) -> list[Callable[..., Any]]:
@@ -219,7 +275,13 @@ def build_worker(
     return Worker(
         client,
         task_queue=act.INVESTIGATION_QUEUE,
-        workflows=[IncidentWorkflow, ReconciliationWorkflow, BudgetJobWorkflow],
+        workflows=[
+            IncidentWorkflow,
+            ReconciliationWorkflow,
+            BudgetJobWorkflow,
+            OutcomeResolutionWorkflow,
+            ReleaseReconciliationWorkflow,
+        ],
         activities=activities,
         interceptors=worker_interceptors,
     )
@@ -241,12 +303,15 @@ async def run(settings: Settings, stop: asyncio.Event | None = None) -> None:
     audit.install_copy(store)
     transport = provider_transport(settings)
     try:
-        chosen = investigation_activities(settings, engine, notifier, transport)
+        chosen = investigation_activities(settings, engine, notifier, transport, client)
         chosen += budget_job_activities(engine)
         chosen += AuditJobActivities(engine, store).all()
         async with build_worker(client, chosen, interceptors()):
             await ensure_budget_jobs(client, act.INVESTIGATION_QUEUE)
             await ensure_audit_jobs(client, act.INVESTIGATION_QUEUE)
+            await act.ensure_reconciliation_schedule(client)  # 8.9, T3.10
+            if remediation_enabled(settings):  # ST-40, T3.11: only where a release adapter is
+                await act.ensure_release_reconciliation_schedule(client)
             log.info(
                 "worker on %s, relay running, model skills %s, scripted skills %s",
                 act.INVESTIGATION_QUEUE,

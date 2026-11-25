@@ -156,6 +156,8 @@ class Fakes:
             "reconcile_in_progress": 0,
             "severity_confirmed_before": None,
             "void_approval": False,
+            "watch": 0,
+            "watch_flags": [],
             **script,
         }
         self.calls: Counter = Counter()
@@ -388,7 +390,19 @@ class Fakes:
         async def verify_recovery(inp: act.VerifyIn) -> act.VerifyOut:
             await f.enter("verify_recovery", inp)
             verdict = f.script["rollback_verify" if inp.action_id == "r1" else "verify"]
-            return act.VerifyOut("v1", "verified" if verdict == "recovered" else verdict)
+            result = "verified" if verdict == "recovered" else verdict
+            watch = f.script["watch"] if result == "verified" else 0
+            return act.VerifyOut("v1", result, "2026-11-19T12:11:00Z", watch)
+
+        @activity.defn(name="watch_after_change")
+        async def watch_after_change(inp: act.WatchIn) -> act.WatchOut:
+            await f.enter("watch_after_change", inp)
+            pending = [x for x in f.script["watch_flags"] if x not in inp.flagged]
+            if pending:
+                return act.WatchOut(
+                    [act.WatchFlagOut(pending[0], "alert_breach", pending[0])], False
+                )
+            return act.WatchOut([], True)
 
         @activity.defn(name="hand_over")
         async def hand_over(inp: act.HandOverIn) -> None:
@@ -414,6 +428,7 @@ class Fakes:
             escalate_approval,
             close_approval_request,
             verify_recovery,
+            watch_after_change,
             hand_over,
         ]
         sandbox = next(a for a in inv if a is run_sandbox_test)
@@ -1203,6 +1218,72 @@ async def test_failed_verification_rolls_back_as_its_own_action_and_hands_over()
     assert f.transitions[-1][:2] == ("not_recovered", "handed_over")
     assert "check verified" in f.handovers[0]
     assert f.inputs["notify:handed_over"][0].audience == wf.ROLLBACK_AUDIENCE
+
+
+@pytest.mark.asyncio
+async def test_t317_the_watch_after_a_verified_fix_flags_to_people_and_rolls_nothing_back():
+    """11.12: each flag is a notification to on-call and the incident lead, with its detail,
+    linked to the fix; the action stays verified, and no rollback is asked for or dispatched."""
+    f = Fakes(watch=120, watch_flags=["alert_breach:http_5xx_rate", "new_error_group:x"])
+
+    async def driver(env, h):
+        await to_approval(h)
+        await wait_state(h, "recovered")
+        for _ in range(200):
+            if f.calls["watch_after_change"] == 3:
+                break
+            await asyncio.sleep(0.05)
+        await close(h)
+
+    assert await run_case(f, driver) == "closed"
+    flags = [i for i in f.inputs["notify:watch_flagged"]]
+    assert [n.detail for n in flags] == ["alert_breach:http_5xx_rate", "new_error_group:x"]
+    assert all(n.audience == ["on_call", "incident_lead"] for n in flags)
+    watched = f.inputs["watch_after_change"]
+    assert [w.action_id for w in watched] == ["a1"] * 3 and watched[-1].flagged == [
+        "alert_breach:http_5xx_rate",
+        "new_error_group:x",
+    ]
+    assert watched[0].start == "2026-11-19T12:11:00Z" and watched[0].end.startswith(
+        "2026-11-19T12:13:00"
+    )
+    assert f.calls["dispatch:r1"] == 0 and f.calls["request_approval"] == 1
+    assert ("verifying", "recovered", "verified") in f.transitions
+    assert f.transitions[-1][1] == "recovered"  # the watch writes no state
+
+
+@pytest.mark.asyncio
+async def test_t317_no_watch_without_a_verified_fix_and_a_failed_watch_ends_quietly():
+    f = Fakes(verify="failed", watch=120)
+    assert await run_case(f, approve_then_close) == "closed"
+    assert f.calls["watch_after_change"] == 0
+    f = Fakes(watch=120, raises={"watch_after_change"})
+
+    async def driver(env, h):
+        await to_approval(h)
+        await wait_state(h, "recovered")
+        await close(h)
+
+    assert await run_case(f, driver) == "closed" and f.calls["watch_after_change"] == 1
+
+
+@pytest.mark.asyncio
+async def test_t317_closing_the_incident_ends_a_running_watch():
+    """The incident lead accepted recovery: the watch stops, so no closed incident keeps a live
+    run (8.9)."""
+    f = Fakes(watch=3600, blocks={"watch_after_change"})
+
+    async def driver(env, h):
+        await to_approval(h)
+        await wait_state(h, "recovered")
+        for _ in range(200):
+            if f.calls["watch_after_change"]:
+                break
+            await asyncio.sleep(0.05)
+        await close(h)
+
+    assert await run_case(f, driver) == "closed"
+    assert "watch_after_change:stopped" in f.events
 
 
 @pytest.mark.asyncio

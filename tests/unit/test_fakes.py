@@ -9,6 +9,7 @@ from __future__ import annotations
 import base64
 import importlib.util
 import json
+import re
 import urllib.error
 import urllib.request
 from pathlib import Path
@@ -288,3 +289,27 @@ def test_compose_runs_every_fake_and_the_telemetry_stack():
     assert "./ops/alerts.yml:/etc/prometheus/alerts.yml:ro" in prom
     rules = yaml.safe_load((ROOT / "ops/compose/prometheus.yml").read_text())["rule_files"]
     assert rules == ["/etc/prometheus/alerts.yml"]
+
+
+# ------------------------------------------------------------------ personas (M3, ADR-73)
+def test_personas_carry_their_groups_and_the_directory_answers_them():
+    personas = token_issuer.load_personas()
+    issuer = token_issuer.Issuer("http://issuer.test", "aisre-api", personas)
+    server = token_issuer.serve(issuer)
+    url = f"http://127.0.0.1:{server.server_address[1]}"
+    try:
+        name = next(n for n, g in personas.items() if any(":approver:" in x for x in g))
+        status, body, _ = call(url + "/token", {"persona": name})
+        assert status == 200 and segment(body["access_token"], 1)["groups"] == personas[name]
+        assert call(url + f"/v1/directory/{name}")[1] == {"sub": name, "groups": personas[name]}
+        assert call(url + "/v1/directory/nobody")[0] == 404
+        assert call(url + "/token", {"persona": "nobody"})[0] == 400
+    finally:
+        server.shutdown()
+
+
+def test_no_persona_name_appears_in_the_source():
+    """ADR-73: rights come from groups; code never names a person."""
+    names = token_issuer.load_personas()
+    src = "\n".join(p.read_text() for p in (ROOT / "src").rglob("*.py"))
+    assert [n for n in names if re.search(rf"\b{n}\b", src)] == []

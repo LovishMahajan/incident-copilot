@@ -156,8 +156,55 @@ def test_st39_only_a_failed_verdict_calls_the_workflows_rollback():
     assert any("verdict == 'failed'" in t for t in tests)
 
 
-def test_st39_api_route_needs_the_api():
-    pytest.skip(
-        "Needs a running API: no route exists to show a rollback request through it is refused. The workflow "
-        "paths run on Temporal in test_workflow.py (test_inconclusive_verification_hands_over_without_rollback)"
-    )
+# Every write route the API has (T3.9). None dispatches, applies or rolls back: a change runs only
+# through the workflow's dispatch on the dispatcher's queue. Approving a rollback is a decision,
+# which the dispatcher still refuses without the parent's recorded `failed` verdict (above).
+API_WRITES = {
+    ("POST", "/v1/incidents"),
+    ("POST", "/v1/incidents/{incident_id}/notes"),
+    ("POST", "/v1/incidents/{incident_id}/cancellation"),
+    ("POST", "/v1/incidents/{incident_id}/severity-confirmation"),
+    ("POST", "/v1/incidents/{incident_id}/closure"),
+    ("POST", "/v1/incidents/{incident_id}/reinvestigations"),
+    ("POST", "/v1/actions/{action_id}/approvals"),
+    ("POST", "/v1/actions/{action_id}/rejections"),
+    ("POST", "/v1/actions/{action_id}/revocations"),
+    ("POST", "/v1/actions/{action_id}/outcome-resolutions"),
+}
+EXECUTION = {"dispatch_change", "reconcile_execution", "Dispatcher", "FakeReleaseClient"}
+
+
+def test_st39_no_api_route_can_run_a_rollback_or_any_change():
+    from fastapi.routing import APIRoute
+    from pydantic import SecretStr
+    from sqlalchemy import create_engine
+
+    from aisre.api.app import create_app
+    from aisre.config import Settings
+
+    url = "postgresql+psycopg://aisre_app@127.0.0.1:1/aisre?connect_timeout=1"
+    app = create_app(Settings(env="test", database_url=SecretStr(url)), create_engine(url))
+    writes = {
+        (m, r.path)
+        for r in app.routes
+        if isinstance(r, APIRoute)
+        for m in r.methods
+        if m not in ("GET", "HEAD")
+    }
+    assert writes == API_WRITES
+    words = ("execute", "dispatch", "apply", "rollback", "undo", "release")
+    assert not [p for _, p in writes if any(w in p for w in words)]
+
+
+def test_st39_the_api_package_cannot_reach_the_dispatcher_or_the_release_process():
+    api = Path(inspect.getfile(IncidentWorkflow)).parents[1] / "api"
+    for path in api.glob("*.py"):
+        tree = ast.parse(path.read_text())
+        for n in ast.walk(tree):
+            if isinstance(n, ast.ImportFrom):
+                assert not (n.module or "").startswith(
+                    ("aisre.remediation.dispatcher", "aisre.remediation.release")
+                ), path.name
+                assert not {a.name for a in n.names} & EXECUTION, path.name
+            elif isinstance(n, ast.Import):
+                assert not [a for a in n.names if "dispatcher" in a.name], path.name

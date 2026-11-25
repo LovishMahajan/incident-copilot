@@ -8,9 +8,15 @@ on 127.0.0.1 only, and it refuses to start when AISRE_ENV is production.
     GET  /.well-known/openid-configuration   issuer, jwks_uri, token_endpoint
     GET  /jwks                               the public key, as a JWK set
     POST /token                              {"sub": ..., optional below} -> {"access_token", ...}
+    GET  /v1/directory/{sub}                 a persona's current groups (ADR-73), or 404
     GET  /healthz
 
-POST /token takes `sub` (required), `groups` (list of strings, default []), `org_id`
+Personas (M3, ADR-73) come from FAKE_ISSUER_PERSONAS (default personas.json beside this file): a
+subject and its identity groups. POST /token with `persona` mints that subject with its groups;
+the directory answers what groups a subject holds now, which the dispatcher reads when it
+re-checks approval rights at execution. Groups, never names, carry the rights.
+
+POST /token takes `persona`, or `sub` (required without it), `groups` (list of strings, default []), `org_id`
 (default the development organisation), `mfa` (default true: `amr` holds "mfa"),
 `auth_age_seconds` (how long ago the person signed in, default 0) and `ttl_seconds`
 (1 to 900, default 300). The token carries iss, aud, sub, iat, nbf, exp, auth_time, amr,
@@ -32,6 +38,7 @@ import threading
 import time
 import uuid
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from pathlib import Path
 from typing import Any
 
 from cryptography.hazmat.primitives import hashes
@@ -50,12 +57,26 @@ def _uint(n: int) -> str:
     return b64url(n.to_bytes((n.bit_length() + 7) // 8, "big"))
 
 
+PERSONAS = Path(__file__).resolve().parent / "personas.json"
+
+
+def load_personas(path: Path = PERSONAS) -> dict[str, list[str]]:
+    doc = json.loads(path.read_text()) if path.exists() else {}
+    return {k: list(v.get("groups", [])) for k, v in doc.get("personas", {}).items()}
+
+
 class Issuer:
     """An RSA key and the claims around it. `sign` takes any claims, so tests can forge."""
 
-    def __init__(self, url: str, audience: str = "aisre-api") -> None:
+    def __init__(
+        self,
+        url: str,
+        audience: str = "aisre-api",
+        personas: dict[str, list[str]] | None = None,
+    ) -> None:
         self.url = url.rstrip("/")
         self.audience = audience
+        self.personas = dict(personas or {})
         self.key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
         self.kid = uuid.uuid4().hex[:16]
 
@@ -130,6 +151,12 @@ def handler_for(issuer: Issuer) -> type[BaseHTTPRequestHandler]:
                 )
             elif path == "/jwks":
                 self.reply(200, issuer.jwks())
+            elif path.startswith("/v1/directory/"):
+                sub = path.removeprefix("/v1/directory/")
+                if sub in issuer.personas:
+                    self.reply(200, {"sub": sub, "groups": issuer.personas[sub]})
+                else:
+                    self.reply(404, {"error": "not_found"})
             elif path == "/healthz":
                 self.reply(200, {"status": "ok"})
             else:
@@ -140,6 +167,11 @@ def handler_for(issuer: Issuer) -> type[BaseHTTPRequestHandler]:
                 return self.reply(404, {"error": "not_found"})
             try:
                 req = json.loads(self.rfile.read(int(self.headers.get("Content-Length") or 0)))
+                persona = req.get("persona")
+                if persona is not None:
+                    if persona not in issuer.personas:
+                        raise ValueError("no such persona")
+                    req = req | {"sub": persona, "groups": issuer.personas[persona]}
                 sub, groups = req["sub"], req.get("groups", [])
                 ttl = int(req.get("ttl_seconds", DEFAULT_TTL))
                 if not isinstance(sub, str) or not sub or not isinstance(groups, list):
@@ -175,6 +207,7 @@ def main() -> None:
     issuer = Issuer(
         os.environ.get("FAKE_ISSUER_URL", f"http://127.0.0.1:{port}"),
         os.environ.get("FAKE_ISSUER_AUDIENCE", "aisre-api"),
+        load_personas(Path(os.environ.get("FAKE_ISSUER_PERSONAS") or PERSONAS)),
     )
     print(f"fake token issuer {issuer.url} on :{port} (local use only)", flush=True)
     ThreadingHTTPServer(("0.0.0.0", port), handler_for(issuer)).serve_forever()

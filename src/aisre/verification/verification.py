@@ -3,6 +3,13 @@
 The Recovery Verifier reads monitoring directly and evaluates predicates fixed before the change.
 Every predicate must hold at every check across the whole observation window, with enough traffic
 to judge. Otherwise the result is failed or inconclusive — never 'probably fine'.
+
+The verifier activity (aisre.verification.verifier, T3.8) builds its plan from the criteria
+recorded on the action before execution (`plan_from_criteria`, FR-30), after checking they still
+hash to the action's `recovery_predicates_digest`, which every approval signed. Its window starts
+at the first whole minute after the change and lasts the action's hold period (`window_after`,
+FR-50); only whole minutes count (`samples_from_rows`). The post-change watch (T3.17) reads the
+same criteria after the window, and `watch_flags` names what it flags.
 """
 
 from __future__ import annotations
@@ -11,8 +18,9 @@ import hashlib
 import json
 import statistics
 from dataclasses import asdict, dataclass, field
+from datetime import UTC, datetime, timedelta
 from enum import Enum
-from typing import Literal, Optional
+from typing import Any, Literal, Optional
 
 from aisre.remediation.action import ImmutableAction
 
@@ -155,6 +163,113 @@ def verify(plan: VerificationPlan, samples: list[Sample]) -> VerificationResult:
             res.verdict = Verdict.INCONCLUSIVE
             res.reasons.append(f"{p.name}: not enough data")
     return res
+
+
+# ---------------------------------------------------------------------------
+# The plan recorded on the action (T3.8, FR-30), and what monitoring serves
+# ---------------------------------------------------------------------------
+# A criterion's metric -> the field of a live monitoring row that measures it. A metric not here
+# can't be judged, so its predicate lacks data and the verdict is inconclusive, never verified.
+LIVE_FIELDS = {"http_5xx_rate": "rate_500_total"}
+INTERVAL_S = 60  # monitoring's resolution: one row a minute
+
+
+def criteria_digest(criteria: list[dict[str, Any]]) -> str:
+    """How record.patches hashes the criteria into `recovery_predicates_digest`."""
+    text = json.dumps(criteria, sort_keys=True, separators=(",", ":"))
+    return hashlib.sha256(text.encode()).hexdigest()
+
+
+def plan_from_criteria(
+    service: str, criteria: list[dict[str, Any]], hold_seconds: int
+) -> VerificationPlan:
+    """The action's own criteria as the plan: absolute thresholds, each required, judged every
+    minute over the hold period, with at least 50 requests a minute."""
+    preds = tuple(
+        Predicate(str(c["metric"]), str(c["metric"]), c["comparison"], float(c["threshold"]))
+        for c in criteria
+    )
+    return VerificationPlan(
+        service, "", preds, window_s=hold_seconds, interval_s=INTERVAL_S, synthetic_probe=False
+    )
+
+
+def window_after(applied_at: datetime, hold_seconds: int) -> tuple[datetime, datetime]:
+    """From the first whole minute after the change, for the hold period: a minute that began
+    before the change says nothing about it."""
+    start = applied_at.replace(second=0, microsecond=0)
+    if start < applied_at:
+        start += timedelta(minutes=1)
+    return start, start + timedelta(seconds=hold_seconds)
+
+
+def _stamp(value: str) -> datetime:
+    return datetime.fromisoformat(value.replace("Z", "+00:00"))
+
+
+def samples_from_rows(
+    rows: list[dict[str, Any]], start: datetime, end: datetime, now: datetime
+) -> list[Sample]:
+    """Whole minutes in [start, end) that have ended by `now`, as samples."""
+    out = []
+    for r in rows:
+        t = _stamp(str(r["minute_utc"]))
+        if start <= t and t + timedelta(seconds=INTERVAL_S) <= min(end, now):
+            values: dict[str, Optional[float]] = {
+                metric: float(r[f]) if r.get(f) is not None else None
+                for metric, f in LIVE_FIELDS.items()
+            }
+            out.append(Sample(int(t.timestamp()), int(r.get("requests_total") or 0), values))
+    return sorted(out, key=lambda s: s.t)
+
+
+@dataclass(frozen=True)
+class WatchFlag:
+    key: str  # one flag per key, for the whole watch
+    kind: Literal["alert_breach", "new_error_group"]
+    detail: str
+
+
+def group_name(g: dict[str, Any]) -> str:
+    return f"{g['type']}: {g['message']}"
+
+
+def watch_flags(
+    plan: VerificationPlan,
+    samples: list[Sample],
+    groups: list[dict[str, Any]],
+    known_before: set[str],
+) -> list[WatchFlag]:
+    """Artifact 11.12's post-change watch: a minute breaking the recovery criteria again, and an
+    error group seen during the watch that wasn't seen before the change (`known_before`, by
+    group_name). Flags for a person to judge; nothing is undone."""
+    flags = []
+    for p in plan.predicates:
+        for s in samples:
+            v = s.values.get(p.metric)
+            if v is None or s.requests < plan.min_requests_per_interval:
+                continue
+            if not (v <= p.threshold if p.comparison == "<=" else v >= p.threshold):
+                at = datetime.fromtimestamp(s.t, UTC).isoformat()
+                flags.append(
+                    WatchFlag(
+                        f"alert_breach:{p.name}",
+                        "alert_breach",
+                        f"{p.name} {v} breaks {p.comparison} {p.threshold} at {at}",
+                    )
+                )
+                break
+    for g in groups:
+        name = group_name(g)
+        if name not in known_before:
+            flags.append(
+                WatchFlag(
+                    f"new_error_group:{name}"[:200],
+                    "new_error_group",
+                    f"new error group since the change: {name} ({g['count']} so far)"[:500],
+                )
+            )
+    return flags
 
 
 # ---------------------------------------------------------------------------

@@ -372,7 +372,7 @@ Rules carried by the models:
 | Action | `aisre.action.proposed`, `test_started`, `tested`, `review_opened`, `withdrawn`, `undone` (`test_started` and `review_opened` added for M2, ADR-72) |
 | Approval | `aisre.approval.requested`, `granted`, `rejected`, `revoked`, `refused`, `escalated`, `expired`, `voided` |
 | Execution | `aisre.execution.started`, `completed`, `refused`, `outcome_resolved` |
-| Verification | `aisre.verification.completed`, `accepted` |
+| Verification | `aisre.verification.completed`, `accepted`, `watch_flagged`, `watch_ended` (`watch_flagged` and `watch_ended` added for M3's post-change watch, ADR-73) |
 | Limits and model | `aisre.limit.reached`; `aisre.model.attempt_failed` |
 | Notification | `aisre.notification.failed` |
 

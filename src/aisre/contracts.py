@@ -966,6 +966,25 @@ class VerificationAcceptedData(Strict):
     accepted_at: datetime
 
 
+class VerificationWatchFlaggedData(Strict):
+    """The post-change watch (Artifact 11.12, T3.17): something a person should judge, linked
+    to the action. Nothing is rolled back for it."""
+
+    verification_id: UUID
+    action_id: UUID
+    kind: Literal["alert_breach", "new_error_group"]
+    detail: str = Field(max_length=500)
+    observed_at: datetime
+
+
+class VerificationWatchEndedData(Strict):
+    verification_id: UUID
+    action_id: UUID
+    started_at: datetime
+    ended_at: datetime
+    flags: int = Field(ge=0)
+
+
 class LimitReachedData(Strict):
     limit: str = Field(description="What ran out, e.g. calls, cost_micros or wall_clock")
     used: int = Field(ge=0)
@@ -1029,6 +1048,8 @@ EVENT_DATA: dict[str, type[Strict]] = {
     "aisre.execution.outcome_resolved.v1": ExecutionOutcomeResolvedData,
     "aisre.verification.completed.v1": VerificationCompletedData,
     "aisre.verification.accepted.v1": VerificationAcceptedData,
+    "aisre.verification.watch_flagged.v1": VerificationWatchFlaggedData,
+    "aisre.verification.watch_ended.v1": VerificationWatchEndedData,
     "aisre.limit.reached.v1": LimitReachedData,
     "aisre.model.attempt_failed.v1": ModelAttemptFailedData,
     "aisre.notification.failed.v1": NotificationFailedData,

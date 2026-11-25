@@ -1,0 +1,11 @@
+{
+  "_comment": "LOCAL USE ONLY (ADR-73): synthetic people for the fake issuer. Rights come from the groups; code never names a persona.",
+  "personas": {
+    "priya": {"groups": ["aisre:approver:orders-api"]},
+    "sam": {"groups": ["aisre:approver:orders-api"]},
+    "lee": {"groups": ["aisre:incident_lead:orders-api"]},
+    "rin": {"groups": ["aisre:responder:orders-api"]},
+    "vic": {"groups": ["aisre:viewer"]},
+    "synthetic-engineer-a": {"groups": ["aisre:approver:orders-api"]}
+  }
+}

@@ -162,8 +162,11 @@ def test_an_alert_posted_through_the_api_reaches_handed_over(
         iid = UUID(made.json()["incident_id"])
 
         def handed_over() -> bool:
+            # With the approval path on (AISRE_RELEASE_ADAPTER=fake_release, ADR-73) a tested fix
+            # waits for approval instead; that is this path's end, as handed_over is Release A's.
             rows = timeline_rows(app_engine, iid)
-            return bool(rows) and rows[-1].type == "aisre.incident.handed_over.v1"
+            waiting = {"aisre.approval.requested.v1"} <= {r.type for r in rows}
+            return bool(rows) and (rows[-1].type == "aisre.incident.handed_over.v1" or waiting)
 
         try:
             asyncio.run(wait_until(handed_over, f"incident {iid} to reach handed_over"))
@@ -202,7 +205,17 @@ def test_an_alert_posted_through_the_api_reaches_handed_over(
         "/aisre/worker/workflow"
     }
     statuses = [e for e in items if e["type"] == "aisre.incident.status_changed.v1"]
-    if "aisre.action.proposed.v1" in types:  # M2: drafted, tested, proposed for review
+    if "aisre.approval.requested.v1" in types:  # M3, ADR-73: the tested fix asks for approval
+        assert [(e["data"]["from_status"], e["data"]["to_status"]) for e in statuses] == [
+            ("open", "investigating"),
+            ("investigating", "diagnosed"),
+            ("diagnosed", "testing"),
+            ("testing", "awaiting_approval"),
+        ]
+        tested = next(e for e in items if e["type"] == "aisre.action.tested.v1")["data"]
+        assert (tested["outcome"], tested["reproduced"]) == ("passed", True)
+        assert view["status"] == "awaiting_approval" and len(view["open_action_ids"]) >= 1
+    elif "aisre.action.proposed.v1" in types:  # M2: drafted, tested, proposed for review
         assert [e["type"] for e in items] == M2_PATH
         assert [(e["data"]["from_status"], e["data"]["to_status"]) for e in statuses] == [
             ("open", "investigating"),
