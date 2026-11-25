@@ -31,6 +31,7 @@ from aisre.gateway.gateway import (
 from aisre.gateway.gateway_contracts import ModelResult, ResultStatus, Usage
 from aisre.record import budget
 from aisre.record.incidents import uuid7
+from aisre.reliability import telemetry
 
 T = TypeVar("T")
 
@@ -44,6 +45,20 @@ def _at(epoch_s: float) -> datetime:
 def default_caps() -> budget.Caps:
     b = IncidentBudget()  # the one configuration object (ADR-52)
     return budget.Caps(b.max_calls, b.max_input_tokens, b.max_output_tokens, b.max_cost_micros)
+
+
+def publish_fleet_spend(engine: Engine, now: Optional[datetime] = None) -> tuple[int, int]:
+    """T4.9 (NFR-14, NFR-43): today's and this month's settled spend, and the charges still
+    waiting for the provider's usage records, as the gauges the spend alerts read
+    (`aisre_budget_{daily,monthly}_spent_micros`, `aisre_budget_pending_reconcile`). The
+    limits are set once, from the same constants the ledger enforces. Returns (day, month)."""
+    with engine.connect() as conn:
+        day, month = budget.fleet_spend(conn, now or datetime.now(UTC))
+        pending = len(budget.unreconciled(conn))
+    telemetry.budget_daily_spent.set(day)
+    telemetry.budget_monthly_spent.set(month)
+    telemetry.budget_pending_reconcile.set(pending)
+    return day, month
 
 
 class PgBudgetLedger:

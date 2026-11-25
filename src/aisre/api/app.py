@@ -34,6 +34,7 @@ record's work to the same pool. Errors are RFC 9457 problem details (aisre.api.p
 
 from __future__ import annotations
 
+import asyncio
 import hashlib
 from collections.abc import AsyncIterator, Awaitable, Callable
 from contextlib import asynccontextmanager
@@ -44,7 +45,8 @@ from fastapi import Depends, FastAPI, Header, Query, Request, Response
 from fastapi.concurrency import run_in_threadpool
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse, StreamingResponse
-from sqlalchemy import Engine, text
+from sqlalchemy import Engine
+from sqlalchemy.exc import OperationalError
 from starlette.exceptions import HTTPException
 
 from aisre.api import audit, observe
@@ -77,7 +79,7 @@ from aisre.evidence.snapshots import S3Snapshots, SnapshotFailed
 from aisre.record import commands as cmd
 from aisre.record import load_incident, make_engine, reads, timeline, uuid7
 from aisre.record.audit_copy import WriteOnceStore, store_from_settings
-from aisre.reliability import telemetry
+from aisre.reliability import health, telemetry
 from aisre.remediation.action import Perm, Signer, development_signer
 
 REQUEST_ID_HEADER = "X-Request-ID"
@@ -114,11 +116,17 @@ def create_app(
     db = engine or make_engine(settings.database_url)
     blobs = artifact_store if artifact_store is not None else _artifact_store(settings)
 
+    probes = api_health(settings, db, store)
+
     @asynccontextmanager
     async def lifespan(_: FastAPI) -> AsyncIterator[None]:
         telemetry.setup_tracing("aisre-api", settings.otlp_endpoint)
         metrics = telemetry.serve_metrics(settings.metrics_port)  # when set (T1.19)
+        stop = asyncio.Event()
+        probing = asyncio.create_task(probes.run(stop))  # T4.5: every 15 s
         yield
+        stop.set()
+        await probing
         if metrics is not None:
             metrics.shutdown()
         if engine is None:
@@ -479,20 +487,46 @@ def create_app(
         )
 
     @app.get("/livez")
-    def livez() -> dict[str, str]:
+    async def livez() -> dict[str, str]:
+        """Only that the event loop answers (12.5): failing means restart the process."""
         return {"status": "alive"}
 
     @app.get("/readyz")
-    def readyz() -> dict[str, str]:
-        """Ready when the Incident Record answers. Dependency probes are T4.5's (WR-22)."""
-        try:
-            with db.connect() as conn:
-                conn.execute(text("SELECT 1"))
-        except Exception:
-            raise ApiError(503, "not_ready", "Not ready", "The database is unreachable.") from None
+    async def readyz() -> dict[str, str]:
+        """12.5, T4.5 (WR-22): the database, the schema version, the configuration and, on the
+        approval path, the approval signing key. Never Temporal, the model provider or the
+        collector. Failing means stop sending traffic; sets aisre_process_ready{process="api"}."""
+        report = await probes.ready()
+        if not report.ready:
+            failed = ", ".join(sorted(report.failing))
+            raise ApiError(503, "not_ready", "Not ready", f"Failing checks: {failed}.")
         return {"status": "ready"}
 
     return app
+
+
+def approval_path_on(settings: Settings) -> bool:
+    """release.remediation_enabled's rule, restated: ST-39 keeps the release module out of the
+    API package (tests/unit/test_health.py holds the two equal)."""
+    return settings.env in ("development", "test") and settings.release_adapter == "fake_release"
+
+
+def api_health(settings: Settings, db: Engine, store: WriteOnceStore | None) -> health.Health:
+    """The API's readiness checks and its probes: PostgreSQL and the object store (the audit
+    copy). It never talks to Temporal (ADR-19), so it doesn't probe it."""
+    readiness = {
+        "database": health.database(db),
+        "schema_version": health.schema_version(db),
+        "configuration": health.present("database URL", settings.database_url.get_secret_value()),
+    }
+    if approval_path_on(settings):  # the API alone signs decisions (ADR-73)
+        readiness["approval_signing_key"] = health.present(
+            "approval signing key", settings.approval_signing_key
+        )
+    dependencies = {"postgresql": health.database(db)}
+    if store is not None:
+        dependencies["object_store"] = health.object_store(store)
+    return health.Health("api", readiness, dependencies)
 
 
 def approval_signer(settings: Settings) -> Signer | None:
@@ -532,6 +566,19 @@ def _install_errors(app: FastAPI) -> None:
     async def http_error(request: Request, exc: HTTPException) -> Response:
         code = {404: "not_found", 405: "method_not_allowed"}.get(exc.status_code, "http_error")
         return problem_response(request, ApiError(exc.status_code, code, str(exc.detail)))
+
+    @app.exception_handler(OperationalError)
+    async def record_unavailable(request: Request, exc: OperationalError) -> Response:
+        """12.5: with PostgreSQL down the API answers 503, never acknowledging what it didn't
+        store; on-call handles incidents by hand until it returns (T4.2)."""
+        err = ApiError(
+            503,
+            "record_unavailable",
+            "Incident Record unavailable",
+            "The incident record can't be written now; retry, and page on-call directly.",
+            headers={"Retry-After": "30"},
+        )
+        return problem_response(request, err)
 
     @app.exception_handler(Exception)
     async def unexpected(request: Request, exc: Exception) -> Response:

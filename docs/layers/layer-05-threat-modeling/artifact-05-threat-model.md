@@ -340,7 +340,7 @@ The sources require 40 security tests: "Security (40 cases)", pass mark all pass
 | ST-01, ST-02, ST-13 | The dispatcher refuses, sends nothing, writes a refusal event and returns a void-required result. The workflow closes the request as voided and hands over to the approvers and security | The activity body that writes `aisre.approval.voided.v1`, and alerting security and the approver, which needs the Notifier and an alert rule (M3) |
 | ST-32 | Chain checks in `schema-tests.sql`; the alert rule on the fault gauge | The weekly job that runs the check and sets the gauge; the write-once store (M4) |
 | ST-33 | Planted text stays labelled data; off-list actions are rejected; flagged evidence supports nothing; the flagger sets `flagged_injection` on instruction-like text, with provisional patterns | The Evidence Collector that calls the flagger, the `aisre.evidence.injection_flagged.v1` event and the approver's view (M1) |
-| ST-38 | Intent first; reconciliation by key with no resend; unknown blocks the deployment | Real process kills and Temporal replay (M4). The same-key retry while `applying` isn't implemented, which errs on the safe side |
+| ST-38 | Intent first; reconciliation by key; a same-key re-send only while `applying`; unknown blocks the deployment | Real process kills and Temporal replay (M4). The same-key retry while `applying` is implemented (T4.1) and relies on the release process applying a key at most once, shown on the fake only (ADR-74) |
 | ST-40 | A false success, an unreadable target and a repeat dispatch end `unknown` and block the deployment; an out-of-band change refuses the next action | The daily release reconciliation job and its security alert (provisional control, M3) |
 
 **Coverage.** Cases per group; the total is 40.

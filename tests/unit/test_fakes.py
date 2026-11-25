@@ -313,3 +313,92 @@ def test_no_persona_name_appears_in_the_source():
     names = token_issuer.load_personas()
     src = "\n".join(p.read_text() for p in (ROOT / "src").rglob("*.py"))
     assert [n for n in names if re.search(rf"\b{n}\b", src)] == []
+
+
+# ---------------------------------------------------------------- fake pager (T4.6, ADR-74)
+pager_fake = load("pager")
+
+
+@pytest.fixture
+def pager_url():
+    server = pager_fake.serve(pager_fake.Pager())
+    yield f"http://127.0.0.1:{server.server_address[1]}"
+    server.shutdown()
+
+
+def _post(url: str, body: object) -> int:
+    req = urllib.request.Request(url, data=json.dumps(body).encode(), method="POST")
+    try:
+        with urllib.request.urlopen(req, timeout=5) as r:
+            return r.status
+    except urllib.error.HTTPError as e:
+        return e.code
+
+
+def test_pager_records_each_alert_of_a_webhook_by_role(pager_url):
+    webhook = {
+        "version": "4",
+        "status": "firing",
+        "alerts": [
+            {
+                "status": "firing",
+                "labels": {"alertname": "AisrePostgresDown", "severity": "page"},
+                "annotations": {"runbook": "RB-01 intake failing"},
+                "startsAt": "2026-11-19T09:00:00Z",
+            }
+        ],
+    }
+    assert _post(f"{pager_url}/v1/notify/platform_owner", webhook) == 200
+    assert _post(f"{pager_url}/v1/notify/nobody", webhook) == 404  # only the three roles
+    assert _post(f"{pager_url}/v1/notify/security_lead", {"alerts": "x"}) == 400
+    with urllib.request.urlopen(f"{pager_url}/v1/pages?role=platform_owner", timeout=5) as r:
+        (page,) = json.loads(r.read())["pages"]
+    assert (page["alertname"], page["status"], page["severity"]) == (
+        "AisrePostgresDown",
+        "firing",
+        "page",
+    )
+    with urllib.request.urlopen(f"{pager_url}/v1/pages?role=security_lead", timeout=5) as r:
+        assert json.loads(r.read())["pages"] == []
+
+
+def test_pager_refuses_to_start_in_production(monkeypatch):
+    monkeypatch.setenv("AISRE_ENV", "production")
+    with pytest.raises(SystemExit, match="production"):
+        pager_fake.main()
+
+
+def test_alertmanager_routes_match_artifact_12_3():
+    """The four exceptions to the Platform owner, by the labels ops/alerts.yml carries."""
+
+    am = yaml.safe_load((ROOT / "ops/compose/alertmanager.yml").read_text())
+    routes = [
+        (r["matchers"][0], r["receiver"], r.get("continue", False)) for r in am["route"]["routes"]
+    ]
+    assert am["route"]["receiver"] == "platform_owner"
+    assert routes == [
+        ('also_route="incident_lead"', "platform_owner", True),
+        ('also_route="incident_lead"', "incident_lead", False),
+        ('route="incident_lead"', "incident_lead", False),
+        ('route="security_lead"', "security_lead", False),
+    ]
+    urls = {r["name"]: r["webhook_configs"][0]["url"] for r in am["receivers"]}
+    assert urls == {
+        role: f"http://fake-pager:8080/v1/notify/{role}"
+        for role in ("platform_owner", "incident_lead", "security_lead")
+    }
+    rules = yaml.safe_load((ROOT / "ops/alerts.yml").read_text())
+    labelled = {
+        r["alert"]: (r["labels"].get("route"), r["labels"].get("also_route"))
+        for g in rules["groups"]
+        for r in g["rules"]
+        if "route" in r["labels"] or "also_route" in r["labels"]
+    }
+    assert labelled == {
+        "AisreQueueDepthHigh": ("incident_lead", None),
+        "AisreApprovalBacklog": (None, "incident_lead"),
+        "AisreApprovalRefused": ("security_lead", None),
+        "AisreReleaseChangeUnmatched": ("security_lead", None),
+        "AisreAuditChainBroken": ("security_lead", None),
+        "AisreModelOutputSecret": ("security_lead", None),
+    }

@@ -1,0 +1,5 @@
+{
+  "match": "__used only with the key fake-script-auth-error__",
+  "status": 401,
+  "error": {"type": "authentication_error", "message": "Scripted rejected key (fake provider, M4 fault test)."}
+}

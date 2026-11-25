@@ -21,7 +21,7 @@ Functions take a Connection and never commit (see aisre.record).
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from typing import Any
 from uuid import UUID
 
@@ -469,13 +469,18 @@ def period_starts(now: datetime) -> tuple[datetime, datetime]:
 
 def fleet_spend(conn: Connection, now: datetime) -> tuple[int, int]:
     """(today, this month) across all incidents, in millionths of a dollar. A correction
-    replaces the amount charged, in the period it was charged."""
+    replaces the amount charged, in the period it was charged. Each period ends where the next
+    begins, so `now` in an earlier period never counts later charges."""
     r, c = budget_reservations.c, reservation_corrections.c
     day, month = period_starts(now)
+    day_end = day + timedelta(days=1)
+    month_end = (month + timedelta(days=32)).replace(day=1)
     charged = func.coalesce(c.actual_cost_micros, r.actual_cost_micros)
     row = conn.execute(
         select(
-            func.coalesce(func.sum(charged).filter(r.settled_at >= day), 0),
+            func.coalesce(
+                func.sum(charged).filter(and_(r.settled_at >= day, r.settled_at < day_end)), 0
+            ),
             func.coalesce(func.sum(charged), 0),
         )
         .select_from(
@@ -483,7 +488,7 @@ def fleet_spend(conn: Connection, now: datetime) -> tuple[int, int]:
                 reservation_corrections, c.reservation_id == r.reservation_id
             )
         )
-        .where(and_(r.status == "settled", r.settled_at >= month))
+        .where(and_(r.status == "settled", r.settled_at >= month, r.settled_at < month_end))
     ).one()
     return int(row[0]), int(row[1])
 

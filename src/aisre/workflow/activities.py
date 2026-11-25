@@ -21,7 +21,6 @@ from __future__ import annotations
 
 import json
 import logging
-from collections import Counter
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 from typing import Literal, Optional
@@ -50,6 +49,12 @@ from aisre.agent.agent_contracts import (
 )
 from aisre.agent.tool_registry import ToolGate, ToolRefused
 from aisre.agent.validation import UnsafeOutput, check_output, mask_secrets
+from aisre.record.queue import (  # noqa: F401 (the rule, used here and by the record)
+    MAX_INVESTIGATIONS,
+    MAX_SLOTS_PER_SERVICE,
+    QueueRow,
+    may_grant,
+)
 from aisre.reliability import telemetry
 from aisre.workflow.states import InvalidTransition
 
@@ -59,8 +64,6 @@ DISPATCHER_QUEUE = "aisre-dispatcher"
 TEST_RUNNER_QUEUE = "aisre-test-runner"  # run_sandbox_test and the reaper only (ADR-71)
 
 DATA_CONVERTER = pydantic_data_converter
-MAX_INVESTIGATIONS = 5  # running at once, across all workers (8.1)
-MAX_SLOTS_PER_SERVICE = 4  # NFR-44, provisional: one service can't take every slot
 RECONCILIATION_SCHEDULE = "aisre-reconciliation"
 RECONCILIATION_EVERY = timedelta(minutes=5)  # provisional (8.9)
 RELEASE_RECONCILIATION_SCHEDULE = "aisre-release-reconciliation"
@@ -346,34 +349,6 @@ class StaleVersion(Exception):
 # ---------------------------------------------------------------------------
 # Rules the activity implementations apply. Pure, so they can be tested here.
 # ---------------------------------------------------------------------------
-@dataclass(frozen=True)
-class QueueRow:
-    """One investigation_queue row, with its incident's service. `severity` is the confirmed one,
-    else the proposed one, else None, which sorts last as NULL does in the table. `run_id` is the
-    workflow run that queued it (ADR-69)."""
-
-    incident_id: str
-    service: str
-    severity: Optional[str]
-    queued_at: datetime
-    granted: bool = False
-    run_id: str = ""
-
-
-def may_grant(incident_id: str, rows: list[QueueRow]) -> bool:
-    """Inside acquire_investigation_slot's locked transaction: fewer than 5 granted, and this
-    incident first in order, severity then oldest. A service holding MAX_SLOTS_PER_SERVICE waits, and
-    the next eligible incident takes the slot (NFR-44), the one exception to severity order."""
-    if sum(r.granted for r in rows) >= MAX_INVESTIGATIONS:
-        return False
-    held = Counter(r.service for r in rows if r.granted)
-    waiting = sorted(
-        (r for r in rows if not r.granted and held[r.service] < MAX_SLOTS_PER_SERVICE),
-        key=lambda r: (r.severity is None, r.severity or "", r.queued_at),
-    )
-    return bool(waiting) and waiting[0].incident_id == incident_id
-
-
 def precheck_requests(
     gate: ToolGate, requests: list[dict], skill: str
 ) -> tuple[list[dict], list[dict]]:
@@ -456,17 +431,26 @@ def reconciliation_findings(
     queue: dict[str, str],
     pending_outbox: set[str],
     live_runs: set[str] = frozenset(),
+    unstarted: set[str] = frozenset(),
 ) -> tuple[dict[str, int], list[str]]:
     """The 8.9 table. `incidents` maps ID to the record's status, `running` maps ID to a live
     workflow's current_state, `queue` maps each investigation_queue row's incident ID to its run
     ID, `pending_outbox` holds the IDs with an undelivered start, `live_runs` the IDs of workflow
     runs still running. Returns (mismatches per state, for aisre_workflows_stalled; queue rows to
     remove). A row goes only when its run has ended: a re-investigation queues while its incident
-    is still `handed_over` (ADR-69). Alerts only: the record wins."""
+    is still `handed_over` (ADR-69). Alerts only: the record wins.
+
+    `unstarted` holds the IDs whose start was withheld on purpose: every start row is marked
+    delivered with no delivery attempt, which the relay never writes (it counts each attempt it
+    makes), so only a deliberate hold, such as the integration tests' `quiet` incidents, does.
+    With no live run such an incident is not a stall and isn't counted; once any start has
+    really gone to Temporal, or a run is live, it is judged like any other."""
     settled = {"handed_over", "recovered", "closed", "cancelled"}
     stalled: dict[str, int] = {}
     for iid, status in incidents.items():
         live = running.get(iid)
+        if live is None and iid in unstarted:
+            continue
         if live is None:
             orphan = status == "open" and iid not in queue and iid not in pending_outbox
             mismatch = orphan or (status != "open" and status not in settled)

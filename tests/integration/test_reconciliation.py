@@ -57,11 +57,56 @@ def move(app_engine, incident_id, *states):
             )
 
 
+def relayed(app_engine, incident_id: str) -> None:
+    """Marks a quiet incident's start as the relay leaves a delivered one: one attempt counted."""
+    with app_engine.begin() as conn:
+        conn.execute(
+            text(
+                "UPDATE outbox SET attempts = 1 WHERE incident_id = :i AND kind = 'start_workflow'"
+            ),
+            {"i": UUID(incident_id)},
+        )
+
+
+def reconcile(app_engine, temporal_address) -> act.ReconciliationOut:
+    async def go() -> act.ReconciliationOut:
+        client = await Client.connect(temporal_address, data_converter=act.DATA_CONVERTER)
+        acts = ReconciliationActivities(app_engine, client)
+        return await ActivityEnvironment().run(
+            acts.reconcile_workflows, act.ReconciliationIn("withheld")
+        )
+
+    return asyncio.run(go())
+
+
+def stalled_in(state: str) -> float:
+    return telemetry.REGISTRY.get_sample_value("aisre_workflows_stalled", {"state": state}) or 0
+
+
+def test_withheld_starts_are_not_stalls_and_a_relayed_one_is(
+    app_engine, catalogue, quiet, temporal_address
+):
+    """M3 follow-up: quiet incidents (start withheld, no workflow) no longer raise
+    AisreWorkflowStalled; the same incident with its start relayed and no run is one stall more.
+    Other incidents on the stack may count too, so the check is the difference."""
+    org, service, _ = catalogue
+    other = uuid7()
+    add_catalogue(app_engine, other, service)
+    held = quiet(other, service)
+    move(app_engine, held, "investigating")
+    reconcile(app_engine, temporal_address)
+    before = stalled_in("investigating")
+    relayed(app_engine, held)
+    reconcile(app_engine, temporal_address)
+    assert stalled_in("investigating") == before + 1
+
+
 def test_t310_a_run_gone_missing_is_counted_and_an_ended_runs_queue_row_removed(
     app_engine, catalogue, quiet, temporal_address
 ):
     org, service, _ = catalogue
     lost = quiet(org, service)
+    relayed(app_engine, lost)  # as if the relay had started it, and the run then vanished
     move(app_engine, lost, "investigating")  # no workflow will ever move it on
     other = uuid7()  # another organisation: an open incident would take a second alert
     add_catalogue(app_engine, other, service)

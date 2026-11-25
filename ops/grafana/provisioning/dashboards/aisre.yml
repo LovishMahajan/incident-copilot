@@ -1,0 +1,8 @@
+# M4 T4.7: dashboards are files in ops/grafana/dashboards; edits in the UI are not kept.
+apiVersion: 1
+providers:
+  - name: aisre
+    type: file
+    allowUiUpdates: false
+    options:
+      path: /var/lib/grafana/dashboards

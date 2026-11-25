@@ -1405,7 +1405,7 @@ function renderFix() {
             el("dt", { text: "Risk" }),
             el("dd", { text: a.risk }),
             el("dt", { text: "Undo" }),
-            el("dd", { text: a.undo_plan }),
+            el("dd", { text: undoText(a, actions) }),
             el("dt", { text: "Sandbox test" }),
             el("dd", {
               text: test
@@ -1434,13 +1434,12 @@ function renderFix() {
       );
     }
     if (reason) parts.push(el("p", { className: "fix-reason" }, [el("strong", { text: "Hand-over reason: " }), reason]));
-    const approvalPath = actions.some((a) => (view.decisions.get(String(a.action_id)) || []).length)
-      || actions.some((a) => APPROVAL_PATH.has(a.status));
+    const approvalPath = actions.some((a) => onApprovalPath(a, actions));
     parts.push(
       el("p", {
         className: "fix-note",
         text: approvalPath
-          ? "People approved it through the API, signed with a DEVELOPMENT key, and applied by the dispatcher to the FAKE release process for the synthetic orders-api (ADR-73): no production write exists (ADR-44). This viewer is read-only (ADR-70): it can't approve, apply or roll back."
+          ? "On the approval path: people approved through the API, signed with a DEVELOPMENT key, and the dispatcher applied the change, and any rollback, to the FAKE release process for the synthetic orders-api, under ADR-73's stand-ins. It ran against that synthetic target only, never production. This viewer is read-only (ADR-70): it can't approve, apply or roll back."
           : "The fix is a recommendation, applied by people: the platform is advisory in this release (ADR-44) and this viewer is read-only (ADR-70).",
       }),
     );
@@ -1459,6 +1458,29 @@ function renderFix() {
     parts.push(el("p", { className: "fix-note", text: "The platform is advisory in this release (ADR-44) and this viewer is read-only (ADR-70)." }));
   }
   box.replaceChildren(...parts);
+}
+
+/** M3: a fix went through approval and the dispatcher (ADR-73) when it reached an approval-path
+ *  status, carries a decision, is a rollback, or has one: the rollback is created with the
+ *  approval request (ADR-48). Otherwise it is a Release A recommendation (ADR-44). */
+function onApprovalPath(a, actions) {
+  return APPROVAL_PATH.has(a.status)
+    || a.kind === "rollback"
+    || (view.decisions.get(String(a.action_id)) || []).length > 0
+    || actions.some((x) => x.parent_action_id && String(x.parent_action_id) === String(a.action_id));
+}
+
+/** The Undo line. Release A keeps the fix's own plan (revert the pull request's merge; people
+ *  merge and deploy, ADR-44). On the approval path the undo is the rollback action, run by the
+ *  dispatcher through the FAKE release process against the synthetic target (ADR-48, ADR-73). */
+function undoText(a, actions) {
+  if (!onApprovalPath(a, actions)) return a.undo_plan;
+  if (a.kind === "rollback") {
+    return `This is the undo of its fix: it restores ${a.expected_after_revision} on ${a.target_deployment} through the FAKE release process (ADR-48, ADR-73). ${a.undo_plan}.`;
+  }
+  const rb = actions.find((x) => x.kind === "rollback" && String(x.parent_action_id) === String(a.action_id));
+  const state = rb ? ` Rollback action: ${humanize(rb.status)}.` : "";
+  return `Its rollback action, approved like any fix and applied by the dispatcher through the FAKE release process, restores ${a.base_revision} on ${a.target_deployment}, the synthetic target (ADR-48, ADR-73).${state}`;
 }
 
 // States reached only on the M3 approval path (fake release process, ADR-73).

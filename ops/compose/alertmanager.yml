@@ -1,0 +1,48 @@
+# Artifact 12.3, 13.5 T4.6 (WR-25, ADR-74): routing and receivers for the platform's own alerts.
+#
+# The paging path is Prometheus -> Alertmanager -> pager, and never the Notifier or PostgreSQL:
+# either may be what failed (NFR-25). Here the pager is the FAKE pager (ops/fakes/pager.py,
+# local use only), which records each page for the role it was routed to; no real pager or
+# on-call rota exists (ADR-69, ADR-74). A deployment replaces the three webhook URLs with its
+# paging service's receivers, one per role, and nothing else here changes.
+#
+# Roles (Artifact 12.3, Routing): every alert goes to the Platform owner, except
+#   route="incident_lead"   AisreQueueDepthHigh (NFR-39)
+#   route="security_lead"   AisreApprovalRefused, AisreAuditChainBroken,
+#                           AisreReleaseChangeUnmatched, AisreModelOutputSecret
+# and also_route="incident_lead" (AisreApprovalBacklog) goes to the Platform owner and, as a
+# copy, to the incident lead. `severity` (page or ticket) travels on the alert as a label;
+# a deployment may send tickets to a queue instead, by matching on it here.
+#
+# Timing: group_wait 10 s keeps AisrePostgresDown within NFR-07's 2 minutes (15 s probe, 15 s
+# evaluation, 60 s hold, 10 s here, then delivery). Provisional, owned by the Platform owner.
+route:
+  receiver: platform_owner
+  group_by: [alertname]
+  group_wait: 10s
+  group_interval: 1m
+  repeat_interval: 4h
+  routes:
+    - matchers: ['also_route="incident_lead"']
+      receiver: platform_owner
+      continue: true
+    - matchers: ['also_route="incident_lead"']
+      receiver: incident_lead
+    - matchers: ['route="incident_lead"']
+      receiver: incident_lead
+    - matchers: ['route="security_lead"']
+      receiver: security_lead
+
+receivers:
+  - name: platform_owner
+    webhook_configs:
+      - url: http://fake-pager:8080/v1/notify/platform_owner
+        send_resolved: true
+  - name: incident_lead
+    webhook_configs:
+      - url: http://fake-pager:8080/v1/notify/incident_lead
+        send_resolved: true
+  - name: security_lead
+    webhook_configs:
+      - url: http://fake-pager:8080/v1/notify/security_lead
+        send_resolved: true

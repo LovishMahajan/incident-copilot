@@ -37,6 +37,7 @@ ENV_VARS: dict[str, str] = {
     "database_url": "AISRE_DATABASE_URL",
     "dispatcher_database_url": "AISRE_DISPATCHER_DATABASE_URL",
     "migration_database_url": "AISRE_MIGRATION_DATABASE_URL",
+    "retention_database_url": "AISRE_RETENTION_DATABASE_URL",
     "temporal_address": "AISRE_TEMPORAL_ADDRESS",
     "temporal_namespace": "AISRE_TEMPORAL_NAMESPACE",
     "log_level": "AISRE_LOG_LEVEL",
@@ -91,6 +92,7 @@ class Settings(BaseModel):
     migration_database_url: SecretStr = SecretStr(
         "postgresql+psycopg://aisre_owner@127.0.0.1:5432/aisre"
     )
+    retention_database_url: SecretStr | None = None  # T4.8: the retention job, as aisre_retention
     temporal_address: str = Field(default="127.0.0.1:7233", min_length=1)
     temporal_namespace: str = Field(default="default", min_length=1)
     log_level: LogLevel = "INFO"

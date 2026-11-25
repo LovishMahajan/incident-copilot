@@ -19,7 +19,10 @@ not run again (9.4). Each result is:
    ST-33): the record stays readable, is shown flagged, and supports no claim (T1.12).
 
 A source that fails, times out, has no adapter, or doesn't hold the data becomes a gap record
-with its reason, never an empty or healthy one (FR-08, ADR-54). Nothing here touches the
+with its reason, never an empty or healthy one (FR-08, ADR-54). A failing or slow call is tried
+at most RETRIES more times with backoff (NFR-47), and each source has a circuit breaker
+(NFR-28, ADR-61's values): once open, its calls become gaps at once, without reaching it, and
+`aisre_circuit_open{dependency="evidence:<source>"}` is 1 until it closes (T4.2). Nothing here touches the
 database: the caller stores the outcome (aisre.record.evidence), so the counting and inserting
 of tool calls happens in one transaction (ADR-69).
 """
@@ -29,6 +32,7 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import json
+import time
 from collections.abc import Callable, Iterator, Sequence
 from dataclasses import dataclass, field
 from datetime import datetime
@@ -42,10 +46,26 @@ from aisre.agent.tool_registry import REGISTRY, ToolGate, ToolRefused
 from aisre.agent.validation import flag_injection, flags_injection
 from aisre.evidence.facts import ChangeInfo, Observed, change_info, tier_and_reasons
 from aisre.evidence.sources import DEFAULT_TIMEOUT_S, Record, SourceSet, SourceUnavailable
+from aisre.gateway.gateway import CircuitBreaker
 from aisre.record.incidents import uuid7
-from aisre.reliability.telemetry import redact_text
+from aisre.reliability.telemetry import evidence_call, redact_text
 
 SKILL = "collect_evidence"
+RETRIES = 2  # NFR-47, provisional: after the first try
+BACKOFF_S = (0.5, 1.0)  # before each retry
+_BREAKERS: dict[str, CircuitBreaker] = {}
+
+
+def breaker_for(source: object) -> CircuitBreaker:
+    """One per source, shared by every collection in the process."""
+    name = str(getattr(source, "name", "") or type(source).__name__)
+    if name not in _BREAKERS:
+        _BREAKERS[name] = CircuitBreaker(
+            time.monotonic, 0.5, 10, 60.0, 30.0, dependency=f"evidence:{name}"
+        )
+    return _BREAKERS[name]
+
+
 COLLECTOR = "evidence-collector"
 SUMMARY_MAX = 4000
 TOOL_KIND = {
@@ -169,6 +189,8 @@ async def collect(
     timeout_s: float = DEFAULT_TIMEOUT_S,
     on_progress: Callable[[], None] | None = None,
     known_changes: Sequence[ChangeInfo] = (),
+    retries: int = RETRIES,
+    backoff_s: Sequence[float] = BACKOFF_S,
 ) -> Outcome:
     """Runs `calls` and returns what to store. Never raises for a source: a failure is a gap.
     `known_changes` is the change history earlier rounds stored, for the tier rules."""
@@ -194,14 +216,31 @@ async def collect(
         try:
             if source is None:
                 raise SourceUnavailable(f"no source is configured for {tool}")
-            result = await asyncio.wait_for(
-                asyncio.to_thread(source.fetch, tool, params, scope.environment), timeout_s
-            )
+            breaker = breaker_for(source)
+            for attempt in range(retries + 1):
+                if not breaker.allow():
+                    raise SourceUnavailable(f"{tool}: circuit open for this source")
+                started = time.monotonic()
+                try:
+                    result = await asyncio.wait_for(
+                        asyncio.to_thread(source.fetch, tool, params, scope.environment),
+                        timeout_s,
+                    )
+                except TimeoutError:
+                    failure: Exception = SourceUnavailable(f"{tool}: no answer in {timeout_s:g} s")
+                except SourceUnavailable as e:
+                    failure = e
+                else:
+                    breaker.record(False)
+                    evidence_call.labels(tool, "ok").observe(time.monotonic() - started)
+                    break
+                breaker.record(True)
+                evidence_call.labels(tool, "error").observe(time.monotonic() - started)
+                if attempt == retries:
+                    raise failure
+                await asyncio.sleep(backoff_s[min(attempt, len(backoff_s) - 1)] if backoff_s else 0)
         except SourceUnavailable as e:
             return _gap(scope, tool, dumped, str(e), collection_key, now)
-        except TimeoutError:
-            reason = f"{tool}: no answer in {timeout_s:g} s"
-            return _gap(scope, tool, dumped, reason, collection_key, now)
         finally:
             if on_progress is not None:
                 on_progress()

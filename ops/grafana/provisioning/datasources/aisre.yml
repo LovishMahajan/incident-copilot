@@ -1,0 +1,23 @@
+# M4 T4.7 (NFR-27): Grafana's data sources, provisioned from files. LOCAL STACK ONLY: the
+# PostgreSQL source reads as aisre_app with the stack's FAKE password; a deployment gives
+# Grafana a read-only reporting role instead.
+apiVersion: 1
+datasources:
+  - name: Prometheus
+    uid: aisre-prometheus
+    type: prometheus
+    access: proxy
+    url: http://prometheus:9090
+    isDefault: true
+  - name: PostgreSQL
+    uid: aisre-postgres
+    type: grafana-postgresql-datasource
+    access: proxy
+    url: postgres:5432
+    user: aisre_app
+    jsonData:
+      database: aisre
+      sslmode: disable
+      postgresVersion: 1700
+    secureJsonData:
+      password: $AISRE_APP_PASSWORD

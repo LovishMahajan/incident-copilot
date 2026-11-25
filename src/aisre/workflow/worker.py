@@ -104,12 +104,12 @@ from aisre.evidence.sources import SourceSet
 from aisre.gateway.adapters import ClaudeAdapter
 from aisre.gateway.gateway import CLAUDE_PRICES, ModelGateway
 from aisre.gateway.jobs import BudgetJobActivities
-from aisre.gateway.ledger import PgBudgetLedger
+from aisre.gateway.ledger import PgBudgetLedger, publish_fleet_spend
 from aisre.gateway.transport import AnthropicTransport
 from aisre.notify.notifier import Notifier
 from aisre.record import make_engine
 from aisre.record.audit_copy import store_from_settings
-from aisre.reliability import telemetry
+from aisre.reliability import health, telemetry
 from aisre.reliability.audit_jobs import AuditJobActivities, ensure_audit_jobs
 from aisre.reliability.temporal_telemetry import interceptors
 from aisre.remediation.release import remediation_enabled
@@ -119,9 +119,11 @@ from aisre.workflow import activities as act
 from aisre.workflow import scripted
 from aisre.workflow.approval_activities import ApprovalActivities
 from aisre.workflow.budget_jobs import BudgetJobWorkflow, ensure_budget_jobs
+from aisre.workflow.queue_activities import QueueActivities, publish_depth
 from aisre.workflow.reconciliation import ReconciliationActivities
 from aisre.workflow.record_activities import EvidenceActivities, RecordActivities
 from aisre.workflow.relay import Relay
+from aisre.workflow.retention_jobs import RetentionActivities, ensure_retention_job
 from aisre.workflow.workflow import (
     IncidentWorkflow,
     OutcomeResolutionWorkflow,
@@ -217,13 +219,15 @@ def investigation_activities(
     """Real record, evidence, skill and Notifier activities, then the scripts if enabled for
     what is still missing, then the interfaces for the rest. With a Temporal client, the
     workflow reconciliation job's activity is real too (T3.10)."""
+    notifier = notifier or Notifier(engine)
     chosen = (
         RecordActivities(engine, remediation_enabled(settings)).all()
+        + QueueActivities(engine, notifier).all()  # T4.3: the real queue
         + ApprovalActivities(engine).all()
         + evidence_activities(settings, engine)
         + skill_activities(settings, engine, transport)
         + review_activities(settings, engine)
-        + (notifier or Notifier(engine)).activities()
+        + notifier.activities()
         + (ReconciliationActivities(engine, client).all() if client is not None else [])
     )
     if remediation_enabled(settings):
@@ -302,13 +306,22 @@ async def run(settings: Settings, stop: asyncio.Event | None = None) -> None:
     audit.install_handler()
     audit.install_copy(store)
     transport = provider_transport(settings)
+    retention_engine: Engine | None = None
     try:
         chosen = investigation_activities(settings, engine, notifier, transport, client)
         chosen += budget_job_activities(engine)
         chosen += AuditJobActivities(engine, store).all()
+        if settings.retention_database_url is not None:  # T4.8: only that role deletes
+            retention_engine = make_engine(settings.retention_database_url)
+            objects = object_store(settings)
+            chosen += RetentionActivities(
+                retention_engine, objects.delete if objects else None
+            ).all()
         async with build_worker(client, chosen, interceptors()):
             await ensure_budget_jobs(client, act.INVESTIGATION_QUEUE)
             await ensure_audit_jobs(client, act.INVESTIGATION_QUEUE)
+            if retention_engine is not None:
+                await ensure_retention_job(client, act.INVESTIGATION_QUEUE)
             await act.ensure_reconciliation_schedule(client)  # 8.9, T3.10
             if remediation_enabled(settings):  # ST-40, T3.11: only where a release adapter is
                 await act.ensure_release_reconciliation_schedule(client)
@@ -321,14 +334,39 @@ async def run(settings: Settings, stop: asyncio.Event | None = None) -> None:
             await asyncio.gather(
                 Relay(engine, client).run(stop, on_pass=ALIVE_FILE.touch),
                 notifier.run(stop),
+                worker_health(settings, engine, client, store).run(stop),  # T4.5
             )
     finally:
         if transport is not None:
             await transport.close()
         audit.install_copy(None)  # flushes what is pending
         engine.dispose()
+        if retention_engine is not None:
+            retention_engine.dispose()
         if metrics is not None:
             metrics.shutdown()
+
+
+def worker_health(
+    settings: Settings, engine: Engine, client: Client, store: Any | None
+) -> health.Health:
+    """T4.5 (12.5): readiness is the database, the schema version and the configuration;
+    probes are PostgreSQL, Temporal and the object store (the audit copy), every 15 s. Sets
+    aisre_process_ready{process="worker"} and aisre_dependency_up, and on the same cycle the
+    queue and fleet spend gauges."""
+    readiness = {
+        "database": health.database(engine),
+        "schema_version": health.schema_version(engine),
+        "configuration": health.present("Temporal address", settings.temporal_address),
+    }
+    dependencies = {"postgresql": health.database(engine), "temporal": health.temporal(client)}
+    if store is not None:
+        dependencies["object_store"] = health.object_store(store)
+    gauges = {  # M4 pass 2: what AisreQueue* and the spend alerts read
+        "queue": health.blocking(lambda: publish_depth(engine)),
+        "spend": health.blocking(lambda: publish_fleet_spend(engine)),
+    }
+    return health.Health("worker", readiness, dependencies, gauges)
 
 
 def is_alive(now: float | None = None) -> bool:

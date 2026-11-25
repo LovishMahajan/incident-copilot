@@ -24,6 +24,9 @@
 #                         (ops/fakes/monitoring.py)
 #   fake-review           FAKE review system (M2, T2.8): the reference repository, built at
 #                         start-up, and draft pull requests, never merged (ops/fakes/review.py)
+#   alertmanager          M4 (T4.6): routes Prometheus's alerts by role to the pager
+#   fake-pager            FAKE pager (T4.6, ADR-74): records every page, by role; no real
+#                         pager or rota exists (ops/fakes/pager.py)
 #   fake-release          FAKE release process (M3, T3.1, ADR-73): what orders-api-production
 #                         runs; apply, undo and lookup by key, with the release token
 #                         (ops/fakes/release.py). fake-monitoring's live metrics follow it
@@ -87,15 +90,27 @@ x-app-wiring: &app-wiring
 services:
   postgres:
     image: postgres:17.12
+    # M4 T4.4 (ADR-74): WAL archived to a local folder, the stand-in for production
+    # point-in-time recovery. A segment is archived at least every 60 s (the RPO bound here).
+    command:
+      - postgres
+      - -c
+      - archive_mode=on
+      - -c
+      - archive_command=mkdir -p /backups/wal && test ! -f /backups/wal/%f && cp %p /backups/wal/%f
+      - -c
+      - archive_timeout=60
     environment:
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?copy .env.example to .env}
       AISRE_OWNER_PASSWORD: ${AISRE_OWNER_PASSWORD:?copy .env.example to .env}
       AISRE_APP_PASSWORD: ${AISRE_APP_PASSWORD:?copy .env.example to .env}
       AISRE_DISPATCHER_PASSWORD: ${AISRE_DISPATCHER_PASSWORD:?copy .env.example to .env}
+      AISRE_RETENTION_PASSWORD: ${AISRE_RETENTION_PASSWORD:-}
       TEMPORAL_DB_PASSWORD: ${TEMPORAL_DB_PASSWORD:?copy .env.example to .env}
     volumes:
       - pgdata:/var/lib/postgresql/data
       - ./ops/compose/postgres-init.sh:/docker-entrypoint-initdb.d/10-aisre.sh:ro
+      - ${AISRE_BACKUP_DIR:-./.aisre-backups}:/backups
     ports:
       - "127.0.0.1:${AISRE_POSTGRES_PORT:-55432}:5432"
     healthcheck:
@@ -105,6 +120,30 @@ services:
       interval: 2s
       timeout: 5s
       retries: 30
+
+  postgres-restore:
+    # M4 T4.4 restore drill only (`--profile drill`, ADR-74): a separate PostgreSQL that
+    # recovers one base backup and the archived WAL into its own throwaway data directory,
+    # then promotes. It never touches the stack's data; `rm -sfv postgres-restore` removes it.
+    image: postgres:17.12
+    profiles: [drill]
+    user: postgres
+    entrypoint: ["bash", "/restore.sh"]
+    environment:
+      AISRE_RESTORE_BACKUP: ${AISRE_RESTORE_BACKUP:-}
+      AISRE_RESTORE_WAL: ${AISRE_RESTORE_WAL:-wal}
+      AISRE_RESTORE_TARGET: ${AISRE_RESTORE_TARGET:-}
+    volumes:
+      - ${AISRE_BACKUP_DIR:-./.aisre-backups}:/backups:ro
+      - ./ops/compose/pg-restore.sh:/restore.sh:ro
+    ports:
+      - "127.0.0.1:${AISRE_RESTORE_PORT:-55433}:5432"
+    healthcheck:
+      # Healthy once recovery has ended and the server is promoted.
+      test: ["CMD-SHELL", "psql -h 127.0.0.1 -U postgres -tAc 'SELECT NOT pg_is_in_recovery()' | grep -q t"]
+      interval: 2s
+      timeout: 5s
+      retries: 150
 
   temporal-schema:
     image: temporalio/admin-tools:1.32.2
@@ -214,6 +253,9 @@ services:
       # The DEVELOPMENT approval signing key (ADR-73): the API alone signs decisions. Unset:
       # approval writes answer 503.
       AISRE_APPROVAL_SIGNING_KEY: ${AISRE_APPROVAL_SIGNING_KEY:-}
+      # T4.5: with the approval path on, /readyz also needs the signing key (12.5). The adapter
+      # name only; the API never holds the release URL or token.
+      AISRE_RELEASE_ADAPTER: ${AISRE_RELEASE_ADAPTER:-}
       # Unset: each start signs exports with a fresh key (development and test only).
       AISRE_EXPORT_SIGNING_KEY: ${AISRE_EXPORT_SIGNING_KEY:-}
       # Read-only use: a patch's diff for GET /v1/artifacts/{id}/content (M2). Unset: not served.
@@ -257,6 +299,7 @@ services:
       AISRE_LOG_LEVEL: ${AISRE_LOG_LEVEL:-INFO}
       AISRE_SCRIPTED_SKILLS: ${AISRE_SCRIPTED_SKILLS:-false}
       AISRE_SCRIPTED_STEP_SECONDS: ${AISRE_SCRIPTED_STEP_SECONDS:-0}
+      AISRE_RETENTION_DATABASE_URL: ${AISRE_RETENTION_DATABASE_URL:-}  # T4.8
       # The real Evidence Collector and Knowledge Retriever (T1.10, T1.17). Empty: scripted.
       AISRE_EVIDENCE_SOURCES: ${AISRE_EVIDENCE_SOURCES:-}
       AISRE_OBJECT_STORE_URL: ${AISRE_OBJECT_STORE_URL:-}
@@ -397,6 +440,8 @@ services:
     depends_on:
       otel-collector:
         condition: service_started
+      alertmanager:
+        condition: service_healthy
     volumes:
       - ./ops/compose/prometheus.yml:/etc/prometheus/prometheus.yml:ro
       - ./ops/alerts.yml:/etc/prometheus/alerts.yml:ro
@@ -405,6 +450,75 @@ services:
       - "127.0.0.1:${AISRE_PROMETHEUS_PORT:-59090}:9090"
     healthcheck:
       test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1:9090/-/ready"]
+      interval: 3s
+      timeout: 5s
+      retries: 20
+
+  grafana:
+    # M4 T4.7 (NFR-27): dashboards provisioned from ops/grafana, read-only in the UI. Anonymous
+    # viewer access, LOCAL STACK ONLY. Checked by pulling the tag on 2026-11-19.
+    image: grafana/grafana:12.2.0
+    depends_on:
+      prometheus:
+        condition: service_healthy
+      postgres:
+        condition: service_healthy
+    environment:
+      AISRE_APP_PASSWORD: ${AISRE_APP_PASSWORD:?copy .env.example to .env}
+      GF_AUTH_ANONYMOUS_ENABLED: "true"
+      GF_AUTH_ANONYMOUS_ORG_ROLE: Viewer
+      GF_ANALYTICS_REPORTING_ENABLED: "false"
+      GF_ANALYTICS_CHECK_FOR_UPDATES: "false"
+      GF_ANALYTICS_CHECK_FOR_PLUGIN_UPDATES: "false"
+    volumes:
+      - ./ops/grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./ops/grafana/dashboards:/var/lib/grafana/dashboards:ro
+    ports:
+      - "127.0.0.1:${AISRE_GRAFANA_PORT:-59030}:3000"
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1:3000/api/health"]
+      interval: 3s
+      timeout: 5s
+      retries: 40
+
+  alertmanager:
+    # M4 (T4.6, WR-25, ADR-74): routes Prometheus's alerts to a role's receiver. The paging path
+    # is Prometheus -> Alertmanager -> pager, never the Notifier or PostgreSQL (Artifact 12.3).
+    # Checked by pulling the tag on 2026-11-19.
+    image: prom/alertmanager:v0.30.0
+    depends_on:
+      fake-pager:
+        condition: service_healthy
+    command:
+      - --config.file=/etc/alertmanager/alertmanager.yml
+      - --storage.path=/alertmanager
+    volumes:
+      - ./ops/compose/alertmanager.yml:/etc/alertmanager/alertmanager.yml:ro
+      - amdata:/alertmanager
+    ports:
+      - "127.0.0.1:${AISRE_ALERTMANAGER_PORT:-59093}:9093"
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1:9093/-/ready"]
+      interval: 3s
+      timeout: 5s
+      retries: 20
+    restart: unless-stopped
+
+  fake-pager:
+    # FAKE pager (T4.6, ADR-74): records each page Alertmanager sends, by role. No real pager or
+    # on-call rota exists; local use only (ops/fakes/pager.py). Refuses AISRE_ENV=production.
+    <<: *fake
+    command: ["python", "/opt/fakes/pager.py"]
+    environment:
+      AISRE_ENV: ${AISRE_ENV:-development}
+    ports:
+      - "127.0.0.1:${AISRE_FAKE_PAGER_PORT:-59600}:8080"
+    healthcheck:
+      test:
+        - CMD
+        - python
+        - -c
+        - "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8080/healthz', timeout=3)"
       interval: 3s
       timeout: 5s
       retries: 20
@@ -517,6 +631,7 @@ services:
     restart: unless-stopped
 
 volumes:
+  amdata:
   pgdata:
   objects:
   promdata:

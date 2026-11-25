@@ -45,6 +45,7 @@ from aisre.gateway.gateway_contracts import (
     Usage,
     estimate_tokens,
 )
+from aisre.reliability import telemetry
 
 UNSAFE_OUTPUT = "unsafe model output: "  # validation error prefix; the kind follows, never the text
 
@@ -359,14 +360,22 @@ class CircuitBreaker:
         min_calls: int,
         window_s: float,
         open_s: float,
+        dependency: Optional[str] = None,
     ):
         self.clock, self.failure_ratio, self.min_calls = clock, failure_ratio, min_calls
         self.window_s, self.open_s = window_s, open_s
         self.calls: deque[tuple[float, bool]] = deque()
         self.open_until = 0.0
+        self.dependency = dependency  # aisre_circuit_open{dependency} when named (T4.2)
+
+    def _publish(self, is_open: bool) -> None:
+        if self.dependency is not None:
+            telemetry.circuit_state.labels(dependency=self.dependency).set(1 if is_open else 0)
 
     def allow(self) -> bool:
-        return self.clock() >= self.open_until
+        allowed = self.clock() >= self.open_until
+        self._publish(not allowed)
+        return allowed
 
     def record(self, failed: bool) -> None:
         now = self.clock()
@@ -377,6 +386,7 @@ class CircuitBreaker:
         if len(self.calls) >= self.min_calls and failures >= self.failure_ratio * len(self.calls):
             self.open_until = now + self.open_s
             self.calls.clear()
+            self._publish(True)
 
 
 # ---------------------------------------------------------------------------
@@ -436,12 +446,18 @@ class ModelGateway:
         self.schemas, self.cfg, self.sleep, self.clock = schemas, config, sleep, clock
         self.global_slots = asyncio.Semaphore(config.global_concurrency)
         self.incident_slots: dict[str, asyncio.Semaphore] = {}
+        for model in set(getattr(adapter, "model_ids", {}).values()):  # the paging series
+            for task in telemetry.MODEL_TASKS:  # exist at 0, so a first rejected key after a
+                telemetry.model_calls.labels(  # restart counts in increase() (T4.6 pass 2)
+                    provider=adapter.provider, model=model, task=task, status="auth_error"
+                )
         self.breaker = CircuitBreaker(
             clock,
             config.breaker_failure_ratio,
             config.breaker_min_calls,
             config.breaker_window_s,
             config.breaker_open_s,
+            dependency=f"model:{adapter.provider}",
         )
         self.attempt_log: list[ModelResult] = []
 
@@ -657,6 +673,11 @@ class ModelGateway:
         now = self.clock()
         ident = result.identity
         model_ids = getattr(self.adapter, "model_ids", {})
+        model = ident.model if ident else model_ids.get(req.model_alias, req.model_alias)
+        labels = {"provider": self.adapter.provider, "model": model, "task": req.task}
+        telemetry.model_calls.labels(**labels, status=result.status.value).inc()  # T4.2
+        if result.latency_ms:
+            telemetry.model_latency.labels(**labels).observe(result.latency_ms / 1000)
         await self.ledger.record(
             AttemptRecord(
                 req=req,

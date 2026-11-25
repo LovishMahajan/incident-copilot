@@ -328,3 +328,51 @@ def test_s3_signature_is_sigv4_and_never_holds_the_secret():
     assert "canary" not in json.dumps(h)
     assert h == store.signed_headers("PUT", "/b/k.json", b"{}", "application/json", when)
     assert h != store.signed_headers("PUT", "/b/k.json", b"{ }", "application/json", when)
+
+
+# ---------------------------------------------------------------- T4.2: bounds on a source
+class Flaky:
+    """Fails its first `failures` calls, then answers; counts calls."""
+
+    name = "flaky"
+
+    def __init__(self, failures: int) -> None:
+        self.failures, self.calls = failures, 0
+
+    def fetch(self, tool: str, params: BaseModel, environment: str) -> SourceResult:
+        self.calls += 1
+        if self.calls <= self.failures:
+            raise SourceUnavailable("flaky: HTTP 503")
+        return SourceResult("flaky", "ref:flaky", [])
+
+
+LOGS = [Call("get_logs", {"service": "orders-api"})]
+
+
+def test_nfr47_a_failing_call_is_retried_at_most_twice_with_backoff():
+    once = Flaky(1)
+    t0 = time.monotonic()
+    out = run(SourceSet({"*": once}), LOGS, backoff_s=(0.2, 0.4))
+    assert once.calls == 2 and out.gap_count == 0 and time.monotonic() - t0 >= 0.2
+    always = Flaky(99)
+    out = run(SourceSet({"*": always}), LOGS, backoff_s=(0, 0))
+    assert always.calls == 3 and out.gap_count == 1
+    assert "HTTP 503" in out.collected[0].evidence.gap_reason
+
+
+def test_nfr28_the_breaker_opens_and_calls_stop_reaching_the_source():
+    from aisre.reliability import telemetry
+
+    dead = Flaky(10_000)
+    src = SourceSet({"*": dead})
+    for _ in range(4):  # 3 tries each: the 10th failure opens it (ADR-61: half of 10 in 60 s)
+        run(src, LOGS, backoff_s=(0, 0))
+    reached = dead.calls
+    assert reached in (10, 11, 12)
+    out = run(src, LOGS, backoff_s=(0, 0))
+    assert dead.calls == reached  # refused at once while open: the source isn't called
+    assert "circuit open" in out.collected[0].evidence.gap_reason
+    gauge = telemetry.REGISTRY.get_sample_value(
+        "aisre_circuit_open", {"dependency": "evidence:flaky"}
+    )
+    assert gauge == 1

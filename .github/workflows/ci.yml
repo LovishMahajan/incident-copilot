@@ -52,7 +52,9 @@ jobs:
           uv run mypy --follow-imports=silent \
             src/aisre/config.py src/aisre/cli.py src/aisre/notify \
             src/aisre/reliability/otlp.py src/aisre/reliability/audit_jobs.py \
-            src/aisre/reliability/temporal_telemetry.py \
+            src/aisre/reliability/temporal_telemetry.py src/aisre/reliability/health.py \
+            src/aisre/reliability/admin.py src/aisre/reliability/admin_cli.py \
+            src/aisre/reliability/encryption_audit.py \
             src/aisre/record src/aisre/api \
             src/aisre/workflow/relay.py src/aisre/workflow/worker.py \
             src/aisre/workflow/record_activities.py src/aisre/workflow/scripted.py \
@@ -63,7 +65,8 @@ jobs:
             src/aisre/remediation/test_runner.py src/aisre/remediation/review.py \
             src/aisre/remediation/release.py src/aisre/workflow/approval_activities.py \
             src/aisre/remediation/dispatcher_process.py src/aisre/verification/verifier.py \
-            src/aisre/workflow/reconciliation.py
+            src/aisre/workflow/reconciliation.py src/aisre/workflow/queue_activities.py \
+            src/aisre/workflow/retention_jobs.py
       - name: Types, report-only on src
         run: |
           set +e

@@ -8,6 +8,13 @@ and that outcome blocks the deployment until reconciliation or a person settles 
 row may belong to a call still running, so it counts as dead only after the in-flight window.
 The block is its own record per deployment (ADR-69): a call that lands after reconciliation
 recorded `not_applied` puts it back, and then only a person's outcome resolution clears it.
+
+ST-38 (T4.1): a `started` row past the in-flight window, whose key the release process never saw
+and whose target is still at the base revision, is the one case that is sent again: with the
+same key, inside the same attempt, while the action is still `applying`, and only after every
+pre-check passes again (approval standing, target at base, no fence or stop). The release
+process is idempotent by key, so a call that did land can't apply twice. Anything else settles
+as before, and `not_applied` stays final.
 """
 
 from __future__ import annotations
@@ -318,6 +325,11 @@ class Dispatcher:
         refusal = self.ledger.begin(entry)  # intent BEFORE the write (Artifact 8)
         if refusal:
             return self._refused(action, refusal)
+        return await self._send(action, entry)
+
+    async def _send(self, action: ImmutableAction, entry: LedgerEntry) -> DispatchResult:
+        """The one write, under `entry`'s `started` row, and what its answer settles."""
+        key, action_id = entry.execution_key, action.action_id
         try:
             resp = await asyncio.wait_for(
                 self.release.apply(
@@ -368,7 +380,9 @@ class Dispatcher:
         key = entry.execution_key
         current = self.ledger.get(key)
         if current.state == LedgerState.STARTED:
-            self.ledger.put(replace(entry, state=state, notes=[note] if note else []))
+            self.ledger.put(
+                replace(entry, state=state, notes=[*entry.notes, *([note] if note else [])])
+            )
             return DispatchResult(Outcome(state.value), reason, key)
         if current.state == LedgerState.NOT_APPLIED and state != LedgerState.NOT_APPLIED:
             self.ledger.block_late_apply(entry)  # the late apply: the block goes back (ADR-69)
@@ -417,15 +431,19 @@ class Dispatcher:
             return None, False
         return f"patch content is {found}, approved as {a.patch_sha256}", True
 
-    async def _prechecks(self, a: ImmutableAction) -> tuple[Optional[str], Optional[str], bool]:
+    async def _prechecks(
+        self, a: ImmutableAction, resend: bool = False
+    ) -> tuple[Optional[str], Optional[str], bool]:
         """Q11.69, Q11.73: re-validated immediately before the write. Returns (refusal, deciding
         approval_id, whether the refusal voids the approval). The deployment block, check 9, is in
-        Ledger.begin, with the intent write."""
+        Ledger.begin, with the intent write. `resend`: ST-38's same-key retry, where the action is
+        already `applying` under its own intent."""
         fenced = self._fenced(a)
         if fenced:
             return fenced, None, False
         status = self.store.status(a.action_id)
-        if status != "approved":  # withdrawn, expired: refused here, not only by the table
+        allowed = ("approved", "applying") if resend else ("approved",)
+        if status not in allowed:  # withdrawn, expired: refused here, not only by the table
             return f"action is {status}, not approved", None, False
         stopped_by = (
             None if a.parent_action_id else self.store.stop(a.action_id)
@@ -525,18 +543,26 @@ class Dispatcher:
             )
         if entry.state in (LedgerState.APPLIED, LedgerState.NOT_APPLIED):
             return DispatchResult(Outcome(entry.state.value), "already settled", key)
-        if entry.state == LedgerState.STARTED:
-            if entry.started_at and self.clock() - entry.started_at < self.in_flight_window:
-                raise ReleaseInProgress(key)  # the first call may be live; the block stays
-            # the dispatcher died mid-call (Artifact 8, 8.9)
-            entry = replace(
-                entry, state=LedgerState.UNKNOWN, notes=["no answer: found still started"]
-            )
-            self.ledger.put(entry)
+        started = entry.state == LedgerState.STARTED
+        if started and entry.started_at and self.clock() - entry.started_at < self.in_flight_window:
+            raise ReleaseInProgress(key)  # the first call may be live; the block stays
         found = await self.release.lookup(action.target.deployment, key)
         st = await self.release.current_state(action.target.deployment)
         if found == "in_progress" or st.in_progress_key == key:
             raise ReleaseInProgress(key)
+        if started and found is None and st.revision == action.base_revision:
+            # ST-38: the dispatcher died before the release process saw the key, and the action
+            # is still `applying`. Send again with the same key if everything still stands.
+            refusal, _, _ = await self._prechecks(action, resend=True)
+            if refusal is None and self._fenced(action) is None:
+                return await self._send(
+                    action, replace(entry, notes=["re-sent with the same key (ST-38)"])
+                )
+        if started:  # the dispatcher died mid-call (Artifact 8, 8.9)
+            entry = replace(
+                entry, state=LedgerState.UNKNOWN, notes=["no answer: found still started"]
+            )
+            self.ledger.put(entry)
         if found == "applied" and st.revision == action.expected_after_revision:
             return self._settle(entry, LedgerState.APPLIED, "reconciled: applied")
         if found in (None, "failed") and st.revision == action.base_revision:

@@ -167,8 +167,15 @@ def test_st37_reconcile_inside_the_window_waits():
     assert repeat_during_apply(look)[3] == LedgerState.STARTED
 
 
+def no_resend(r, a):
+    """A stop request on the incident: ST-38's same-key re-send (T4.1) needs every pre-check to
+    pass, so the late look settles instead, which is the case these tests are about."""
+    r.store.stops[a.incident_id] = "user:lee"
+
+
 def test_st37_a_first_call_that_outlives_the_window_never_raises_and_a_conflict_needs_a_person():
     async def late_look(r, a):
+        no_resend(r, a)
         return await restarted(r).execute(a.action_id)  # past the window, the row is taken for dead
 
     r, a, seen, state, _, first = repeat_during_apply(late_look)
@@ -186,9 +193,11 @@ def test_st37_a_late_apply_puts_the_block_back_and_only_a_person_clears_it():
     follow not_applied, so the block is its own record."""
 
     async def late_look(r, a):
+        no_resend(r, a)
         return await restarted(r).execute(a.action_id)
 
     r, a, _, _, _, _ = repeat_during_apply(late_look)
+    r.store.stops.clear()
     assert (
         r.ledger.get(a.action_id).state == LedgerState.NOT_APPLIED
     )  # the attempt rows can't say it
@@ -243,18 +252,20 @@ def test_st37_control_a_call_that_lands_in_time_leaves_no_block():
     assert [b.reason for b in r.ledger.blocks] == ["unresolved"] and r.ledger.blocks[0].cleared
 
 
-def test_st37_a_first_call_overtaken_by_reconciliation_reports_what_stands():
-    async def late_unknown(r, a):
+def test_st37_a_late_look_while_the_release_runs_the_key_leaves_the_row_to_the_live_call():
+    """T4.1: the look asks the release process first. It says the key's call is running, so the
+    row isn't taken for dead: it stays `started`, and the live call settles it."""
+
+    async def late_look(r, a):
+        no_resend(r, a)
         r.release.in_progress_key = a.action_id
         with pytest.raises(ReleaseInProgress):
-            await restarted(r).reconcile(a.action_id)  # row moves to unknown, then the look stops
+            await restarted(r).reconcile(a.action_id)
         r.release.in_progress_key = None
 
-    r, a, _, state, _, first = repeat_during_apply(late_unknown)
-    assert state == LedgerState.UNKNOWN and first.outcome == Outcome.UNKNOWN
-    assert (
-        r.ledger.get(a.action_id).state == LedgerState.UNKNOWN
-    )  # reconciliation settles it, not this call
+    r, a, _, state, _, first = repeat_during_apply(late_look)
+    assert state == LedgerState.STARTED and first.outcome == Outcome.APPLIED
+    assert r.ledger.get(a.action_id).state == LedgerState.APPLIED and len(r.release.calls) == 1
 
 
 def test_st37_ledger_refuses_a_second_applied_row():
@@ -327,19 +338,59 @@ def test_st38_intent_is_recorded_before_the_write():
     assert r.ledger.action_status[a.action_id] == "applying"
 
 
-def test_st38_killed_before_sending_reconciles_to_not_applied_and_stays_final():
+def test_st38_killed_before_sending_is_resent_with_the_same_key_while_applying():
+    """T4.1: the release process never saw the key, the target is at base and the approval
+    stands, so the restarted dispatcher sends again, same key, same attempt: applied once."""
     a, ds = approved()
     r = rig((a, ds), release=DiesBeforeSending())
     crash(r, a.action_id)
-    d = restarted(r)
-    assert asyncio.run(d.execute(a.action_id)).outcome == Outcome.NOT_APPLIED
     r.release.__class__ = FakeRelease  # the release process is healthy now
+    d = restarted(r)
+    assert asyncio.run(d.execute(a.action_id)).outcome == Outcome.APPLIED
+    assert [c["key"] for c in r.release.calls] == [a.action_id]
+    rows = r.ledger.rows[a.action_id]
+    assert len(rows) == 1 and rows[0].state == LedgerState.APPLIED
+    assert "re-sent with the same key (ST-38)" in rows[0].notes
+    assert asyncio.run(d.execute(a.action_id)).reason == "already applied (idempotent)"
+
+
+def test_st38_killed_twice_in_a_row_is_still_applied_once():
+    a, ds = approved()
+    r = rig((a, ds), release=DiesBeforeSending())
+    crash(r, a.action_id)
+    with pytest.raises(Killed):  # the restarted dispatcher dies on its re-send too
+        asyncio.run(restarted(r).execute(a.action_id))
+    r.release.__class__ = FakeRelease
+    d = restarted(r, later=timedelta(minutes=4))
+    assert asyncio.run(d.execute(a.action_id)).outcome == Outcome.APPLIED
+    assert len(r.release.calls) == 1 and len(applied_rows(r, a.action_id)) == 1
+
+
+def test_st38_killed_before_sending_with_the_approval_gone_settles_not_applied_and_stays_final():
+    """No re-send unless the approval still stands: here it was revoked by expiry of the
+    window (the restart is a day later). Then not_applied, and final."""
+    a, ds = approved()
+    r = rig((a, ds), release=DiesBeforeSending())
+    crash(r, a.action_id)
+    r.release.__class__ = FakeRelease
+    d = restarted(r, later=timedelta(days=1))
+    assert asyncio.run(d.execute(a.action_id)).outcome == Outcome.NOT_APPLIED
     again = asyncio.run(d.execute(a.action_id))
     assert (
         again.outcome == Outcome.NOT_APPLIED
         and "new action" in again.reason
         and r.release.calls == []
     )
+
+
+def test_st38_killed_before_sending_with_the_target_moved_is_not_resent():
+    a, ds = approved()
+    r = rig((a, ds), release=DiesBeforeSending())
+    crash(r, a.action_id)
+    r.release.__class__ = FakeRelease
+    r.release.revision = "c0ffee00"  # someone changed the target meanwhile
+    assert asyncio.run(restarted(r).execute(a.action_id)).outcome == Outcome.UNKNOWN
+    assert r.release.calls == []
 
 
 def test_st38_killed_after_apply_before_confirmation_goes_on_as_applied_with_no_resend():
@@ -424,14 +475,6 @@ def test_st38_release_still_running_at_restart_is_waited_for_not_resent():
     with pytest.raises(ReleaseInProgress):
         asyncio.run(restarted(r).reconcile(a.action_id))
     assert r.release.calls == []
-
-
-def test_st38_retry_with_the_same_key_while_applying_is_not_implemented():
-    pytest.skip(
-        "ST-38 allows a retry with the same key while the action is `applying`. Dispatcher has no such path: "
-        "it stops at not_applied, which is the safe side. Real worker kills and Temporal replay need a running "
-        "system; workflow-level handling is in test_workflow.py (test_dispatcher_activity_failure_reconciles)"
-    )
 
 
 def test_st38_restored_database_asks_the_target_not_its_own_ledger():
