@@ -1,0 +1,681 @@
+{
+ "_source": "Alertmanager API v2 GET /api/v2/alerts (https://github.com/prometheus/alertmanager/blob/main/api/v2/openapi.yaml, gettableAlerts) ; Grafana Tempo GET /api/search (TraceQL) and GET /api/traces/<traceID>, OpenTelemetry JSON (https://grafana.com/docs/tempo/latest/api_docs/, Tempo 2.x) ; Loki GET /loki/api/v1/query_range with a LogQL metric query, resultType matrix (https://grafana.com/docs/loki/latest/reference/loki-http-api/) ; Prometheus GET /api/v1/query, resultType vector (https://prometheus.io/docs/prometheus/latest/querying/api/#instant-queries, API v1)",
+ "exchanges": [
+  {
+   "method": "GET",
+   "path": "/api/v2/alerts",
+   "when": [
+    "service=\"checkout\""
+   ],
+   "status": 503,
+   "body": {
+    "code": 503,
+    "message": "unavailable"
+   }
+  },
+  {
+   "method": "GET",
+   "path": "/api/v2/alerts",
+   "when": [
+    "service=~"
+   ],
+   "status": 200,
+   "body": []
+  },
+  {
+   "method": "GET",
+   "path": "/api/v2/alerts",
+   "when": [
+    "service=\"weird\""
+   ],
+   "status": 200,
+   "body": {
+    "error": "not a list"
+   }
+  },
+  {
+   "method": "GET",
+   "path": "/api/v2/alerts",
+   "when": [
+    "service=\"orders-api\""
+   ],
+   "status": 200,
+   "body": [
+    {
+     "labels": {
+      "alertname": "OrdersApiLatencyHigh",
+      "service": "orders-api",
+      "environment": "production",
+      "severity": "page"
+     },
+     "annotations": {
+      "summary": "OrdersApiLatencyHigh on orders-api",
+      "value": "0.9",
+      "threshold": "0.05"
+     },
+     "startsAt": "2026-11-19T09:40:00.000Z",
+     "endsAt": "2026-11-19T10:40:00.000Z",
+     "updatedAt": "2026-11-19T09:40:00.000Z",
+     "fingerprint": "a1b2c3d4e5f60718",
+     "receivers": [
+      {
+       "name": "orders-oncall"
+      }
+     ],
+     "status": {
+      "state": "active",
+      "silencedBy": [],
+      "inhibitedBy": []
+     },
+     "generatorURL": "http://prometheus.example:9090/graph?g0.expr=sum%28rate%28http_requests_total%7Bservice%3D%22orders-api%22%2Ccode%3D~%225..%22%7D%5B1m%5D%29%29+%2F+sum%28rate%28http_requests_total%7Bservice%3D%22orders-api%22%7D%5B1m%5D%29%29+%3E+0.05&g0.tab=1"
+    },
+    {
+     "labels": {
+      "alertname": "OrdersApiHighErrorRate",
+      "service": "orders-api",
+      "environment": "production",
+      "severity": "page"
+     },
+     "annotations": {
+      "summary": "OrdersApiHighErrorRate on orders-api",
+      "value": "0.149",
+      "threshold": "0.05"
+     },
+     "startsAt": "2026-11-19T10:03:00.000Z",
+     "endsAt": "2026-11-19T10:40:00.000Z",
+     "updatedAt": "2026-11-19T10:03:00.000Z",
+     "fingerprint": "9f8e7d6c5b4a3921",
+     "receivers": [
+      {
+       "name": "orders-oncall"
+      }
+     ],
+     "status": {
+      "state": "active",
+      "silencedBy": [],
+      "inhibitedBy": []
+     },
+     "generatorURL": "http://prometheus.example:9090/graph?g0.expr=sum%28rate%28http_requests_total%7Bservice%3D%22orders-api%22%2Ccode%3D~%225..%22%7D%5B1m%5D%29%29+%2F+sum%28rate%28http_requests_total%7Bservice%3D%22orders-api%22%7D%5B1m%5D%29%29+%3E+0.05&g0.tab=1"
+    },
+    {
+     "labels": {
+      "alertname": "PaymentsDown",
+      "service": "payments-api",
+      "environment": "production",
+      "severity": "page"
+     },
+     "annotations": {
+      "summary": "PaymentsDown on payments-api",
+      "value": "1",
+      "threshold": "0.05"
+     },
+     "startsAt": "2026-11-19T10:01:00.000Z",
+     "endsAt": "2026-11-19T10:40:00.000Z",
+     "updatedAt": "2026-11-19T10:01:00.000Z",
+     "fingerprint": "1111111111111111",
+     "receivers": [
+      {
+       "name": "orders-oncall"
+      }
+     ],
+     "status": {
+      "state": "active",
+      "silencedBy": [],
+      "inhibitedBy": []
+     },
+     "generatorURL": "http://prometheus.example:9090/graph?g0.expr=sum%28rate%28http_requests_total%7Bservice%3D%22orders-api%22%2Ccode%3D~%225..%22%7D%5B1m%5D%29%29+%2F+sum%28rate%28http_requests_total%7Bservice%3D%22orders-api%22%7D%5B1m%5D%29%29+%3E+0.05&g0.tab=1"
+    },
+    {
+     "labels": {
+      "alertname": "OrdersApiHighErrorRate",
+      "service": "orders-api",
+      "environment": "staging",
+      "severity": "page"
+     },
+     "annotations": {
+      "summary": "OrdersApiHighErrorRate on orders-api",
+      "value": "0.3",
+      "threshold": "0.05"
+     },
+     "startsAt": "2026-11-19T10:02:00.000Z",
+     "endsAt": "2026-11-19T10:40:00.000Z",
+     "updatedAt": "2026-11-19T10:02:00.000Z",
+     "fingerprint": "2222222222222222",
+     "receivers": [
+      {
+       "name": "orders-oncall"
+      }
+     ],
+     "status": {
+      "state": "active",
+      "silencedBy": [],
+      "inhibitedBy": []
+     },
+     "generatorURL": "http://prometheus.example:9090/graph?g0.expr=sum%28rate%28http_requests_total%7Bservice%3D%22orders-api%22%2Ccode%3D~%225..%22%7D%5B1m%5D%29%29+%2F+sum%28rate%28http_requests_total%7Bservice%3D%22orders-api%22%7D%5B1m%5D%29%29+%3E+0.05&g0.tab=1"
+    }
+   ]
+  },
+  {
+   "method": "GET",
+   "path": "/api/search",
+   "when": [
+    "slow-api"
+   ],
+   "status": 200,
+   "timeout": true,
+   "body": {}
+  },
+  {
+   "method": "GET",
+   "path": "/api/search",
+   "when": [
+    "orders-api"
+   ],
+   "status": 200,
+   "body": {
+    "traces": [
+     {
+      "traceID": "4bf92f3577b34da6a3ce929d0e0e4736",
+      "rootServiceName": "edge",
+      "rootTraceName": "POST /checkout",
+      "startTimeUnixNano": "1795082465000000000",
+      "durationMs": 12,
+      "spanSets": [
+       {
+        "spans": [
+         {
+          "spanID": "a3ce929d0e0e4736",
+          "startTimeUnixNano": "1795082465000000000",
+          "durationNanos": "10000000",
+          "attributes": [
+           {
+            "key": "status",
+            "value": {
+             "stringValue": "error"
+            }
+           }
+          ]
+         }
+        ],
+        "matched": 1
+       }
+      ]
+     },
+     {
+      "traceID": "0af7651916cd43dd8448eb211c80319c",
+      "rootServiceName": "orders-api",
+      "rootTraceName": "GET /health",
+      "startTimeUnixNano": "1795082470000000000",
+      "durationMs": 2,
+      "spanSets": []
+     },
+     {
+      "traceID": "not-hex!",
+      "rootServiceName": "orders-api",
+      "rootTraceName": "x",
+      "startTimeUnixNano": "0",
+      "durationMs": 1
+     }
+    ],
+    "metrics": {
+     "inspectedTraces": 200,
+     "totalBlocks": 4
+    }
+   }
+  },
+  {
+   "method": "GET",
+   "path": "/api/traces/4bf92f3577b34da6a3ce929d0e0e4736",
+   "status": 200,
+   "body": {
+    "batches": [
+     {
+      "resource": {
+       "attributes": [
+        {
+         "key": "service.name",
+         "value": {
+          "stringValue": "orders-api"
+         }
+        },
+        {
+         "key": "deployment.environment",
+         "value": {
+          "stringValue": "production"
+         }
+        }
+       ]
+      },
+      "scopeSpans": [
+       {
+        "scope": {
+         "name": "opentelemetry.instrumentation.flask"
+        },
+        "spans": [
+         {
+          "traceId": "S/kvNXezTaajzpKdDg5HNg==",
+          "spanId": "AAAAAAAAAAE=",
+          "name": "POST /checkout",
+          "kind": "SPAN_KIND_SERVER",
+          "startTimeUnixNano": "1795082465000000000",
+          "endTimeUnixNano": "1795082465012000000",
+          "attributes": [
+           {
+            "key": "http.route",
+            "value": {
+             "stringValue": "/checkout"
+            }
+           },
+           {
+            "key": "http.response.status_code",
+            "value": {
+             "intValue": "500"
+            }
+           },
+           {
+            "key": "service.version",
+            "value": {
+             "stringValue": "1.4.0"
+            }
+           }
+          ],
+          "events": [
+           {
+            "timeUnixNano": "1795082465000000000",
+            "name": "exception",
+            "attributes": [
+             {
+              "key": "exception.type",
+              "value": {
+               "stringValue": "KeyError"
+              }
+             },
+             {
+              "key": "exception.message",
+              "value": {
+               "stringValue": "'TAX_RATE'"
+              }
+             },
+             {
+              "key": "exception.stacktrace",
+              "value": {
+               "stringValue": "Traceback ..."
+              }
+             }
+            ]
+           }
+          ],
+          "status": {
+           "code": "STATUS_CODE_ERROR"
+          }
+         },
+         {
+          "traceId": "S/kvNXezTaajzpKdDg5HNg==",
+          "spanId": "AAAAAAAAAAE=",
+          "name": "orders.service.place_order",
+          "kind": "SPAN_KIND_SERVER",
+          "startTimeUnixNano": "1795082465000999936",
+          "endTimeUnixNano": "1795082465009999872",
+          "attributes": [
+           {
+            "key": "code.filepath",
+            "value": {
+             "stringValue": "orders/service.py"
+            }
+           },
+           {
+            "key": "code.function",
+            "value": {
+             "stringValue": "place_order"
+            }
+           },
+           {
+            "key": "app.config.read",
+            "value": {
+             "stringValue": "TAX_RATE"
+            }
+           }
+          ],
+          "events": [],
+          "status": {
+           "code": "STATUS_CODE_ERROR"
+          }
+         },
+         {
+          "traceId": "S/kvNXezTaajzpKdDg5HNg==",
+          "spanId": "AAAAAAAAAAE=",
+          "name": "SELECT cart",
+          "kind": "SPAN_KIND_SERVER",
+          "startTimeUnixNano": "1795082465002000128",
+          "endTimeUnixNano": "1795082465004000000",
+          "attributes": [
+           {
+            "key": "db.system",
+            "value": {
+             "stringValue": "postgresql"
+            }
+           }
+          ],
+          "events": [],
+          "status": {
+           "code": "STATUS_CODE_OK"
+          }
+         }
+        ]
+       }
+      ]
+     },
+     {
+      "resource": {
+       "attributes": [
+        {
+         "key": "service.name",
+         "value": {
+          "stringValue": "payments-api"
+         }
+        },
+        {
+         "key": "deployment.environment",
+         "value": {
+          "stringValue": "production"
+         }
+        }
+       ]
+      },
+      "scopeSpans": [
+       {
+        "scope": {
+         "name": "opentelemetry.instrumentation.flask"
+        },
+        "spans": [
+         {
+          "traceId": "S/kvNXezTaajzpKdDg5HNg==",
+          "spanId": "AAAAAAAAAAE=",
+          "name": "charge",
+          "kind": "SPAN_KIND_SERVER",
+          "startTimeUnixNano": "1795082465005000192",
+          "endTimeUnixNano": "1795082465006000128",
+          "attributes": [
+           {
+            "key": "secret.note",
+            "value": {
+             "stringValue": "someone else"
+            }
+           }
+          ],
+          "events": [],
+          "status": {
+           "code": "STATUS_CODE_ERROR"
+          }
+         }
+        ]
+       }
+      ]
+     }
+    ]
+   }
+  },
+  {
+   "method": "GET",
+   "path": "/api/traces/0af7651916cd43dd8448eb211c80319c",
+   "status": 200,
+   "body": {
+    "batches": [
+     {
+      "resource": {
+       "attributes": [
+        {
+         "key": "service.name",
+         "value": {
+          "stringValue": "orders-api"
+         }
+        },
+        {
+         "key": "deployment.environment",
+         "value": {
+          "stringValue": "production"
+         }
+        }
+       ]
+      },
+      "scopeSpans": [
+       {
+        "scope": {
+         "name": "opentelemetry.instrumentation.flask"
+        },
+        "spans": [
+         {
+          "traceId": "S/kvNXezTaajzpKdDg5HNg==",
+          "spanId": "AAAAAAAAAAE=",
+          "name": "GET /health",
+          "kind": "SPAN_KIND_SERVER",
+          "startTimeUnixNano": "1795082470000000000",
+          "endTimeUnixNano": "1795082470002000128",
+          "attributes": [],
+          "events": [],
+          "status": {}
+         }
+        ]
+       }
+      ]
+     }
+    ]
+   }
+  },
+  {
+   "method": "GET",
+   "path": "/loki/api/v1/query_range",
+   "when": [
+    "count_over_time",
+    "broken-api"
+   ],
+   "status": 400,
+   "body": {
+    "status": "error",
+    "error": "parse error"
+   }
+  },
+  {
+   "method": "GET",
+   "path": "/loki/api/v1/query_range",
+   "when": [
+    "count_over_time"
+   ],
+   "status": 200,
+   "body": {
+    "status": "success",
+    "data": {
+     "resultType": "matrix",
+     "result": [
+      {
+       "metric": {
+        "error_type": "TimeoutError",
+        "error_message": "upstream timed out",
+        "version": "1.4.0"
+       },
+       "values": [
+        [
+         1795082700,
+         "0"
+        ],
+        [
+         1795082760,
+         "2"
+        ]
+       ]
+      },
+      {
+       "metric": {
+        "error_type": "KeyError",
+        "error_message": "'TAX_RATE'",
+        "version": "1.4.0"
+       },
+       "values": [
+        [
+         1795082460,
+         "3"
+        ],
+        [
+         1795082520,
+         "5"
+        ]
+       ]
+      },
+      {
+       "metric": {
+        "error_type": "KeyError",
+        "error_message": "'TAX_RATE'",
+        "version": "1.3.2"
+       },
+       "values": [
+        [
+         1795082520,
+         "1"
+        ]
+       ]
+      }
+     ],
+     "stats": {}
+    }
+   }
+  },
+  {
+   "method": "GET",
+   "path": "/api/v1/query",
+   "when": [
+    "broken-dep"
+   ],
+   "status": 422,
+   "body": {
+    "status": "error",
+    "errorType": "execution",
+    "error": "query timed out"
+   }
+  },
+  {
+   "method": "GET",
+   "path": "/api/v1/query",
+   "when": [
+    "dep_errors",
+    "orders-db"
+   ],
+   "status": 200,
+   "body": {
+    "status": "success",
+    "data": {
+     "resultType": "vector",
+     "result": [
+      {
+       "metric": {
+        "service": "orders-api"
+       },
+       "value": [
+        1795083000,
+        "0.002"
+       ]
+      }
+     ]
+    }
+   }
+  },
+  {
+   "method": "GET",
+   "path": "/api/v1/query",
+   "when": [
+    "dep_latency",
+    "orders-db"
+   ],
+   "status": 200,
+   "body": {
+    "status": "success",
+    "data": {
+     "resultType": "vector",
+     "result": [
+      {
+       "metric": {},
+       "value": [
+        1795083000,
+        "0.004"
+       ]
+      }
+     ]
+    }
+   }
+  },
+  {
+   "method": "GET",
+   "path": "/api/v1/query",
+   "when": [
+    "dep_errors",
+    "payment-gateway"
+   ],
+   "status": 200,
+   "body": {
+    "status": "success",
+    "data": {
+     "resultType": "vector",
+     "result": [
+      {
+       "metric": {},
+       "value": [
+        1795083000,
+        "0.2"
+       ]
+      }
+     ]
+    }
+   }
+  },
+  {
+   "method": "GET",
+   "path": "/api/v1/query",
+   "when": [
+    "dep_latency",
+    "payment-gateway"
+   ],
+   "status": 200,
+   "body": {
+    "status": "success",
+    "data": {
+     "resultType": "vector",
+     "result": []
+    }
+   }
+  },
+  {
+   "method": "GET",
+   "path": "/api/v1/query",
+   "when": [
+    "dep_errors",
+    "two-series"
+   ],
+   "status": 200,
+   "body": {
+    "status": "success",
+    "data": {
+     "resultType": "vector",
+     "result": [
+      {
+       "metric": {
+        "instance": "a"
+       },
+       "value": [
+        1795082400,
+        "0.1"
+       ]
+      },
+      {
+       "metric": {
+        "instance": "b"
+       },
+       "value": [
+        1795082400,
+        "0.2"
+       ]
+      }
+     ]
+    }
+   }
+  }
+ ]
+}

@@ -36,7 +36,7 @@ import os.path
 import re
 import urllib.error
 import urllib.request
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Iterable, Mapping
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from typing import Any, Protocol
@@ -228,6 +228,122 @@ def log_record(fields: Mapping[str, Any], ts: str, line: str) -> Record:
         "path": f"{method or ''} {path or ''}".strip() or None,
         "status": http.get("status") or fields.get("status_code"),
     }
+
+
+# ---------------------------------------------------------------------------
+# Shared by the adapters for alerts, traces, error groups and dependency health (M5, ADR-75)
+# ---------------------------------------------------------------------------
+MAX_ALERTS = 20  # alerts kept per get_alert call: the tool's 16 KB holds about that many
+MAX_TRACES = 5  # traces read in full per get_traces call (each is a further request)
+_FRAME = re.compile(r'File "([^"]+)", line (\d+)')
+_DEP_NAME = re.compile(r"^[A-Za-z0-9_.:/-]{1,100}$")
+_DEP_KEYS = {"kind", "error_rate", "latency_p95", "max_error_rate", "max_latency_s"}
+DEPENDENCY_MEASURES = ("error_rate", "latency_p95")
+
+
+def frames_from(stack: str | None) -> list[list[str]]:
+    """`[file, line]` for each frame of a Python traceback, in order, without repeats (the
+    fake error tracker's rule, ops/fakes/monitoring.py)."""
+    out: list[list[str]] = []
+    for frame in _FRAME.findall(stack or ""):
+        if list(frame) not in out:
+            out.append(list(frame))
+    return out
+
+
+def error_group_records(rows: Iterable[Mapping[str, Any]]) -> list[Record]:
+    """Error groups from rows already counted by a source, one row per (type, message, version):
+    `{type, message, version?, count, first_seen, last_seen, frames?}`. Rows of one type and
+    message merge: counts add, first and last sighting widen, versions and frames gather. In
+    order of first sighting, as the fake error tracker gives them."""
+    groups: dict[tuple[str, str], Record] = {}
+    for r in rows:
+        if not r.get("count"):
+            continue
+        key = (str(r.get("type") or ""), str(r.get("message") or ""))
+        g = groups.setdefault(
+            key,
+            {
+                "type": key[0] or None,
+                "message": key[1] or None,
+                "count": 0,
+                "first_seen": r["first_seen"],
+                "last_seen": r["last_seen"],
+                "versions": [],
+                "frames": [],
+            },
+        )
+        g["count"] += int(r["count"])
+        g["first_seen"] = min(g["first_seen"], r["first_seen"], key=parse_time)
+        g["last_seen"] = max(g["last_seen"], r["last_seen"], key=parse_time)
+        if r.get("version") and r["version"] not in g["versions"]:
+            g["versions"].append(r["version"])
+        for frame in r.get("frames") or []:
+            if list(frame) not in g["frames"]:
+                g["frames"].append(list(frame))
+    for g in groups.values():
+        g["versions"].sort()
+    return sorted(groups.values(), key=lambda g: parse_time(g["first_seen"]))
+
+
+def dependency_specs(deps: Any, what: str) -> dict[str, dict[str, Any]]:
+    """`{name: {"kind": ..., "error_rate": query?, "latency_p95": query?, "max_error_rate":
+    0.05, "max_latency_s": seconds}}`: the service's dependencies and the queries that measure
+    each, written by its owners. A name is a plain value (it is put in queries as
+    `$dependency`); at least one query each; a latency query needs its limit."""
+    if not isinstance(deps, Mapping) or not deps:
+        raise ValueError(f"{what}: dependencies is {{name: {{kind, error_rate, latency_p95}}}}")
+    out: dict[str, dict[str, Any]] = {}
+    for name, spec in deps.items():
+        if not isinstance(name, str) or not _DEP_NAME.match(name):
+            raise ValueError(f"{what}: dependency name {name!r} is not a plain value")
+        if not isinstance(spec, Mapping) or set(spec) - _DEP_KEYS:
+            raise ValueError(f"{what}: dependency {name} takes {', '.join(sorted(_DEP_KEYS))}")
+        if not isinstance(spec.get("kind"), str):
+            raise ValueError(f"{what}: dependency {name} needs a kind")
+        queries = {m: spec[m] for m in DEPENDENCY_MEASURES if m in spec}
+        if not queries or not all(isinstance(q, str) and q for q in queries.values()):
+            raise ValueError(f"{what}: dependency {name} needs an error_rate or latency_p95 query")
+        limits = {"max_error_rate": spec.get("max_error_rate", 0.05)}
+        if "latency_p95" in queries:
+            limits["max_latency_s"] = spec.get("max_latency_s")
+        if not all(isinstance(v, int | float) and v > 0 for v in limits.values()):
+            raise ValueError(f"{what}: dependency {name}: limits are positive numbers")
+        out[name] = {"kind": spec["kind"], "queries": queries, **limits}
+    return out
+
+
+def dependency_record(
+    name: str, spec: Mapping[str, Any], measured: Mapping[str, float | None], at: datetime, how: str
+) -> Record:
+    """One dependency's health from what its queries measured at `at`. Any measure without
+    data is `unknown`, never healthy; over a limit is `degraded`. A failed query never gets
+    here: it is a gap for the whole call (ADR-54)."""
+    parts, missing, over = [], [], []
+    for m in spec["queries"]:
+        v = measured.get(m)
+        limit = spec["max_error_rate"] if m == "error_rate" else spec["max_latency_s"]
+        unit = "" if m == "error_rate" else " s"
+        if v is None:
+            missing.append(m)
+            parts.append(f"{m}: no data")
+            continue
+        if v >= limit:
+            over.append(m)
+        parts.append(f"{m} {v:g}{unit} (limit {limit:g}{unit})")
+    status = "unknown" if missing else "degraded" if over else "healthy"
+    return {
+        "name": name,
+        "kind": spec["kind"],
+        "status": status,
+        "observed_at": utc_text(at),
+        "detail": "; ".join(parts) + f", {how}",
+    }
+
+
+def iso_ms(t: datetime) -> str:
+    """A span's time: UTC to the millisecond, `Z`, as the fake's traces give it."""
+    return t.astimezone(UTC).strftime("%Y-%m-%dT%H:%M:%S.%f")[:-3] + "Z"
 
 
 def wanted_levels(level: str | None) -> set[str]:
@@ -504,6 +620,8 @@ ADAPTERS: dict[str, Callable[..., Source]] = {
     # Real sources (M5, ADR-75): read-only, credentials by reference (SecretRef).
     "prometheus": _lazy("aisre.evidence.prometheus", "PrometheusSource"),
     "loki": _lazy("aisre.evidence.prometheus", "LokiSource"),
+    "alertmanager": _lazy("aisre.evidence.prometheus", "AlertmanagerSource"),
+    "tempo": _lazy("aisre.evidence.prometheus", "TempoSource"),
     "datadog": _lazy("aisre.evidence.datadog", "DatadogSource"),
     "cloudwatch": _lazy("aisre.evidence.cloudwatch", "CloudWatchSource"),
 }
