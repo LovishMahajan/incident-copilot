@@ -40,16 +40,22 @@ INSERT INTO environments (environment_id, org_id, slug) VALUES ('<uuid7>', '<org
 
 Lookup is most specific first: `payments-api/production`, then `payments-api`, then `"sources"`. A service no scope covers gets a `gap` for every source, never another service's data, and the diagnosis says what is missing. A misspelt tool or an unknown adapter stops the worker at start.
 
-Each adapter's arguments are its own (its module docstring). Credentials are named by reference, `{"env": "NAME"}` or `{"file": "/path"}`, never written into this JSON; a value given directly is refused at start. Queries are yours: `$service` and `$environment` are put in for each call, quoted for the query language, and `$levels` (logs) is the levels asked for. Each metric is `{"value": query, "requests": query}` (`requests` is optional, and only read for `http_5xx_rate` and `error_rate_by_version`, whose query returns one series per version). `fake_monitoring` is local use only and refused in production. The real adapters, all read-only and **tested against recorded responses only, not yet against a real account** (ADR-75):
+Each adapter's arguments are its own (its module docstring). Credentials are named by reference, `{"env": "NAME"}` or `{"file": "/path"}`, never written into this JSON; a value given directly is refused at start. Queries are yours: `$service` and `$environment` are put in for each call, quoted for the query language, and `$levels` (logs) is the levels asked for. Each metric is `{"value": query, "requests": query}` (`requests` is optional, and only read for `http_5xx_rate` and `error_rate_by_version`, whose query returns one series per version). `fake_monitoring` is local use only and refused in production. The real adapters, all read-only and **tested against recorded responses only, not yet against a real account** (ADR-75). "Derived" means the platform builds the answer from data the vendor holds for another purpose, by a query you write; "native" means the vendor answers that question itself:
 
 | Adapter | Tools | Credentials |
 | --- | --- | --- |
-| `prometheus` | `get_metric` (HTTP API v1 `query_range`) | optional bearer `token`, or `username` and `token` for basic auth; optional `tenant` |
-| `loki` | `get_logs` (`/loki/api/v1/query_range`) | as Prometheus |
-| `datadog` | `get_metric` (v1 query), `get_logs` (v2 logs search), `get_changes` (v1 events) | `api_key` and `app_key`, the application key scoped read-only; `site` |
-| `cloudwatch` | `get_metric` (GetMetricData), `get_logs` (FilterLogEvents) | the standard AWS chain (optional `profile`); needs the `aws` extra, `uv sync --extra aws` |
+| `prometheus` | `get_metric` (HTTP API v1 `query_range`); `get_dependency_health`, derived (instant queries per dependency) | optional bearer `token`, or `username` and `token` for basic auth; optional `tenant` |
+| `loki` | `get_logs` (`/loki/api/v1/query_range`); `get_error_groups`, derived (a LogQL `count_over_time` by type, message and version: no stacks, so no frames) | as Prometheus |
+| `alertmanager` | `get_alert` (API v2 `/api/v2/alerts`, active alerts labelled with the service) | as Prometheus |
+| `tempo` | `get_traces` (TraceQL `/api/search`, then `/api/traces/<id>`) | as Prometheus |
+| `datadog` | `get_metric` (v1 query), `get_logs` (v2 logs search), `get_changes` (v1 events), `get_alert` (v1 monitors in Alert or Warn), `get_traces` (v2 spans search), `get_error_groups` (v2 Error Tracking, native), `get_dependency_health`, derived (v1 query per dependency) | `api_key` and `app_key`, the application key scoped read-only; `site` |
+| `cloudwatch` | `get_metric` (GetMetricData), `get_logs` (FilterLogEvents), `get_alert` (DescribeAlarms), `get_traces` (X-Ray), `get_error_groups`, derived (Logs Insights `stats ... by`), `get_dependency_health`, derived (GetMetricData per dependency) | the standard AWS chain (optional `profile`); needs the `aws` extra, `uv sync --extra aws` |
 
-No adapter answers `get_alert`, `get_traces`, `get_error_groups` or `get_dependency_health` yet, so the go-live check fails until each has a source or the check is changed (ADR-75). Prometheus and Loki:
+**Dependency health** is the same everywhere: you name each dependency and the query that measures it, `{"<name>": {"kind": "postgresql", "error_rate": query, "latency_p95": query, "max_error_rate": 0.05, "max_latency_s": 0.5}}`, with `$dependency` put in like `$service`. Over a limit is `degraded`; a measure with no data is `unknown`, never `healthy`; a query that fails makes the whole call a gap.
+
+**Allowed gaps.** Neither the Prometheus stack nor CloudWatch holds a change history, so no adapter here answers `get_changes` for them (Datadog's deployment events do). Every source tool needs a source for `aisre pilot check` to pass. If your service's owners accept going without one, say so in its scope, with the reason: `"allowed_gaps": [{"tool": "get_changes", "reason": "..."}]`. The check then prints a `WARN` line with the reason instead of failing, and every call for that tool is still a `gap` in the evidence, which the diagnosis names. Without change history no evidence gets a strength tier (ADR-53), so the diagnosis can't pass low; treat this as a known weakness of the pilot for that service, not a fix. A `"*"` whose adapter can't answer a tool (`"*": cloudwatch` for `get_changes`) counts as no source.
+
+The Prometheus stack (Prometheus, Loki, Alertmanager, Tempo), all seven tools:
 
 ```json
 {"services": {"payments-api/production": {
@@ -63,13 +69,35 @@ No adapter answers `get_alert`, `get_traces`, `get_error_groups` or `get_depende
         "value": "sum by (version) (rate(http_requests_total{service=\"$service\",code=~\"5..\"}[1m])) / sum by (version) (rate(http_requests_total{service=\"$service\"}[1m]))",
         "requests": "sum by (version) (increase(http_requests_total{service=\"$service\"}[1m]))"}},
     "environment_label": "env"},
+  "get_dependency_health": {"adapter": "prometheus", "url": "https://prometheus.internal.example",
+    "token": {"file": "/run/secrets/prometheus-token"}, "environment_label": "env",
+    "dependencies": {
+      "payments-db": {"kind": "postgresql",
+        "error_rate": "sum(rate(db_client_errors_total{service=\"$service\",db=\"$dependency\"}[5m])) / sum(rate(db_client_calls_total{service=\"$service\",db=\"$dependency\"}[5m]))",
+        "latency_p95": "histogram_quantile(0.95, sum by (le) (rate(db_client_duration_seconds_bucket{service=\"$service\",db=\"$dependency\"}[5m])))",
+        "max_latency_s": 0.25},
+      "card-network": {"kind": "third_party_http",
+        "error_rate": "sum(rate(http_client_requests_total{service=\"$service\",peer=\"$dependency\",code=~\"5..\"}[5m])) / sum(rate(http_client_requests_total{service=\"$service\",peer=\"$dependency\"}[5m]))"}}},
   "get_logs": {"adapter": "loki", "url": "https://loki.internal.example", "tenant": "payments",
     "token": {"env": "LOKI_READ_TOKEN"},
     "query": "{service=\"$service\", env=\"$environment\"} | json | level=~\"$levels\"",
-    "environment_label": "env"}}}}
+    "environment_label": "env"},
+  "get_error_groups": {"adapter": "loki", "url": "https://loki.internal.example", "tenant": "payments",
+    "token": {"env": "LOKI_READ_TOKEN"},
+    "error_groups": {"selector": "{service=\"$service\", env=\"$environment\"} | json | level=\"error\"",
+      "type_label": "error_type", "message_label": "error_message", "version_label": "version"}},
+  "get_alert": {"adapter": "alertmanager", "url": "https://alertmanager.internal.example",
+    "token": {"env": "ALERTMANAGER_READ_TOKEN"}, "environment_label": "env"},
+  "get_traces": {"adapter": "tempo", "url": "https://tempo.internal.example", "tenant": "payments",
+    "token": {"env": "TEMPO_READ_TOKEN"},
+    "query": "{ resource.service.name = \"$service\" && resource.deployment.environment = \"$environment\" && status = error }"},
+  "allowed_gaps": [{"tool": "get_changes",
+    "reason": "No deployment history reachable from the Prometheus stack; responders read the release log by hand"}]}}}
 ```
 
-Datadog (`$levels` becomes `(error OR warn)`, or the one level asked for):
+Alertmanager keeps no value or threshold of its own: put them in the rule's annotations (`value: "{{ $value }}"`, `threshold: "0.05"`), or they stay empty. It doesn't hold when the condition began either, so the breach start is empty; the rule's expression is read from the alert's Prometheus link.
+
+Datadog, all seven tools from one adapter (`$levels` becomes `(error OR warn)`, or the one level asked for):
 
 ```json
 {"services": {"payments-api/production": {"*": {"adapter": "datadog", "site": "datadoghq.eu",
@@ -80,20 +108,47 @@ Datadog (`$levels` becomes `(error OR warn)`, or the one level asked for):
     "error_rate_by_version": {"value": "sum:trace.http.request.errors{service:$service,env:$environment} by {version}.as_rate() / sum:trace.http.request.hits{service:$service,env:$environment} by {version}.as_rate()",
       "requests": "sum:trace.http.request.hits{service:$service,env:$environment} by {version}.as_count()"}},
   "logs_query": "service:$service env:$environment status:$levels",
-  "events_tags": "service:$service,env:$environment", "events_sources": "github"}}}}
+  "events_tags": "service:$service,env:$environment", "events_sources": "github",
+  "monitor_tags": "service:$service,env:$environment",
+  "spans_query": "service:$service env:$environment",
+  "error_tracking_query": "service:$service env:$environment", "error_tracking_track": "trace",
+  "dependencies": {
+    "payments-db": {"kind": "postgresql",
+      "error_rate": "sum:trace.postgres.query.errors{service:$service,env:$environment}.as_rate() / sum:trace.postgres.query.hits{service:$service,env:$environment}.as_rate()",
+      "latency_p95": "p95:trace.postgres.query{service:$service,env:$environment}",
+      "max_latency_s": 0.25},
+    "card-network": {"kind": "third_party_http",
+      "error_rate": "sum:trace.http.request.errors{service:$service,env:$environment,peer.service:$dependency}.as_rate() / sum:trace.http.request.hits{service:$service,env:$environment,peer.service:$dependency}.as_rate()"}}}}}}
 ```
 
-Deployment events need `service:`, `env:` and `version:` tags (and `previous_version:` if you have it); Datadog doesn't hold the files or configuration keys a release changed, so the fact rules have less to go on than with a full change history. CloudWatch (the worker's role needs only `cloudwatch:GetMetricData` and `logs:FilterLogEvents` on the service's log groups):
+Deployment events need `service:`, `env:` and `version:` tags (and `previous_version:` if you have it); Datadog doesn't hold the files or configuration keys a release changed, so the fact rules have less to go on than with a full change history. Monitors must be tagged `service:` (and `env:`); a monitor holds its query and threshold, not the value that triggered it. The application key needs `monitors_read`, `apm_read` and `error_tracking_read` besides the pass-2 scopes.
+
+CloudWatch, with X-Ray and Logs Insights (the worker's role needs only `cloudwatch:GetMetricData`, `cloudwatch:DescribeAlarms`, `logs:FilterLogEvents`, `logs:StartQuery` and `logs:GetQueryResults` on the service's log groups, `xray:GetTraceSummaries` and `xray:BatchGetTraces`; with `alarm_tags`, `cloudwatch:ListTagsForResource`):
 
 ```json
-{"services": {"payments-api/production": {"*": {"adapter": "cloudwatch", "region": "eu-west-1",
-  "metrics": {
-    "http_5xx_rate": {"value": "SUM(SEARCH('{App,Service,Env} Service=\"$service\" Env=\"$environment\" MetricName=\"5xxRate\"', 'Average', 60))",
-      "requests": "SUM(SEARCH('{App,Service,Env} Service=\"$service\" Env=\"$environment\" MetricName=\"Requests\"', 'Sum', 60))"},
-    "error_rate_by_version": {"value": "SEARCH('{App,Service,Env,version} Service=\"$service\" Env=\"$environment\" MetricName=\"5xxRate\"', 'Average', 60)"}},
-  "log_group": "/ecs/$service-$environment",
-  "filter_pattern": "{ $.level = \"error\" || $.level = \"warn\" }"}}}}
+{"services": {"payments-api/production": {
+  "*": {"adapter": "cloudwatch", "region": "eu-west-1",
+    "metrics": {
+      "http_5xx_rate": {"value": "SUM(SEARCH('{App,Service,Env} Service=\"$service\" Env=\"$environment\" MetricName=\"5xxRate\"', 'Average', 60))",
+        "requests": "SUM(SEARCH('{App,Service,Env} Service=\"$service\" Env=\"$environment\" MetricName=\"Requests\"', 'Sum', 60))"},
+      "error_rate_by_version": {"value": "SEARCH('{App,Service,Env,version} Service=\"$service\" Env=\"$environment\" MetricName=\"5xxRate\"', 'Average', 60)"}},
+    "log_group": "/ecs/$service-$environment",
+    "filter_pattern": "{ $.level = \"error\" || $.level = \"warn\" }",
+    "alarm_dimensions": {"Service": "$service", "Env": "$environment"},
+    "traces_filter": "service(\"$service\") { fault = true } AND annotation.environment = \"$environment\"",
+    "error_groups_query": "fields error.type as type, error.message as message, version | filter level = \"error\" | stats count(*) as count, min(@timestamp) as first_seen, max(@timestamp) as last_seen, latest(error.stack) as stack by type, message, version",
+    "dependencies": {
+      "payments-db": {"kind": "postgresql",
+        "error_rate": "SUM(SEARCH('{App,Service,Dependency} Service=\"$service\" Dependency=\"$dependency\" MetricName=\"DbErrorRate\"', 'Average', 60))",
+        "latency_p95": "MAX(SEARCH('{AWS/RDS,DBInstanceIdentifier} DBInstanceIdentifier=\"$dependency\" MetricName=\"ReadLatency\"', 'Maximum', 60))",
+        "max_latency_s": 0.05},
+      "card-network": {"kind": "third_party_http",
+        "error_rate": "SUM(SEARCH('{App,Service,Peer} Service=\"$service\" Peer=\"$dependency\" MetricName=\"ClientErrorRate\"', 'Average', 60))"}}},
+  "allowed_gaps": [{"tool": "get_changes",
+    "reason": "CloudWatch holds no change history and no deployment source is wired yet; responders read the release log by hand"}]}}}
 ```
+
+The error-groups query must name its output columns `type`, `message`, `count`, `first_seen` and `last_seen` (and may add `version` and a Python `stack`, whose `File "...", line N` frames become the group's); the query runs at most the call's 20 s, else the call is a gap. Each dependency expression must return one series.
 
 ## 3. Runbooks and past incidents
 
@@ -150,6 +205,6 @@ uv run python -m aisre.cli pilot check --service payments-api --service orders-a
   --alertmanager /path/to/alertmanager.yml
 ```
 
-It prints one PASS or FAIL line per check and exits 1 on any FAIL; it names variables, never their values. It passes only when Release A holds: production, no release credential, remediation off, nothing fake or development-only (scripted skills, `runc`, fake adapters, development signing keys, the fake pager), a real model key with every task's alias pinned, the GitHub review system with a repository for each named service, evidence sources answering every source tool for each named service in `production` with every credential they reference present, and a paging receiver for each role. What it can't tell, check by hand on the first day: that each credential works, each source answers (post a test alert and read the evidence; a `gap` names the failing source), and a page reaches a person.
+It prints one PASS, WARN or FAIL line per check and exits 1 on any FAIL; it names variables, never their values. It passes only when Release A holds: production, no release credential, remediation off, nothing fake or development-only (scripted skills, `runc`, fake adapters, development signing keys, the fake pager), a real model key with every task's alias pinned, the GitHub review system with a repository for each named service, evidence sources answering every source tool for each named service in `production` (or a WARN for each allowed gap, with its reason) with every credential they reference present, and a paging receiver for each role. What it can't tell, check by hand on the first day: that each credential works, each source answers (post a test alert and read the evidence; a `gap` names the failing source), and a page reaches a person.
 
 Once incidents run, the incident lead records each review (`aisre incident review <id> review.json`), and the SRE lead runs `aisre pilot report`, `pilot baseline` and `pilot approvals` (README, Pilot readiness).

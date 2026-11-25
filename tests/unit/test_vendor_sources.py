@@ -571,11 +571,19 @@ def test_the_onboarding_guides_examples_load_in_production():
         for b in re.findall(r"```json\n(.*?)```", guide, re.S)
         if "<" not in b and '"services"' in b
     ]
-    assert {a["adapter"] for e in examples for s in e["services"].values() for a in s.values()} == {
-        "prometheus",
-        "loki",
-        "datadog",
-        "cloudwatch",
+    adapters = {
+        a["adapter"]
+        for e in examples
+        for scope in e["services"].values()
+        for tool, a in scope.items()
+        if tool != "allowed_gaps"
     }
+    assert adapters == {"prometheus", "loki", "alertmanager", "tempo", "datadog", "cloudwatch"}
+    assert len(examples) == 3  # one per stack, each covering all seven source tools
     for example in examples:
-        SourceSet.from_config(example, production=True)
+        loaded = SourceSet.from_config(example, production=True)
+        for tool in sources.SOURCE_TOOLS:
+            src = loaded.for_tool(tool, "payments-api", "production")
+            answered = src is not None and sources.answers(src, tool)
+            allowed = loaded.allowed_gap(tool, "payments-api", "production")
+            assert answered != (allowed is not None), (tool, example)
