@@ -73,6 +73,7 @@ from aisre.evidence.sources import (
     log_record,
     metric_queries,
     metric_records,
+    served,
     substitute,
     utc_text,
     wanted_levels,
@@ -191,6 +192,18 @@ class DatadogSource:
         if not isinstance(found, dict) or found.get("status") in ("error", "warn"):
             raise SourceUnavailable(f"{self.name}: the query failed")
         return found, link
+
+    def serves(self) -> frozenset[str]:
+        """The tools this configuration answers (aisre pilot check reads it)."""
+        return served(
+            get_metric=bool(self.metrics),
+            get_logs=self.logs_query is not None,
+            get_changes=True,
+            get_alert=True,
+            get_traces=True,
+            get_error_groups=True,
+            get_dependency_health=self.dependencies is not None,
+        )
 
     def fetch(self, tool: str, params: BaseModel, environment: str) -> SourceResult:
         p: Any = params

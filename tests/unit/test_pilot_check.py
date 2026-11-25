@@ -216,3 +216,69 @@ def test_evidence_credentials_referenced_must_be_present_and_are_never_printed(p
     present = {**env, "DD_API_KEY": SECRET, "DD_APP_KEY": SECRET}
     assert not [r for r in failing(present, paging) if r.name.startswith("evidence credentials")]
     assert SECRET not in "".join(r.line() for r in check.run(present, ["orders-api"], paging))
+
+
+def test_a_star_that_cannot_answer_a_tool_is_no_source(paging, monkeypatch):
+    """ADR-75: `"*": cloudwatch` covers get_changes in the configuration, but CloudWatch holds
+    no change history, so every call would be a gap: the check names it."""
+
+    class Partial(RealishSource):
+        def serves(self):
+            return frozenset(sources.SOURCE_TOOLS) - {"get_changes"}
+
+    monkeypatch.setitem(sources.ADAPTERS, "partial", Partial)
+    evidence = {"services": {"orders-api": {"*": {"adapter": "partial", "url": "https://m"}}}}
+    env = {**GOOD, "AISRE_EVIDENCE_SOURCES": json.dumps(evidence)}
+    (r,) = failing(env, paging, ["orders-api"])
+    assert r.name == "evidence sources for orders-api in production"
+    assert r.detail == "no source for get_changes"
+
+
+def test_an_allowed_gap_with_its_reason_is_a_warn_never_silent(paging, monkeypatch):
+    class Partial(RealishSource):
+        def serves(self):
+            return frozenset(sources.SOURCE_TOOLS) - {"get_changes"}
+
+    monkeypatch.setitem(sources.ADAPTERS, "partial", Partial)
+    reason = "No deployment events reach CloudWatch; responders read the release log by hand"
+    evidence = {
+        "services": {
+            "orders-api": {
+                "*": {"adapter": "partial", "url": "https://m"},
+                "allowed_gaps": [{"tool": "get_changes", "reason": reason}],
+            }
+        }
+    }
+    env = {**GOOD, "AISRE_EVIDENCE_SOURCES": json.dumps(evidence)}
+    results = check.run(env, ["orders-api"], paging)
+    assert all(r.ok for r in results)
+    (warn,) = [r for r in results if r.warn]
+    assert warn.line() == (
+        f"WARN  evidence gap allowed for orders-api: get_changes (every call is a gap): {reason}"
+    )
+    out = io.StringIO()
+    args = ["pilot", "check", "--service", "orders-api", "--alertmanager", str(paging)]
+    assert cli.main(args, env, out) == 0
+    assert "WARN  evidence gap allowed" in out.getvalue()
+    assert ", 1 warned, 0 failed: Release A holds" in out.getvalue().splitlines()[-1]
+    # Another service gets no allowance from it.
+    evidence["services"]["payments-api"] = {"*": {"adapter": "partial", "url": "https://m"}}
+    env = {**GOOD, "AISRE_EVIDENCE_SOURCES": json.dumps(evidence)}
+    (r,) = failing(env, paging)
+    assert r.name == "evidence sources for payments-api in production"
+
+
+@pytest.mark.parametrize(
+    "gaps, error",
+    [
+        ("get_changes", "is \\["),
+        ([{"tool": "get_changes"}], "is \\["),
+        ([{"tool": "get_change", "reason": "a long enough reason"}], "no evidence source"),
+        ([{"tool": "get_changes", "reason": "tbd"}], "stated reason"),
+        ([{"tool": "get_logs", "reason": "a long enough reason"}], "configured or listed twice"),
+    ],
+)
+def test_an_allowed_gap_needs_a_known_tool_and_a_reason(gaps, error):
+    scope = {"get_logs": {"adapter": "realish", "url": "https://l"}, "allowed_gaps": gaps}
+    with pytest.raises(ValueError, match=error):
+        sources.SourceSet.from_config({"services": {"orders-api": scope}})

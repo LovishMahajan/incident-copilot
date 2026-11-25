@@ -88,6 +88,7 @@ from aisre.evidence.sources import (
     metric_queries,
     metric_records,
     parse_time,
+    served,
     substitute,
     utc_text,
     wanted_levels,
@@ -193,6 +194,17 @@ class CloudWatchSource:
             raise SourceUnavailable(f"{self.name} {op}: {code}") from None
         except (exceptions.BotoCoreError, OSError) as e:
             raise SourceUnavailable(f"{self.name} {op}: {type(e).__name__}") from None
+
+    def serves(self) -> frozenset[str]:
+        """The tools this configuration answers (aisre pilot check reads it)."""
+        return served(
+            get_metric=bool(self.metrics),
+            get_logs=self.log_group is not None,
+            get_alert=True,
+            get_traces=True,
+            get_error_groups=self.error_groups_query is not None,
+            get_dependency_health=self.dependencies is not None,
+        )
 
     def fetch(self, tool: str, params: BaseModel, environment: str) -> SourceResult:
         p: Any = params

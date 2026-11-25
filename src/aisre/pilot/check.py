@@ -2,8 +2,9 @@
 
 Given the production settings (the process environment the API, worker and Test Runner will
 run with) and the pilot's services, it refuses unless Release A holds: advisory only, with
-nothing local, fake or development-only configured. Each check is one line, PASS or FAIL, and
-any FAIL makes the command exit 1.
+nothing local, fake or development-only configured. Each check is one line, PASS, WARN or FAIL, and
+any FAIL makes the command exit 1. A source tool a pilot service's owners accept going without,
+by an `allowed_gaps` entry with its reason (ADR-75), is a WARN line: it passes, and says so.
 
 It never prints a value: a check names environment variables and what is wrong with them,
 nothing they hold. Settings are read twice: once as given, which must load in production,
@@ -26,7 +27,7 @@ from urllib.parse import urlparse
 from pydantic import ValidationError
 
 from aisre.config import ENV_VARS, Settings
-from aisre.evidence.sources import SOURCE_TOOLS, SourceSet
+from aisre.evidence.sources import SOURCE_TOOLS, SourceSet, answers
 from aisre.gateway.adapters import CLAUDE_MODEL_IDS
 from aisre.gateway.gateway_contracts import TASK_MODEL_ALIAS
 from aisre.remediation.release import remediation_enabled
@@ -43,11 +44,11 @@ class Check:
     name: str
     ok: bool
     detail: str = ""
+    warn: bool = False  # passes, but says what the pilot goes without (an allowed gap)
 
     def line(self) -> str:
-        return f"{'PASS' if self.ok else 'FAIL'}  {self.name}" + (
-            f": {self.detail}" if self.detail else ""
-        )
+        status = "FAIL" if not self.ok else "WARN" if self.warn else "PASS"
+        return f"{status}  {self.name}" + (f": {self.detail}" if self.detail else "")
 
 
 def _errors(e: ValidationError) -> str:
@@ -196,16 +197,33 @@ def _evidence(s: Settings, services: Sequence[str], environ: Mapping[str, str]) 
     if not services:
         out.append(Check("pilot services named", False, "name each with --service"))
     for service in services:
-        missing = [
-            t for t in SOURCE_TOOLS if sources.for_tool(t, service, PILOT_ENVIRONMENT) is None
-        ]
+        missing = []
+        for tool in SOURCE_TOOLS:
+            source = sources.for_tool(tool, service, PILOT_ENVIRONMENT)
+            if source is None or not answers(source, tool):  # a "*" that can't answer it
+                missing.append(tool)
+        allowed = {
+            t: reason
+            for t in missing
+            if (reason := sources.allowed_gap(t, service, PILOT_ENVIRONMENT)) is not None
+        }
+        refused = [t for t in missing if t not in allowed]
         out.append(
             Check(
                 f"evidence sources for {service} in {PILOT_ENVIRONMENT}",
-                not missing,
-                f"no source for {', '.join(missing)}" if missing else "",
+                not refused,
+                f"no source for {', '.join(refused)}" if refused else "",
             )
         )
+        out += [
+            Check(
+                f"evidence gap allowed for {service}: {tool} (every call is a gap)",
+                True,
+                reason,
+                warn=True,
+            )
+            for tool, reason in allowed.items()
+        ]
     return out
 
 

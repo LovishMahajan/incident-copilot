@@ -1,7 +1,7 @@
 """Artifact 13.5 T5.1 to T5.4 (ADR-75): `aisre pilot ...`. aisre.cli parses; this runs.
 
     pilot check --service S [--service S ...] [--alertmanager FILE]
-        The go-live check (T5.1) on this process's environment: one PASS or FAIL line each,
+        The go-live check (T5.1) on this process's environment: one PASS, WARN or FAIL line each,
         exit 1 on any FAIL. Never prints a setting's value.
     pilot report --from T --to T [--out DIR]
         The pilot measures (T5.3) for incidents whose alert arrived in [from, to).
@@ -72,8 +72,9 @@ def main(args: argparse.Namespace, env: Mapping[str, str], out: IO[str]) -> int:
         for r in results:
             print(r.line(), file=out)
         failed = sum(not r.ok for r in results)
+        warned = sum(r.ok and r.warn for r in results)
         print(
-            f"{len(results) - failed} passed, {failed} failed: "
+            f"{len(results) - failed - warned} passed, {warned} warned, {failed} failed: "
             + ("Release A holds" if not failed else "refused"),
             file=out,
         )

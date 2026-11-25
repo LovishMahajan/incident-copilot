@@ -74,6 +74,7 @@ from aisre.evidence.sources import (
     metric_records,
     optional_ref,
     parse_time,
+    served,
     substitute,
     utc_text,
     wanted_levels,
@@ -200,6 +201,12 @@ class PrometheusSource:
                 points[utc_text(datetime.fromtimestamp(float(stamp), UTC))] = _num(value)
         return out, link
 
+    def serves(self) -> frozenset[str]:
+        """The tools this configuration answers (aisre pilot check reads it)."""
+        return served(
+            get_metric=bool(self.metrics), get_dependency_health=self.dependencies is not None
+        )
+
     def fetch(self, tool: str, params: BaseModel, environment: str) -> SourceResult:
         p: Any = params
         if tool == "get_dependency_health" and self.dependencies is not None:
@@ -292,6 +299,12 @@ class LokiSource:
         self.credentials = self.http.credentials
         self.service_label, self.environment_label = service_label, environment_label
         self.error_groups = None if error_groups is None else _group_spec(error_groups, name)
+
+    def serves(self) -> frozenset[str]:
+        """The tools this configuration answers (aisre pilot check reads it)."""
+        return served(
+            get_logs=self.query is not None, get_error_groups=self.error_groups is not None
+        )
 
     def fetch(self, tool: str, params: BaseModel, environment: str) -> SourceResult:
         p: Any = params
@@ -457,6 +470,10 @@ class AlertmanagerSource:
         self.value_annotation, self.threshold_annotation = value_annotation, threshold_annotation
         self.rule_annotation = rule_annotation
 
+    def serves(self) -> frozenset[str]:
+        """The tools this configuration answers (aisre pilot check reads it)."""
+        return served(get_alert=True)
+
     def fetch(self, tool: str, params: BaseModel, environment: str) -> SourceResult:
         p: Any = params
         if tool != "get_alert":
@@ -549,6 +566,10 @@ class TempoSource:
         self.name, self.query, self.max_traces = name, query, max_traces
         self.http = _Http(url, name, timeout_s, max_bytes, token, username, tenant)
         self.credentials = self.http.credentials
+
+    def serves(self) -> frozenset[str]:
+        """The tools this configuration answers (aisre pilot check reads it)."""
+        return served(get_traces=True)
 
     def fetch(self, tool: str, params: BaseModel, environment: str) -> SourceResult:
         p: Any = params

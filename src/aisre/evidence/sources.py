@@ -64,9 +64,23 @@ class SourceResult:
 
 
 class Source(Protocol):
-    """One configured source. `params` is the ToolGate's validated parameter model."""
+    """One configured source. `params` is the ToolGate's validated parameter model. A real
+    adapter also has `serves() -> frozenset[str]`, the tools its configuration answers, so the
+    go-live check can tell a `"*"` that covers a tool from one that would only ever be a gap."""
 
     def fetch(self, tool: str, params: BaseModel, environment: str) -> SourceResult: ...
+
+
+def served(**tools: bool) -> frozenset[str]:
+    """`serves()`'s answer from `tool=answered` flags."""
+    return frozenset(t for t, on in tools.items() if on)
+
+
+def answers(source: Source, tool: str) -> bool:
+    """Whether `source` answers `tool`: an adapter without `serves()` (the fake) is taken at its
+    configuration."""
+    serves = getattr(source, "serves", None)
+    return serves is None or tool in serves()
 
 
 # ---------------------------------------------------------------------------
@@ -655,6 +669,17 @@ class SourceSet:
     sources: ToolSources
     replay_as_of: datetime | None = None
     services: Mapping[str, ToolSources] = field(default_factory=dict)
+    # scope -> {tool: reason}: gaps the service's owners accept, each with its reason (ADR-75).
+    # Only `aisre pilot check` reads it, to report WARN instead of FAIL; every call is still a gap.
+    allowed_gaps: Mapping[str, Mapping[str, str]] = field(default_factory=dict)
+
+    def allowed_gap(self, tool: str, service: str, environment: str) -> str | None:
+        """The stated reason `tool` may be a gap for this service, most specific scope first."""
+        for scope in (f"{service}/{environment}", service):
+            reason = self.allowed_gaps.get(scope, {}).get(tool)
+            if reason is not None:
+                return reason
+        return None
 
     def for_tool(
         self, tool: str, service: str | None = None, environment: str | None = None
@@ -680,16 +705,44 @@ class SourceSet:
         if unknown:
             raise ValueError(f"unknown evidence configuration keys: {sorted(unknown)}")
         services: dict[str, ToolSources] = {}
+        allowed: dict[str, dict[str, str]] = {}
         for scope, tools in config.get("services", {}).items():
             service, _, environment = scope.partition("/")
             if not service or "/" in environment or scope.endswith("/"):
                 raise ValueError(f"evidence scope {scope!r}: `service` or `service/environment`")
+            tools = dict(tools)
+            if "allowed_gaps" in tools:
+                allowed[scope] = _allowed_gaps(scope, tools.pop("allowed_gaps"), tools)
             services[scope] = _tool_sources(tools, production)
         sources = _tool_sources(config.get("sources", {}), production)
         replay = config.get("replay_as_of")
         if production and replay:
             raise ValueError("replay_as_of is for replaying scenarios, never production")
-        return cls(sources, parse_time(replay) if replay else None, services)
+        return cls(sources, parse_time(replay) if replay else None, services, allowed)
+
+
+MIN_REASON = 10  # characters: a stated reason, not a placeholder
+
+
+def _allowed_gaps(scope: str, gaps: Any, tools: Mapping[str, Any]) -> dict[str, str]:
+    """`[{"tool": name, "reason": why}]`: source tools this service may go live without. A tool
+    the same scope names an adapter for can't also be an allowed gap."""
+    what = f"evidence scope {scope!r}: allowed_gaps"
+    if not isinstance(gaps, list) or not gaps:
+        raise ValueError(f'{what} is [{{"tool": name, "reason": why}}]')
+    out: dict[str, str] = {}
+    for gap in gaps:
+        if not isinstance(gap, Mapping) or set(gap) != {"tool", "reason"}:
+            raise ValueError(f'{what} is [{{"tool": name, "reason": why}}]')
+        tool, reason = gap["tool"], gap["reason"]
+        if tool not in SOURCE_TOOLS:
+            raise ValueError(f"{what}: no evidence source answers {tool!r}")
+        if not isinstance(reason, str) or len(reason.strip()) < MIN_REASON:
+            raise ValueError(f"{what}: {tool} needs a stated reason")
+        if tool in tools or tool in out:
+            raise ValueError(f"{what}: {tool} is configured or listed twice")
+        out[tool] = reason.strip()
+    return out
 
 
 def _tool_sources(tools: Mapping[str, Any], production: bool) -> dict[str, Source]:

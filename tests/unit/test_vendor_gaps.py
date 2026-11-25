@@ -1069,3 +1069,25 @@ def test_bad_cloudwatch_configuration_is_refused_at_start(extra, error):
     pytest.importorskip("boto3")
     with pytest.raises(ValueError, match=error):
         SourceSet.from_config({"sources": {"*": CW | extra}})
+
+
+def test_each_adapter_says_which_tools_its_configuration_answers():
+    """aisre pilot check reads `serves()`, so a `"*"` that would only ever be a gap for a tool
+    (CloudWatch's or Prometheus's get_changes) fails the check instead of passing it."""
+    pytest.importorskip("boto3")
+    dd = {"adapter": "datadog", "api_key": {"env": "A"}, "app_key": {"env": "B"}}
+    cases = [
+        ({"adapter": "prometheus", "url": "https://p", "metrics": {"http_request_rate": {"value": "q"}}}, {"get_metric"}),
+        (PROM_DEPS, {"get_dependency_health"}),
+        ({"adapter": "loki", "url": "https://l", "query": '{service="$service"}'}, {"get_logs"}),
+        (LOKI_GROUPS, {"get_error_groups"}),
+        (AM, {"get_alert"}),
+        (TEMPO, {"get_traces"}),
+        (dd, {"get_changes", "get_alert", "get_traces", "get_error_groups"}),
+        (DD | {"logs_query": "service:$service"}, set(sources.SOURCE_TOOLS) - {"get_metric"}),
+        ({"adapter": "cloudwatch", "region": "eu-west-1"}, {"get_alert", "get_traces"}),
+        (CW, {"get_alert", "get_traces", "get_logs", "get_error_groups", "get_dependency_health"}),
+    ]  # fmt: skip
+    for spec, tools in cases:
+        src = SourceSet.from_config({"sources": {"*": spec}}).for_tool("get_alert")
+        assert src.serves() == tools, spec["adapter"]
