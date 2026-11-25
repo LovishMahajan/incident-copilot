@@ -638,6 +638,7 @@ ADAPTERS: dict[str, Callable[..., Source]] = {
     "tempo": _lazy("aisre.evidence.prometheus", "TempoSource"),
     "datadog": _lazy("aisre.evidence.datadog", "DatadogSource"),
     "cloudwatch": _lazy("aisre.evidence.cloudwatch", "CloudWatchSource"),
+    "github_changes": _lazy("aisre.evidence.github_changes", "GitHubChangesSource"),
 }
 LOCAL_ONLY = {"fake_monitoring"}
 # The READ tools a source answers: every READ tool in aisre.agent.tool_registry but the two

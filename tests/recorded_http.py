@@ -1,7 +1,7 @@
 """Recorded vendor responses (M5, ADR-75): `urllib.request.urlopen`, answered from a file.
 
 Each file in tests/fixtures/recorded/ holds `_source` (the vendor's API reference and version the
-responses are shaped after) and `exchanges`: `{method, path, when?, status, body, once?}`. A
+responses are shaped after) and `exchanges`: `{method, path, when?, status, body, once?, headers?}`. A
 request is answered by the first exchange with its method and path whose `when` strings all
 appear in its URL or body; `once` exchanges are used up. Nothing reaches a network: an
 unanswered request fails the test. Every request is kept, headers included, for the assertions.
@@ -9,6 +9,7 @@ unanswered request fails the test. Every request is kept, headers included, for 
 
 from __future__ import annotations
 
+import email.message
 import io
 import json
 import urllib.error
@@ -41,9 +42,16 @@ class Sent:
         return unquote(urlsplit(self.url).query.replace("+", " "))
 
 
+def _headers(given: dict[str, str] | None) -> email.message.Message:
+    out = email.message.Message()
+    for k, v in (given or {}).items():
+        out[k] = v
+    return out
+
+
 class _Response:
-    def __init__(self, status: int, raw: bytes) -> None:
-        self.status, self._raw = status, raw
+    def __init__(self, status: int, raw: bytes, headers: email.message.Message) -> None:
+        self.status, self._raw, self.headers = status, raw, headers
 
     def read(self, n: int = -1) -> bytes:
         return self._raw if n < 0 else self._raw[:n]
@@ -81,9 +89,13 @@ class Recorded:
             out = ex.get("raw", "").encode() if "raw" in ex else json.dumps(ex["body"]).encode()
             if ex["status"] >= 400:
                 raise urllib.error.HTTPError(
-                    req.full_url, ex["status"], "recorded", None, io.BytesIO(out)
+                    req.full_url,
+                    ex["status"],
+                    "recorded",
+                    _headers(ex.get("headers")),
+                    io.BytesIO(out),
                 )
-            return _Response(ex["status"], out)
+            return _Response(ex["status"], out, _headers(ex.get("headers")))
         raise AssertionError(f"no recorded answer for {sent.method} {sent.url}")
 
     def to(self, method: str, path_part: str) -> list[Sent]:

@@ -578,7 +578,15 @@ def test_the_onboarding_guides_examples_load_in_production():
         for tool, a in scope.items()
         if tool != "allowed_gaps"
     }
-    assert adapters == {"prometheus", "loki", "alertmanager", "tempo", "datadog", "cloudwatch"}
+    assert adapters == {
+        "prometheus",
+        "loki",
+        "alertmanager",
+        "tempo",
+        "datadog",
+        "cloudwatch",
+        "github_changes",
+    }
     assert len(examples) == 3  # one per stack, each covering all seven source tools
     for example in examples:
         loaded = SourceSet.from_config(example, production=True)
