@@ -14,6 +14,7 @@ or an empty answer (ADR-54).
 
 from __future__ import annotations
 
+import json
 import urllib.request
 from datetime import UTC, datetime, timedelta
 
@@ -563,3 +564,508 @@ def test_datadog_failures_are_gaps_never_health(datadog, monkeypatch):
 def test_bad_datadog_configuration_is_refused_at_start(extra, error):
     with pytest.raises(ValueError, match=error):
         SourceSet.from_config({"sources": {"*": DD | extra}})
+
+
+# ---------------------------------------------------------------------------
+# CloudWatch, X-Ray and Logs Insights, through botocore's Stubber
+# ---------------------------------------------------------------------------
+CW = {
+    "adapter": "cloudwatch",
+    "region": "eu-west-1",
+    "alarm_dimensions": {"Service": "$service", "Environment": "$environment"},
+    "log_group": "/ecs/$service-$environment",
+    "error_groups_query": "fields error.type as type, error.message as message, version"
+    ' | filter level = "error" and service = "$service"'
+    " | stats count(*) as count, min(@timestamp) as first_seen, max(@timestamp) as last_seen,"
+    " latest(error.stack) as stack by type, message, version",
+    "dependencies": {
+        "orders-db": {
+            "kind": "postgresql",
+            "error_rate": 'SUM(SEARCH(\'{App,Service,Dependency} Service="$service" '
+            'Dependency="$dependency" MetricName="Errors"\', \'Average\', 60))',
+            "latency_p95": 'MAX(SEARCH(\'{App,Service,Dependency} Service="$service" '
+            'Dependency="$dependency" MetricName="LatencyP95"\', \'Maximum\', 60))',
+            "max_latency_s": 0.5,
+        },
+        "payment-gateway": {
+            "kind": "third_party_http",
+            "error_rate": "SUM(SEARCH('Dependency=\"$dependency\" Errors', 'Average', 60))",
+        },
+    },
+    "poll_s": 0,
+}
+
+
+@pytest.fixture
+def aws(monkeypatch):
+    pytest.importorskip("boto3")
+    from botocore.stub import Stubber
+
+    for var in ("AWS_PROFILE", "AWS_CONFIG_FILE", "AWS_SHARED_CREDENTIALS_FILE"):
+        monkeypatch.delenv(var, raising=False)
+    monkeypatch.setenv("AWS_ACCESS_KEY_ID", "AKIDNOTREAL")
+    monkeypatch.setenv("AWS_SECRET_ACCESS_KEY", "not-a-real-secret")
+
+    def build(**extra):
+        src = SourceSet.from_config({"sources": {"*": CW | extra}}, production=True).for_tool("x")
+        stubs = {s: Stubber(src.client(s)) for s in ("cloudwatch", "logs", "xray")}
+        for s in stubs.values():
+            s.activate()
+        return src, stubs
+
+    return build
+
+
+def metric_alarm(name, dims, *, reason=None, metrics=None, fired=T0 + timedelta(minutes=4)):
+    alarm = {
+        "AlarmName": name,
+        "AlarmArn": f"arn:aws:cloudwatch:eu-west-1:123456789012:alarm:{name}",
+        "AlarmDescription": "5xx rate over 5%",
+        "StateValue": "ALARM",
+        "StateReason": "Threshold Crossed: 3 datapoints were greater than the threshold (0.05).",
+        "StateUpdatedTimestamp": fired,
+        "StateTransitionedTimestamp": fired,
+        "ComparisonOperator": "GreaterThanThreshold",
+        "Threshold": 0.05,
+        "EvaluationPeriods": 3,
+        "Period": 60,
+    }
+    if metrics is None:
+        alarm |= {
+            "MetricName": "5xxRate",
+            "Namespace": "App",
+            "Statistic": "Average",
+            "Dimensions": [{"Name": k, "Value": v} for k, v in dims.items()],
+        }
+    else:
+        alarm["Metrics"] = metrics
+    if reason is not None:
+        alarm["StateReasonData"] = reason
+    return alarm
+
+
+REASON = (
+    '{"version":"1.0","queryDate":"2026-11-19T10:04:10.123+0000","startDate":'
+    '"2026-11-19T10:01:00.000+0000","statistic":"Average","period":60,"recentDatapoints":'
+    '[0.12,0.13,0.149],"threshold":0.05,"evaluatedDatapoints":[{"timestamp":'
+    '"2026-11-19T10:03:00.000+0000","sampleCount":5.0,"value":0.149},{"timestamp":'
+    '"2026-11-19T10:01:00.000+0000","sampleCount":5.0,"value":0.12}]}'
+)
+
+
+def test_cloudwatch_alarms_in_alarm_for_the_services_dimensions(aws):
+    src, stubs = aws()
+    mine = {"Service": "orders-api", "Environment": "production"}
+    math = [
+        {
+            "Id": "m1",
+            "MetricStat": {
+                "Metric": {
+                    "Namespace": "App",
+                    "MetricName": "Errors",
+                    "Dimensions": [{"Name": k, "Value": v} for k, v in mine.items()],
+                },
+                "Period": 60,
+                "Stat": "Sum",
+            },
+            "ReturnData": False,
+        },
+        {"Id": "e1", "Expression": "m1 / 100", "ReturnData": True},
+    ]
+    stubs["cloudwatch"].add_response(
+        "describe_alarms",
+        {
+            "MetricAlarms": [
+                metric_alarm("orders-5xx", mine, reason=REASON),
+                metric_alarm("orders-math", {}, metrics=math, fired=T0 + timedelta(minutes=2)),
+                metric_alarm("payments-5xx", mine | {"Service": "payments-api"}),
+                metric_alarm("orders-staging", mine | {"Environment": "staging"}),
+                metric_alarm("account-wide", {"Region": "eu-west-1"}),
+            ],
+            "CompositeAlarms": [],
+        },
+        {
+            "StateValue": "ALARM",
+            "AlarmTypes": ["MetricAlarm", "CompositeAlarm"],
+            "MaxRecords": 100,
+        },
+    )
+    out = src.fetch("get_alert", alert(), "production")
+    assert [a["alert_name"] for a in out.records] == ["orders-5xx", "orders-math"]
+    assert out.records[0] == {
+        "alert_name": "orders-5xx",
+        "alert_id": "arn:aws:cloudwatch:eu-west-1:123456789012:alarm:orders-5xx",
+        "state": "firing",
+        "service": "orders-api",
+        "environment": "production",
+        "rule": "Average of App 5xxRate GreaterThanThreshold 0.05 for 3 x 60 s",
+        "value": 0.149,
+        "threshold": 0.05,
+        "breach_started_at": "2026-11-19T10:01:00Z",
+        "fired_at": "2026-11-19T10:04:00Z",
+    }
+    assert out.records[1]["rule"] == "m1 / 100 GreaterThanThreshold 0.05"
+    assert out.records[1]["value"] is None and not out.partial
+    stubs["cloudwatch"].assert_no_pending_responses()
+
+
+def test_cloudwatch_alarms_by_name_prefix_and_tags(aws):
+    src, stubs = aws(alarm_name_prefix="$service-", alarm_tags={"env": "$environment"})
+    composite = {
+        "AlarmName": "orders-api-composite",
+        "AlarmArn": "arn:aws:cloudwatch:eu-west-1:123456789012:alarm:orders-api-composite",
+        "AlarmRule": 'ALARM("orders-5xx") OR ALARM("orders-latency")',
+        "StateValue": "ALARM",
+        "StateUpdatedTimestamp": T0 + timedelta(minutes=5),
+    }
+    other = metric_alarm("orders-api-staging", {})
+    stubs["cloudwatch"].add_response(
+        "describe_alarms",
+        {"MetricAlarms": [other], "CompositeAlarms": [composite], "NextToken": "more"},
+        {
+            "StateValue": "ALARM",
+            "AlarmTypes": ["MetricAlarm", "CompositeAlarm"],
+            "MaxRecords": 100,
+            "AlarmNamePrefix": "orders-api-",
+        },
+    )
+    stubs["cloudwatch"].add_response(
+        "list_tags_for_resource",
+        {"Tags": [{"Key": "env", "Value": "staging"}]},
+        {"ResourceARN": other["AlarmArn"]},
+    )
+    stubs["cloudwatch"].add_response(
+        "list_tags_for_resource",
+        {"Tags": [{"Key": "env", "Value": "production"}]},
+        {"ResourceARN": composite["AlarmArn"]},
+    )
+    out = src.fetch("get_alert", alert(), "production")
+    assert [(a["alert_name"], a["rule"]) for a in out.records] == [
+        ("orders-api-composite", 'composite: ALARM("orders-5xx") OR ALARM("orders-latency")')
+    ]
+    assert out.records[0]["fired_at"] == "2026-11-19T10:05:00Z"
+    assert out.partial  # DescribeAlarms had another page
+
+
+def segment(name, start, *, fault, env="production", subsegments=(), cause=None, url=None):
+    doc = {
+        "id": "70de5b6f19ff9a0a",
+        "name": name,
+        "trace_id": "1-6a3c8f00-4bf92f3577b34da6a3ce929d",
+        "start_time": start,
+        "end_time": start + 0.012,
+        "fault": fault,
+        "annotations": {"environment": env, "version": "1.4.0"},
+        "subsegments": list(subsegments),
+    }
+    if url:
+        doc["http"] = {"request": {"method": "POST", "url": url}, "response": {"status": 500}}
+    if cause:
+        doc["cause"] = cause
+    return {"Id": "70de5b6f19ff9a0a", "Document": json.dumps(doc)}
+
+
+def test_xray_faulted_traces_of_this_service_as_spans(aws):
+    src, stubs = aws()
+    t = T0.timestamp() + 65
+    cause = {
+        "working_directory": "/app",
+        "exceptions": [
+            {
+                "id": "e1",
+                "type": "KeyError",
+                "message": "'TAX_RATE'",
+                "stack": [{"path": "orders/service.py", "line": 88, "label": "place_order"}],
+            }
+        ],
+    }
+    sub = {
+        "id": "a1",
+        "name": "orders.service.place_order",
+        "start_time": t + 0.001,
+        "end_time": t + 0.01,
+        "fault": True,
+        "cause": cause,
+        "annotations": {"app.config.read": "TAX_RATE"},
+    }
+    stubs["xray"].add_response(
+        "get_trace_summaries",
+        {
+            "TraceSummaries": [{"Id": "1-6a3c8f00-4bf92f3577b34da6a3ce929d", "HasFault": True}],
+            "ApproximateTime": T0,
+            "TracesProcessedCount": 40,
+        },
+        {
+            "StartTime": WINDOW["start"],
+            "EndTime": WINDOW["end"],
+            "Sampling": False,
+            "FilterExpression": 'service("orders-api") { fault = true }',
+        },
+    )
+    stubs["xray"].add_response(
+        "batch_get_traces",
+        {
+            "Traces": [
+                {
+                    "Id": "1-6a3c8f00-4bf92f3577b34da6a3ce929d",
+                    "Duration": 0.012,
+                    "Segments": [
+                        segment(
+                            "orders-api",
+                            t,
+                            fault=True,
+                            subsegments=[sub],
+                            url="https://orders.example/checkout",
+                        ),
+                        segment(
+                            "payments-api",
+                            t,
+                            fault=True,
+                            cause={
+                                "exceptions": [
+                                    {"id": "x", "type": "Other", "message": "someone else"}
+                                ]
+                            },
+                        ),  # fmt: skip
+                        segment("orders-api", t + 1, fault=True, env="staging"),
+                    ],
+                }
+            ],
+            "UnprocessedTraceIds": [],
+        },
+        {"TraceIds": ["1-6a3c8f00-4bf92f3577b34da6a3ce929d"]},
+    )
+    out = src.fetch("get_traces", traces(), "production")
+    spans = out.records[0]["spans"]
+    assert [(s["name"], s["status"]) for s in spans] == [
+        ("POST /checkout", "ERROR"),
+        ("orders.service.place_order", "ERROR"),
+    ]
+    assert spans[0]["start"] == "2026-11-19T10:01:05.000Z"
+    assert spans[0]["attributes"]["http.response.status_code"] == 500
+    assert spans[1]["exceptions"] == [{"type": "KeyError", "message": "'TAX_RATE'"}]
+    assert spans[1]["attributes"]["code.filepath"] == "orders/service.py"
+    assert "someone else" not in str(out.records) and not out.partial
+    facts = facts_for(Observed(EvidenceKind.trace, {}, out.records), [CHANGE])
+    assert facts.changed_key_on_failing_path and facts.frames_in_changed_file
+
+
+def test_xray_trace_cap_and_errors_are_gaps(aws):
+    src, stubs = aws(max_traces=1)
+    ids = [f"1-6a3c8f00-{i:024x}" for i in range(3)]
+    stubs["xray"].add_response(
+        "get_trace_summaries", {"TraceSummaries": [{"Id": i} for i in ids], "NextToken": "n"}
+    )
+    stubs["xray"].add_response("batch_get_traces", {"Traces": []}, {"TraceIds": ids[:1]})
+    out = src.fetch("get_traces", traces(), "production")
+    assert out.records == [] and out.partial
+    stubs["xray"].add_client_error("get_trace_summaries", "ThrottledException", "slow down")
+    with pytest.raises(SourceUnavailable, match="get_trace_summaries: ThrottledException"):
+        src.fetch("get_traces", traces(), "production")
+
+
+def insights_row(**fields):
+    return [{"field": k, "value": str(v)} for k, v in fields.items()]
+
+
+STACK = 'Traceback:\n  File "orders/api.py", line 12, in post\n  File "orders/service.py", line 88, in place_order\nKeyError: \'TAX_RATE\''
+
+
+def test_logs_insights_error_groups_derived_from_a_stats_query(aws):
+    src, stubs = aws()
+    stubs["logs"].add_response(
+        "start_query",
+        {"queryId": "q-1"},
+        {
+            "logGroupNames": ["/ecs/orders-api-production"],
+            "startTime": int(WINDOW["start"].timestamp()),
+            "endTime": int(WINDOW["end"].timestamp()),
+            "queryString": CW["error_groups_query"].replace("$service", "orders-api"),
+            "limit": 2000,
+        },
+    )
+    stubs["logs"].add_response("get_query_results", {"status": "Running", "results": []})
+    stubs["logs"].add_response(
+        "get_query_results",
+        {
+            "status": "Complete",
+            "results": [
+                insights_row(
+                    type="KeyError",
+                    message="'TAX_RATE'",
+                    version="1.4.0",
+                    count=40,
+                    first_seen="2026-11-19 10:01:05.000",
+                    last_seen="2026-11-19 10:20:00.000",
+                    stack=STACK,
+                ),
+                insights_row(
+                    type="KeyError",
+                    message="'TAX_RATE'",
+                    version="1.3.2",
+                    count=2,
+                    first_seen="2026-11-19 10:02:00.000",
+                    last_seen="2026-11-19 10:03:00.000",
+                ),
+                insights_row(
+                    type="TimeoutError",
+                    message="upstream",
+                    count=1,
+                    first_seen="2026-11-19 09:58:00.000",
+                    last_seen="2026-11-19 09:58:00.000",
+                ),
+            ],  # fmt: skip
+            "statistics": {"recordsMatched": 43.0, "recordsScanned": 9000.0, "bytesScanned": 1e6},
+        },
+        {"queryId": "q-1"},
+    )
+    out = src.fetch("get_error_groups", groups(), "production")
+    assert out.records == [
+        {
+            "type": "TimeoutError",
+            "message": "upstream",
+            "count": 1,
+            "first_seen": "2026-11-19T09:58:00Z",
+            "last_seen": "2026-11-19T09:58:00Z",
+            "versions": [],
+            "frames": [],
+        },
+        {
+            "type": "KeyError",
+            "message": "'TAX_RATE'",
+            "count": 42,
+            "first_seen": "2026-11-19T10:01:05Z",
+            "last_seen": "2026-11-19T10:20:00Z",
+            "versions": ["1.3.2", "1.4.0"],
+            "frames": [["orders/api.py", "12"], ["orders/service.py", "88"]],
+        },
+    ]
+    assert not out.partial
+    facts = facts_for(Observed(EvidenceKind.error_group, {}, out.records[1:]), [CHANGE])
+    assert facts.frames_in_changed_file and facts.first_seen_after_change
+    stubs["logs"].assert_no_pending_responses()
+
+
+def test_logs_insights_failure_and_a_query_past_its_time_are_gaps(aws, monkeypatch):
+    import itertools
+    from types import SimpleNamespace
+
+    from aisre.evidence import cloudwatch
+
+    clock = itertools.count()  # each reading a second later; no real sleeping
+    monkeypatch.setattr(
+        cloudwatch, "time", SimpleNamespace(monotonic=lambda: next(clock), sleep=lambda s: None)
+    )
+    src, stubs = aws(timeout_s=1)
+    stubs["logs"].add_response("start_query", {"queryId": "q-2"})
+    stubs["logs"].add_response("get_query_results", {"status": "Failed", "results": []})
+    with pytest.raises(SourceUnavailable, match="Logs Insights query: Failed"):
+        src.fetch("get_error_groups", groups(), "production")
+    stubs["logs"].add_response("start_query", {"queryId": "q-3"})
+    stubs["logs"].add_response("get_query_results", {"status": "Running", "results": []})
+    with pytest.raises(SourceUnavailable, match="still Running after 1 s"):
+        src.fetch("get_error_groups", groups(), "production")
+    stubs["logs"].add_client_error("start_query", "MalformedQueryException", "bad")
+    with pytest.raises(SourceUnavailable, match="start_query: MalformedQueryException"):
+        src.fetch("get_error_groups", groups(), "production")
+
+
+def test_cloudwatch_dependency_health_from_get_metric_data(aws):
+    src, stubs = aws()
+    stubs["cloudwatch"].add_response(
+        "get_metric_data",
+        {
+            "MetricDataResults": [
+                {
+                    "Id": "d0_error_rate",
+                    "Label": "e",
+                    "Timestamps": [AT],
+                    "Values": [0.01],
+                    "StatusCode": "Complete",
+                },
+                {
+                    "Id": "d0_latency_p95",
+                    "Label": "l",
+                    "Timestamps": [AT],
+                    "Values": [0.02],
+                    "StatusCode": "Complete",
+                },
+                {
+                    "Id": "d1_error_rate",
+                    "Label": "e",
+                    "Timestamps": [],
+                    "Values": [],
+                    "StatusCode": "Complete",
+                },
+            ],  # fmt: skip
+        },
+        {
+            "MetricDataQueries": [
+                {
+                    "Id": "d0_error_rate",
+                    "Expression": CW["dependencies"]["orders-db"]["error_rate"]
+                    .replace("$service", "orders-api")
+                    .replace("$dependency", "orders-db"),
+                    "Period": 60,
+                    "ReturnData": True,
+                },
+                {
+                    "Id": "d0_latency_p95",
+                    "Expression": CW["dependencies"]["orders-db"]["latency_p95"]
+                    .replace("$service", "orders-api")
+                    .replace("$dependency", "orders-db"),
+                    "Period": 60,
+                    "ReturnData": True,
+                },
+                {
+                    "Id": "d1_error_rate",
+                    "Expression": "SUM(SEARCH('Dependency=\"payment-gateway\" Errors', 'Average', 60))",
+                    "Period": 60,
+                    "ReturnData": True,
+                },
+            ],
+            "StartTime": AT - timedelta(minutes=5),
+            "EndTime": AT,
+            "ScanBy": "TimestampDescending",
+        },
+    )
+    out = src.fetch("get_dependency_health", deps(), "production")
+    assert [(d["name"], d["status"]) for d in out.records] == [
+        ("orders-db", "healthy"),
+        ("payment-gateway", "unknown"),
+    ]
+    assert out.partial
+
+
+def test_cloudwatch_dependency_errors_and_unserved_tools_are_gaps(aws):
+    src, stubs = aws()
+    stubs["cloudwatch"].add_client_error("get_metric_data", "InvalidParameterValue", "bad")
+    with pytest.raises(SourceUnavailable, match="get_metric_data: InvalidParameterValue"):
+        src.fetch("get_dependency_health", deps(), "production")
+    two = {"Timestamps": [AT], "Values": [0.1], "StatusCode": "Complete"}
+    stubs["cloudwatch"].add_response(
+        "get_metric_data",
+        {"MetricDataResults": [{"Id": "d0_error_rate", **two}, {"Id": "d0_error_rate", **two}]},
+    )
+    with pytest.raises(SourceUnavailable, match="aggregate it"):
+        src.fetch("get_dependency_health", deps(), "production")
+    with pytest.raises(SourceUnavailable, match="not plain"):
+        src.fetch("get_alert", alert("orders api"), "production")
+    with pytest.raises(SourceUnavailable, match="has no get_changes"):
+        src.fetch("get_changes", traces(), "production")
+
+
+@pytest.mark.parametrize(
+    "extra, error",
+    [
+        ({"alarm_dimensions": {"Env": "$environment"}}, "select the service's alarms"),
+        ({"traces_filter": "fault = true"}, "traces_filter"),
+        ({"error_groups_query": "fields @message"}, "stats"),
+        ({"max_traces": 6}, "max_traces"),
+        ({"dependency_lookback_s": 7200}, "dependency_lookback_s"),
+    ],
+)
+def test_bad_cloudwatch_configuration_is_refused_at_start(extra, error):
+    pytest.importorskip("boto3")
+    with pytest.raises(ValueError, match=error):
+        SourceSet.from_config({"sources": {"*": CW | extra}})
