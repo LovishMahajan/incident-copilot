@@ -368,8 +368,8 @@ def test_datadog_refusals_and_unsafe_values_are_gaps(datadog):
     bad = MetricQuery(service="orders-api OR *", metric="http_5xx_rate", **WINDOW)
     with pytest.raises(SourceUnavailable, match="plain tag value"):
         src.fetch("get_metric", bad, "production")
-    with pytest.raises(SourceUnavailable, match="has no get_traces"):
-        src.fetch("get_traces", logs(), "production")
+    with pytest.raises(SourceUnavailable, match="has no get_dependency_health"):
+        src.fetch("get_dependency_health", logs(), "production")  # none configured
 
 
 # ---------------------------------------------------------------------------

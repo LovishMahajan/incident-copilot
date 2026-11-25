@@ -1,0 +1,709 @@
+{
+ "_source": "Datadog API: Get all monitors GET /api/v1/monitor (API v1) https://docs.datadoghq.com/api/latest/monitors/#get-all-monitors ; Search spans POST /api/v2/spans/events/search (API v2) https://docs.datadoghq.com/api/latest/spans/#search-spans ; Search error tracking issues POST /api/v2/error-tracking/issues/search (API v2) https://docs.datadoghq.com/api/latest/error-tracking/#search-error-tracking-issues ; Query timeseries points GET /api/v1/query (API v1) https://docs.datadoghq.com/api/latest/metrics/#query-timeseries-points",
+ "exchanges": [
+  {
+   "method": "GET",
+   "path": "/api/v1/monitor",
+   "when": [
+    "service:checkout"
+   ],
+   "status": 403,
+   "body": {
+    "errors": [
+     "Forbidden"
+    ]
+   }
+  },
+  {
+   "method": "GET",
+   "path": "/api/v1/monitor",
+   "when": [
+    "service:orders-api"
+   ],
+   "status": 200,
+   "body": [
+    {
+     "id": 101,
+     "name": "orders-api 5xx rate",
+     "type": "query alert",
+     "query": "avg(last_5m):sum:trace.http.request.errors{service:orders-api} > 0.05",
+     "message": "@pagerduty-orders",
+     "tags": [
+      "service:orders-api",
+      "env:production",
+      "team:orders"
+     ],
+     "options": {
+      "thresholds": {
+       "critical": 0.05,
+       "warning": 0.02
+      },
+      "notify_no_data": false
+     },
+     "overall_state": "Alert",
+     "overall_state_modified": "2026-11-19T10:04:10+00:00",
+     "created": "2026-01-02T00:00:00.000000+00:00",
+     "modified": "2026-06-01T00:00:00.000000+00:00",
+     "state": {
+      "groups": {
+       "env:production": {
+        "name": "env:production",
+        "status": "Alert",
+        "last_triggered_ts": 1795082650,
+        "last_notified_ts": 1795082650,
+        "last_resolved_ts": 0,
+        "last_nodata_ts": 0
+       },
+       "env:canary": {
+        "name": "env:canary",
+        "status": "OK",
+        "last_triggered_ts": 1795078800,
+        "last_notified_ts": 1795078800,
+        "last_resolved_ts": 0,
+        "last_nodata_ts": 0
+       }
+      }
+     },
+     "priority": null,
+     "restricted_roles": null,
+     "multi": true
+    },
+    {
+     "id": 102,
+     "name": "orders-api latency",
+     "type": "query alert",
+     "query": "avg(last_5m):p95:trace.http.request{service:orders-api} > 1",
+     "message": "@pagerduty-orders",
+     "tags": [
+      "service:orders-api",
+      "env:production"
+     ],
+     "options": {
+      "thresholds": {
+       "critical": 0.05,
+       "warning": 0.02
+      },
+      "notify_no_data": false
+     },
+     "overall_state": "Warn",
+     "overall_state_modified": "2026-11-19T10:04:10+00:00",
+     "created": "2026-01-02T00:00:00.000000+00:00",
+     "modified": "2026-06-01T00:00:00.000000+00:00",
+     "state": {
+      "groups": {}
+     },
+     "priority": null,
+     "restricted_roles": null,
+     "multi": false
+    },
+    {
+     "id": 103,
+     "name": "orders-api disk",
+     "type": "query alert",
+     "query": "avg(last_5m):sum:trace.http.request.errors{service:orders-api} > 0.05",
+     "message": "@pagerduty-orders",
+     "tags": [
+      "service:orders-api",
+      "env:production"
+     ],
+     "options": {
+      "thresholds": {
+       "critical": 0.05,
+       "warning": 0.02
+      },
+      "notify_no_data": false
+     },
+     "overall_state": "OK",
+     "overall_state_modified": "2026-11-19T10:04:10+00:00",
+     "created": "2026-01-02T00:00:00.000000+00:00",
+     "modified": "2026-06-01T00:00:00.000000+00:00",
+     "state": {
+      "groups": {
+       "host:a": {
+        "name": "host:a",
+        "status": "OK",
+        "last_triggered_ts": 1795082300,
+        "last_notified_ts": 1795082300,
+        "last_resolved_ts": 0,
+        "last_nodata_ts": 0
+       }
+      }
+     },
+     "priority": null,
+     "restricted_roles": null,
+     "multi": true
+    },
+    {
+     "id": 104,
+     "name": "payments 5xx",
+     "type": "query alert",
+     "query": "avg(last_5m):sum:trace.http.request.errors{service:orders-api} > 0.05",
+     "message": "@pagerduty-orders",
+     "tags": [
+      "service:payments-api",
+      "env:production"
+     ],
+     "options": {
+      "thresholds": {
+       "critical": 0.05,
+       "warning": 0.02
+      },
+      "notify_no_data": false
+     },
+     "overall_state": "Alert",
+     "overall_state_modified": "2026-11-19T10:04:10+00:00",
+     "created": "2026-01-02T00:00:00.000000+00:00",
+     "modified": "2026-06-01T00:00:00.000000+00:00",
+     "state": {
+      "groups": {
+       "*": {
+        "name": "*",
+        "status": "Alert",
+        "last_triggered_ts": 1795082410,
+        "last_notified_ts": 1795082410,
+        "last_resolved_ts": 0,
+        "last_nodata_ts": 0
+       }
+      }
+     },
+     "priority": null,
+     "restricted_roles": null,
+     "multi": true
+    },
+    {
+     "id": 105,
+     "name": "orders-api staging",
+     "type": "query alert",
+     "query": "avg(last_5m):sum:trace.http.request.errors{service:orders-api} > 0.05",
+     "message": "@pagerduty-orders",
+     "tags": [
+      "service:orders-api",
+      "env:staging"
+     ],
+     "options": {
+      "thresholds": {
+       "critical": 0.05,
+       "warning": 0.02
+      },
+      "notify_no_data": false
+     },
+     "overall_state": "Alert",
+     "overall_state_modified": "2026-11-19T10:04:10+00:00",
+     "created": "2026-01-02T00:00:00.000000+00:00",
+     "modified": "2026-06-01T00:00:00.000000+00:00",
+     "state": {
+      "groups": {
+       "*": {
+        "name": "*",
+        "status": "Alert",
+        "last_triggered_ts": 1795082420,
+        "last_notified_ts": 1795082420,
+        "last_resolved_ts": 0,
+        "last_nodata_ts": 0
+       }
+      }
+     },
+     "priority": null,
+     "restricted_roles": null,
+     "multi": true
+    },
+    {
+     "id": 106,
+     "name": "untagged",
+     "type": "query alert",
+     "query": "avg(last_5m):sum:trace.http.request.errors{service:orders-api} > 0.05",
+     "message": "@pagerduty-orders",
+     "tags": [
+      "team:orders"
+     ],
+     "options": {
+      "thresholds": {
+       "critical": 0.05,
+       "warning": 0.02
+      },
+      "notify_no_data": false
+     },
+     "overall_state": "Alert",
+     "overall_state_modified": "2026-11-19T10:04:10+00:00",
+     "created": "2026-01-02T00:00:00.000000+00:00",
+     "modified": "2026-06-01T00:00:00.000000+00:00",
+     "state": {
+      "groups": {
+       "*": {
+        "name": "*",
+        "status": "Alert",
+        "last_triggered_ts": 1795082430,
+        "last_notified_ts": 1795082430,
+        "last_resolved_ts": 0,
+        "last_nodata_ts": 0
+       }
+      }
+     },
+     "priority": null,
+     "restricted_roles": null,
+     "multi": true
+    }
+   ]
+  },
+  {
+   "method": "POST",
+   "path": "/api/v2/spans/events/search",
+   "when": [
+    "service:checkout"
+   ],
+   "status": 429,
+   "body": {
+    "errors": [
+     {
+      "status": "429",
+      "title": "Too many requests"
+     }
+    ]
+   }
+  },
+  {
+   "method": "POST",
+   "path": "/api/v2/spans/events/search",
+   "when": [
+    "service:orders-api"
+   ],
+   "status": 200,
+   "body": {
+    "data": [
+     {
+      "id": "AAAAAZ111",
+      "type": "spans",
+      "attributes": {
+       "service": "orders-api",
+       "env": "production",
+       "host": "i-0abc",
+       "resource_name": "POST /checkout",
+       "resource_hash": "1a2b",
+       "span_id": "111",
+       "parent_id": "0",
+       "trace_id": "4bf92f3577b34da6a3ce929d0e0e4736",
+       "type": "web",
+       "start_timestamp": "2026-11-19T10:01:05.100Z",
+       "end_timestamp": "2026-11-19T10:01:05.112Z",
+       "tags": [
+        "service:orders-api",
+        "env:production",
+        "version:1.4.0"
+       ],
+       "attributes": {},
+       "custom": {
+        "error": {
+         "type": "KeyError",
+         "message": "'TAX_RATE'",
+         "stack": "Traceback ..."
+        },
+        "http": {
+         "status_code": "500",
+         "route": "/checkout"
+        }
+       },
+       "ingestion_reason": "rule",
+       "retained_by": "retention_filter",
+       "single_span": false
+      }
+     },
+     {
+      "id": "AAAAAZ112",
+      "type": "spans",
+      "attributes": {
+       "service": "orders-api",
+       "env": "production",
+       "host": "i-0abc",
+       "resource_name": "orders.service.place_order",
+       "resource_hash": "1a2b",
+       "span_id": "112",
+       "parent_id": "0",
+       "trace_id": "4bf92f3577b34da6a3ce929d0e0e4736",
+       "type": "web",
+       "start_timestamp": "2026-11-19T10:01:05.100Z",
+       "end_timestamp": "2026-11-19T10:01:05.112Z",
+       "tags": [
+        "service:orders-api",
+        "env:production",
+        "version:1.4.0"
+       ],
+       "attributes": {},
+       "custom": {
+        "code": {
+         "filepath": "orders/service.py"
+        },
+        "app": {
+         "config": {
+          "read": "TAX_RATE"
+         }
+        }
+       },
+       "ingestion_reason": "rule",
+       "retained_by": "retention_filter",
+       "single_span": false
+      }
+     },
+     {
+      "id": "AAAAAZ113",
+      "type": "spans",
+      "attributes": {
+       "service": "orders-api",
+       "env": "production",
+       "host": "i-0abc",
+       "resource_name": "GET /refunds",
+       "resource_hash": "1a2b",
+       "span_id": "113",
+       "parent_id": "0",
+       "trace_id": "0af7651916cd43dd8448eb211c80319c",
+       "type": "web",
+       "start_timestamp": "2026-11-19T10:02:00.100Z",
+       "end_timestamp": "2026-11-19T10:02:00.112Z",
+       "tags": [
+        "service:orders-api",
+        "env:production",
+        "version:1.4.0"
+       ],
+       "attributes": {},
+       "custom": {
+        "error": {
+         "type": "TimeoutError",
+         "message": "upstream"
+        }
+       },
+       "ingestion_reason": "rule",
+       "retained_by": "retention_filter",
+       "single_span": false
+      }
+     },
+     {
+      "id": "AAAAAZ114",
+      "type": "spans",
+      "attributes": {
+       "service": "payments-api",
+       "env": "production",
+       "host": "i-0abc",
+       "resource_name": "charge",
+       "resource_hash": "1a2b",
+       "span_id": "114",
+       "parent_id": "0",
+       "trace_id": "5555",
+       "type": "web",
+       "start_timestamp": "2026-11-19T10:01:06.100Z",
+       "end_timestamp": "2026-11-19T10:01:06.112Z",
+       "tags": [
+        "service:payments-api",
+        "env:production",
+        "version:1.4.0"
+       ],
+       "attributes": {},
+       "custom": {
+        "error": {
+         "message": "someone else"
+        }
+       },
+       "ingestion_reason": "rule",
+       "retained_by": "retention_filter",
+       "single_span": false
+      }
+     },
+     {
+      "id": "AAAAAZ115",
+      "type": "spans",
+      "attributes": {
+       "service": "orders-api",
+       "env": "staging",
+       "host": "i-0abc",
+       "resource_name": "POST /checkout",
+       "resource_hash": "1a2b",
+       "span_id": "115",
+       "parent_id": "0",
+       "trace_id": "6666",
+       "type": "web",
+       "start_timestamp": "2026-11-19T10:01:06.100Z",
+       "end_timestamp": "2026-11-19T10:01:06.112Z",
+       "tags": [
+        "service:orders-api",
+        "env:staging",
+        "version:1.4.0"
+       ],
+       "attributes": {},
+       "custom": {
+        "error": {
+         "message": "staging only"
+        }
+       },
+       "ingestion_reason": "rule",
+       "retained_by": "retention_filter",
+       "single_span": false
+      }
+     }
+    ],
+    "links": {
+     "next": "https://api.datadoghq.eu/api/v2/spans/events?page[cursor]=abc"
+    },
+    "meta": {
+     "elapsed": 120,
+     "request_id": "pddv1ChZ",
+     "status": "done",
+     "page": {
+      "after": "abc"
+     }
+    }
+   }
+  },
+  {
+   "method": "POST",
+   "path": "/api/v2/error-tracking/issues/search",
+   "when": [
+    "service:checkout"
+   ],
+   "status": 400,
+   "body": {
+    "errors": [
+     {
+      "status": "400",
+      "title": "Bad Request"
+     }
+    ]
+   }
+  },
+  {
+   "method": "POST",
+   "path": "/api/v2/error-tracking/issues/search",
+   "when": [
+    "service:orders-api"
+   ],
+   "status": 200,
+   "body": {
+    "data": [
+     {
+      "id": "r1",
+      "type": "error_tracking_search_result",
+      "attributes": {
+       "total_count": 82
+      },
+      "relationships": {
+       "issue": {
+        "data": {
+         "id": "c1a2",
+         "type": "issue"
+        }
+       }
+      }
+     },
+     {
+      "id": "r2",
+      "type": "error_tracking_search_result",
+      "attributes": {
+       "total_count": 4
+      },
+      "relationships": {
+       "issue": {
+        "data": {
+         "id": "c3b4",
+         "type": "issue"
+        }
+       }
+      }
+     },
+     {
+      "id": "r3",
+      "type": "error_tracking_search_result",
+      "attributes": {
+       "total_count": 9
+      },
+      "relationships": {
+       "issue": {
+        "data": {
+         "id": "p9",
+         "type": "issue"
+        }
+       }
+      }
+     }
+    ],
+    "included": [
+     {
+      "id": "c1a2",
+      "type": "issue",
+      "attributes": {
+       "error_type": "builtins.KeyError",
+       "error_message": "'TAX_RATE'",
+       "file_path": "orders/service.py",
+       "function_name": "place_order",
+       "service": "orders-api",
+       "first_seen": 1795082462000,
+       "last_seen": 1795083300000,
+       "first_seen_version": "1.4.0",
+       "last_seen_version": "1.4.0",
+       "is_crash": false,
+       "languages": [
+        "PYTHON"
+       ],
+       "platform": "BACKEND",
+       "state": "OPEN"
+      }
+     },
+     {
+      "id": "c3b4",
+      "type": "issue",
+      "attributes": {
+       "error_type": "builtins.TimeoutError",
+       "error_message": "upstream timed out",
+       "file_path": "",
+       "service": "orders-api",
+       "first_seen": 1792490400000,
+       "last_seen": 1795082700000,
+       "first_seen_version": "1.1.0",
+       "last_seen_version": "1.4.0",
+       "languages": [
+        "PYTHON"
+       ],
+       "platform": "BACKEND",
+       "state": "ACKNOWLEDGED"
+      }
+     },
+     {
+      "id": "p9",
+      "type": "issue",
+      "attributes": {
+       "error_type": "x",
+       "error_message": "someone else",
+       "service": "payments-api",
+       "first_seen": 1795082400000,
+       "last_seen": 1795082400000,
+       "platform": "BACKEND",
+       "state": "OPEN"
+      }
+     }
+    ]
+   }
+  },
+  {
+   "method": "GET",
+   "path": "/api/v1/query",
+   "when": [
+    "dep.errors",
+    "orders-db"
+   ],
+   "status": 200,
+   "body": {
+    "status": "ok",
+    "res_type": "time_series",
+    "series": [
+     {
+      "metric": "x",
+      "display_name": "x",
+      "pointlist": [
+       [
+        1795082700000.0,
+        0.001
+       ],
+       [
+        1795082940000.0,
+        0.002
+       ],
+       [
+        1795083000000.0,
+        null
+       ]
+      ],
+      "scope": "service:orders-api,env:production,dependency:orders-db",
+      "tag_set": [
+       "service:orders-api",
+       "env:production",
+       "dependency:orders-db"
+      ],
+      "expression": "...",
+      "interval": 60,
+      "length": 3,
+      "aggr": "avg",
+      "unit": null
+     }
+    ]
+   }
+  },
+  {
+   "method": "GET",
+   "path": "/api/v1/query",
+   "when": [
+    "dep.latency",
+    "orders-db"
+   ],
+   "status": 200,
+   "body": {
+    "status": "ok",
+    "res_type": "time_series",
+    "series": [
+     {
+      "metric": "x",
+      "display_name": "x",
+      "pointlist": [
+       [
+        1795082940000.0,
+        0.9
+       ]
+      ],
+      "scope": "service:orders-api,env:production",
+      "tag_set": [
+       "service:orders-api",
+       "env:production"
+      ],
+      "expression": "...",
+      "interval": 60,
+      "length": 1,
+      "aggr": "avg",
+      "unit": null
+     },
+     {
+      "metric": "x",
+      "display_name": "x",
+      "pointlist": [
+       [
+        1795082940000.0,
+        0.01
+       ]
+      ],
+      "scope": "service:orders-api,env:staging",
+      "tag_set": [
+       "service:orders-api",
+       "env:staging"
+      ],
+      "expression": "...",
+      "interval": 60,
+      "length": 1,
+      "aggr": "avg",
+      "unit": null
+     }
+    ]
+   }
+  },
+  {
+   "method": "GET",
+   "path": "/api/v1/query",
+   "when": [
+    "dep.errors",
+    "broken-dep"
+   ],
+   "status": 200,
+   "body": {
+    "status": "error",
+    "error": "Error parsing query"
+   }
+  },
+  {
+   "method": "GET",
+   "path": "/api/v1/query",
+   "when": [
+    "dep.errors",
+    "cache"
+   ],
+   "status": 200,
+   "body": {
+    "status": "ok",
+    "res_type": "time_series",
+    "series": []
+   }
+  }
+ ]
+}

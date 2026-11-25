@@ -474,7 +474,8 @@ def summarise(tool: str, params: dict[str, Any], records: list[Record]) -> str:
             )
     elif tool == "get_error_groups":
         for g in records:
-            frame = f" at {g['frames'][-1][0]}:{g['frames'][-1][1]}" if g["frames"] else ""
+            last = g["frames"][-1] if g["frames"] else None
+            frame = f" at {last[0]}" + (f":{last[1]}" if last[1] else "") if last else ""
             lines.append(
                 f"{g['type']}: {g['message']} - {g['count']} seen, first {g['first_seen']}, "
                 f"last {g['last_seen']}, versions {','.join(g['versions'])}{frame}"

@@ -381,3 +381,185 @@ def test_prometheus_dependency_failures_are_gaps_never_health(recorded):
     with pytest.raises(SourceUnavailable, match="has no get_dependency_health"):
         no_deps.fetch("get_dependency_health", deps(), "production")
 
+
+# ---------------------------------------------------------------------------
+# Datadog: monitors, APM spans, Error Tracking, metrics per dependency
+# ---------------------------------------------------------------------------
+DD = {
+    "adapter": "datadog",
+    "site": "datadoghq.eu",
+    "api_key": {"env": "DD_API_KEY"},
+    "app_key": {"env": "DD_APP_KEY"},
+    "dependencies": {
+        "orders-db": {
+            "kind": "postgresql",
+            "error_rate": "avg:dep.errors{service:$service,env:$environment,dependency:$dependency}",
+            "latency_p95": "p95:dep.latency{service:$service,dependency:$dependency}",
+            "max_latency_s": 0.5,
+        }
+    },
+}
+
+
+@pytest.fixture
+def datadog(monkeypatch, recorded):
+    monkeypatch.setenv("DD_API_KEY", "dd-api-not-real")
+    monkeypatch.setenv("DD_APP_KEY", "dd-app-not-real")
+    r = recorded("datadog-gaps")
+    return SourceSet.from_config({"sources": {"*": DD}}, production=True).for_tool("get_alert"), r
+
+
+def test_datadog_triggered_monitors_of_this_service(datadog):
+    src, r = datadog
+    out = src.fetch("get_alert", alert(), "production")
+    assert [(a["alert_id"], a["state"]) for a in out.records] == [
+        ("101", "firing"),
+        ("102", "warning"),
+    ]
+    assert out.records[0] == {
+        "alert_name": "orders-api 5xx rate",
+        "alert_id": "101",
+        "state": "firing",
+        "service": "orders-api",
+        "environment": "production",
+        "rule": "avg(last_5m):sum:trace.http.request.errors{service:orders-api} > 0.05",
+        "value": None,  # a monitor doesn't hold the value that triggered it
+        "threshold": 0.05,
+        "breach_started_at": None,
+        "fired_at": "2026-11-19T10:04:10Z",
+    }
+    assert out.records[1]["fired_at"] == "2026-11-19T10:04:10Z"  # overall_state_modified
+    sent = r.sent[0]
+    assert sent.url.startswith("https://api.datadoghq.eu/api/v1/monitor?")
+    assert "monitor_tags=service:orders-api,env:production" in sent.query
+    assert "group_states=alert,warn" in sent.query
+    assert sent.headers["dd-application-key"] == "dd-app-not-real"
+    for other in ("payments", "staging", "untagged", "disk"):
+        assert other not in str(out.records)
+    narrowed = src.fetch("get_alert", alert(alert_id="102"), "production")
+    assert [a["alert_id"] for a in narrowed.records] == ["102"]
+
+
+def test_datadog_error_spans_grouped_into_traces(datadog):
+    src, r = datadog
+    out = src.fetch("get_traces", traces(), "production")
+    assert [t["trace_id"] for t in out.records] == [
+        "4bf92f3577b34da6a3ce929d0e0e4736",
+        "0af7651916cd43dd8448eb211c80319c",
+    ]
+    first = out.records[0]["spans"]
+    assert [(s["name"], s["status"], s["start"]) for s in first] == [
+        ("POST /checkout", "ERROR", "2026-11-19T10:01:05.100Z"),
+        ("orders.service.place_order", "ERROR", "2026-11-19T10:01:05.100Z"),
+    ]
+    assert first[0]["exceptions"] == [{"type": "KeyError", "message": "'TAX_RATE'"}]
+    assert first[1]["attributes"]["code.filepath"] == "orders/service.py"
+    assert out.partial  # the search has a next page
+    body = r.to("POST", "/api/v2/spans/events/search")[0].body["data"]["attributes"]
+    assert body["filter"] == {
+        "query": "service:orders-api env:production status:error",
+        "from": "2026-11-19T09:55:00Z",
+        "to": "2026-11-19T10:30:00Z",
+    }
+    assert body["page"] == {"limit": 200}
+    assert "someone else" not in str(out.records) and "staging only" not in str(out.records)
+    facts = facts_for(Observed(EvidenceKind.trace, {}, out.records), [CHANGE])
+    assert facts.changed_key_on_failing_path and facts.frames_in_changed_file
+    on_path = src.fetch("get_traces", traces(path="/refunds"), "production")
+    assert [t["trace_id"] for t in on_path.records] == ["0af7651916cd43dd8448eb211c80319c"]
+
+
+def test_datadog_error_tracking_issues_are_native_error_groups(datadog):
+    src, r = datadog
+    out = src.fetch("get_error_groups", groups(), "production")
+    assert out.records == [
+        {
+            "type": "builtins.KeyError",
+            "message": "'TAX_RATE'",
+            "count": 82,
+            "first_seen": "2026-11-19T10:01:02Z",
+            "last_seen": "2026-11-19T10:15:00Z",
+            "versions": ["1.4.0"],
+            "frames": [["orders/service.py", ""]],
+        },
+        {
+            "type": "builtins.TimeoutError",
+            "message": "upstream timed out",
+            "count": 4,
+            "first_seen": "2026-10-20T10:00:00Z",
+            "last_seen": "2026-11-19T10:05:00Z",
+            "versions": ["1.1.0", "1.4.0"],
+            "frames": [],
+        },
+    ]
+    sent = r.to("POST", "/api/v2/error-tracking/issues/search")[0]
+    assert "include=issue" in sent.query
+    assert sent.body["data"]["attributes"] == {
+        "query": "service:orders-api env:production",
+        "from": int(WINDOW["start"].timestamp() * 1000),
+        "to": int(WINDOW["end"].timestamp() * 1000),
+        "track": "trace",
+    }
+    facts = facts_for(Observed(EvidenceKind.error_group, {}, out.records), [CHANGE])
+    assert facts.frames_in_changed_file and facts.first_seen_after_change
+    assert "at orders/service.py -" not in summarise("get_error_groups", {}, out.records)
+    assert "versions 1.4.0 at orders/service.py" in summarise("get_error_groups", {}, out.records)
+    released = src.fetch("get_error_groups", groups(release="1.1.0"), "production")
+    assert [g["type"] for g in released.records] == ["builtins.TimeoutError"]
+    capped = src.fetch("get_error_groups", groups(limit=1), "production")
+    assert len(capped.records) == 1 and capped.partial
+
+
+def test_datadog_dependency_health_from_configured_metrics(datadog):
+    src, r = datadog
+    out = src.fetch("get_dependency_health", deps(), "production")
+    assert [(d["name"], d["status"]) for d in out.records] == [("orders-db", "degraded")]
+    assert "latency_p95 0.9 s (limit 0.5 s)" in out.records[0]["detail"]
+    assert "error_rate 0.002" in out.records[0]["detail"]  # the last point with a value
+    first = r.to("GET", "/api/v1/query")[0]
+    assert "dependency:orders-db" in first.query
+    assert f"to={int(AT.timestamp())}" in first.query
+    assert f"from={int((AT - timedelta(minutes=5)).timestamp())}" in first.query
+    assert not out.partial
+
+
+def test_datadog_failures_are_gaps_never_health(datadog, monkeypatch):
+    src, _ = datadog
+    with pytest.raises(SourceUnavailable, match="datadog: HTTP 403"):
+        src.fetch("get_alert", alert("checkout"), "production")
+    with pytest.raises(SourceUnavailable, match="datadog: HTTP 429"):
+        src.fetch("get_traces", traces("checkout"), "production")
+    with pytest.raises(SourceUnavailable, match="datadog: HTTP 400"):
+        src.fetch("get_error_groups", groups("checkout"), "production")
+    with pytest.raises(SourceUnavailable, match="plain tag value"):
+        src.fetch("get_alert", alert("orders-api OR *"), "production")
+    broken = DD | {
+        "dependencies": {"broken-dep": {"kind": "x", "error_rate": "dep.errors{$dependency}"}}
+    }
+    b = SourceSet.from_config({"sources": {"*": broken}}).for_tool("get_dependency_health")
+    with pytest.raises(SourceUnavailable, match="the query failed"):
+        b.fetch("get_dependency_health", deps(), "production")
+    nodata = DD | {
+        "dependencies": {"cache": {"kind": "redis", "error_rate": "dep.errors{$dependency}"}}
+    }
+    n = SourceSet.from_config({"sources": {"*": nodata}}).for_tool("get_dependency_health")
+    out = n.fetch("get_dependency_health", deps(), "production")
+    assert out.records[0]["status"] == "unknown" and out.partial
+    plain = SourceSet.from_config({"sources": {"*": DD | {"dependencies": None}}})
+    with pytest.raises(SourceUnavailable, match="has no get_dependency_health"):
+        plain.for_tool("x").fetch("get_dependency_health", deps(), "production")
+
+
+@pytest.mark.parametrize(
+    "extra, error",
+    [
+        ({"monitor_tags": "team:orders"}, "monitor_tags"),
+        ({"spans_query": "env:prod"}, "spans_query"),
+        ({"error_tracking_track": "rum"}, "trace or logs"),
+        ({"max_traces": 0}, "max_traces"),
+        ({"dependency_lookback_s": 5}, "dependency_lookback_s"),
+    ],
+)
+def test_bad_datadog_configuration_is_refused_at_start(extra, error):
+    with pytest.raises(ValueError, match=error):
+        SourceSet.from_config({"sources": {"*": DD | extra}})
